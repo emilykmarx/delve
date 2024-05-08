@@ -151,8 +151,8 @@ const (
 type WatchType uint8
 
 const (
-	WatchRead WatchType = 1 << iota
-	WatchWrite
+	WatchRead  WatchType = 1 << iota // 00000001
+	WatchWrite                       // 00000010
 )
 
 // Read returns true if the hardware breakpoint should trigger on memory reads.
@@ -619,30 +619,24 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, err
 	}
 	if xv.Addr == 0 || xv.Flags&VariableFakeAddress != 0 || xv.DwarfType == nil {
-		return nil, fmt.Errorf("can not watch %q", expr)
+		return nil, fmt.Errorf("can not watch %q; Addr %v, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
 	}
 	if xv.Unreadable != nil {
 		return nil, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
-		return nil, fmt.Errorf("can not watch variable of type %s", xv.Kind.String())
+		return nil, fmt.Errorf("can not watch variable of type %s, kind %v", xv.Kind.String(), xv.Kind)
 	}
 	sz := xv.DwarfType.Size()
 	if sz <= 0 || sz > int64(t.BinInfo().Arch.PtrSize()) {
 		//TODO(aarzilli): it is reasonable to expect to be able to watch string
 		//and interface variables and we could support it by watching certain
 		//member fields here.
-		return nil, fmt.Errorf("can not watch variable of type %s", xv.DwarfType.String())
+		return nil, fmt.Errorf("can not watch variable of type %s, sz %v", xv.DwarfType.String(), sz)
 	}
 
 	stackWatch := scope.g != nil && !scope.g.SystemStack && xv.Addr >= scope.g.stack.lo && xv.Addr < scope.g.stack.hi
-
-	if stackWatch && wtype&WatchRead != 0 {
-		// In theory this would work except for the fact that the runtime will
-		// read them randomly to resize stacks so it doesn't make sense to do
-		// this.
-		return nil, errors.New("can not watch stack allocated variable for reads")
-	}
+	fmt.Printf("SetWatchpoint; sz %v, DwarfType %v, Kind %v, Stack %v\n", sz, xv.Kind.String(), xv.DwarfType.String(), stackWatch)
 
 	bp, err := t.setBreakpointInternal(logicalID, xv.Addr, UserBreakpoint, wtype.withSize(uint8(sz)), cond)
 	if err != nil {
@@ -706,6 +700,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 		}
 	}
 
+	// Overlaps existing bp (I think)
 	if bp, ok := bpmap.M[addr]; ok {
 		if !bp.canOverlap(kind) {
 			return bp, BreakpointExistsError{bp.File, bp.Line, bp.Addr}
@@ -722,6 +717,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 		fnName = fn.Name
 	}
 
+	// hwidx = # existing wp
 	hwidx := uint8(0)
 	if wtype != 0 {
 		m := make(map[uint8]bool)
@@ -752,7 +748,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 	}
 
 	newBreakpoint.Breaklets = append(newBreakpoint.Breaklets, newBreaklet)
-	setLogicalBreakpoint(newBreakpoint)
+	setLogicalBreakpoint(newBreakpoint) // defined inline above
 
 	bpmap.M[addr] = newBreakpoint
 
