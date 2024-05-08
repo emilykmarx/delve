@@ -625,14 +625,16 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
-		return nil, fmt.Errorf("can not watch variable of type %s, kind %v", xv.Kind.String(), xv.Kind)
+		return nil, fmt.Errorf("can not watch variable of type %s, kind %v: wrong kind", xv.Kind.String(), xv.Kind)
 	}
 	sz := xv.DwarfType.Size()
-	if sz <= 0 || sz > int64(t.BinInfo().Arch.PtrSize()) {
-		//TODO(aarzilli): it is reasonable to expect to be able to watch string
-		//and interface variables and we could support it by watching certain
-		//member fields here.
-		return nil, fmt.Errorf("can not watch variable of type %s, sz %v", xv.DwarfType.String(), sz)
+	if sz <= 0 {
+		return nil, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
+	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
+		// Watch only the addr field of the string - ops that only access len do not propagate taint for now
+		sz = 8
+	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
+		return nil, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
 	}
 
 	stackWatch := scope.g != nil && !scope.g.SystemStack && xv.Addr >= scope.g.stack.lo && xv.Addr < scope.g.stack.hi
