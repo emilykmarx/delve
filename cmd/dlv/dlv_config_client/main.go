@@ -12,7 +12,7 @@ func main() {
 	fmt.Println("Starting delve config client")
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
-	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 25}
+	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 12}
 	if _, err := client.CreateBreakpoint(&var_decl_bp); err != nil {
 		log.Fatalf("Error creating breakpoint at %v: %v\n", var_decl_bp, err)
 	}
