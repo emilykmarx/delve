@@ -3,6 +3,7 @@ package terminal
 //lint:file-ignore ST1005 errors here can be capitalized
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -126,6 +127,16 @@ func New(client service.Client, conf *config.Config) *Term {
 
 	t.starlarkEnv = starbind.New(starlarkContext{t}, t.stdout)
 	return t
+}
+
+// Run command and return output
+func (t *Term) GetOutput(cmdstr string) (outstr string, err error) {
+	var buf bytes.Buffer
+	t.stdout.pw.w = &buf
+	err = t.cmds.Call(cmdstr, t)
+	outstr = buf.String()
+	t.stdout.Flush()
+	return outstr, err
 }
 
 func (t *Term) updateConfig() {

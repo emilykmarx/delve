@@ -8,8 +8,9 @@ import (
 var Global int
 
 func main() {
-	var stack, spacer string
-	stack = "hi"
+	var stack int
+	var spacer int
+	stack = 1 // Write
 	// Force compiler to read variable from memory, not register
 	runtime.KeepAlive(stack) // Not a read (copies from rax to its own stack location)
 	// More stuff to make it more obvious it's hitting bc of the spacer = stack, not KeepAlive
