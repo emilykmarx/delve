@@ -410,6 +410,10 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			wopt = sys.WNOHANG
 		}
 		wpid, status, err := waitdbp.wait(pid, wopt)
+		if status.StopSignal() == sys.SIGSEGV {
+			fmt.Printf("ZZEM caught SEGFAULT after wait() \n")
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("wait err %s %d", err, pid)
 		}

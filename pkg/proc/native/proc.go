@@ -2,8 +2,13 @@ package native
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"runtime"
+	"syscall"
+
+	sys "golang.org/x/sys/unix"
+
 	"time"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -181,16 +186,25 @@ func (dbp *nativeProcess) RequestManualStop(cctx *proc.ContinueOnceContext) erro
 }
 
 func (dbp *nativeProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
+	// watchpoint
 	if bp.WatchType != 0 {
-		for _, thread := range dbp.threads {
-			err := thread.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
-			if err != nil {
-				return err
+		if bp.WatchImpl == proc.WatchHardware {
+			for _, thread := range dbp.threads {
+				err := thread.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
+				if err != nil {
+					return err
+				}
 			}
+			return nil
 		}
-		return nil
+
+		err := dbp.writeSoftwareWatchpoint(bp.Addr)
+		if err != nil {
+			return err
+		}
 	}
 
+	// non-watchpoint
 	bp.OriginalData = make([]byte, dbp.bi.Arch.BreakpointSize())
 	_, err := dbp.memthread.ReadMemory(bp.OriginalData, bp.Addr)
 	if err != nil {
@@ -265,17 +279,34 @@ func (procgrp *processGroup) add(p *nativeProcess, pid int, currentThread proc.T
 	return tgt, nil
 }
 
+func ZZEM(procgrp *processGroup, msg string) {
+	fmt.Printf("ZZEM %v\n", msg)
+	for _, thread := range procgrp.procs[0].ThreadList() {
+		loc, _ := thread.Location()
+		if loc != nil && loc.Fn.Name == "main.main" {
+			fmt.Printf("Thread at line: %v\n", loc.Line)
+			if thread.Breakpoint() != nil {
+				fmt.Printf("Breakpoint: %v\n", thread.Breakpoint())
+			} else {
+				fmt.Printf("Nil breakpoint\n")
+			}
+		}
+	}
+}
+
 func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if len(procgrp.procs) != 1 && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
 		panic("not implemented")
 	}
 	if procgrp.numValid() == 0 {
+		fmt.Printf("ContinueOnce nil -- exited\n")
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: procgrp.procs[0].pid}
 	}
 
 	for {
 		err := procgrp.resume()
 		if err != nil {
+			fmt.Printf("ContinueOnce nil -- resume err\n")
 			return nil, proc.StopUnknown, err
 		}
 		for _, dbp := range procgrp.procs {
@@ -285,6 +316,7 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 				}
 			}
 		}
+		ZZEM(procgrp, "ContinueOnce loop iter, after clearing bps")
 
 		if cctx.ResumeChan != nil {
 			close(cctx.ResumeChan)
@@ -293,30 +325,41 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 
 		trapthread, err := trapWait(procgrp, -1)
 		if err != nil {
+			fmt.Printf("ContinueOnce nil -- trapWait err\n")
 			return nil, proc.StopUnknown, err
 		}
 		trapthread, err = procgrp.stop(cctx, trapthread)
 		if err != nil {
+			fmt.Printf("ContinueOnce nil -- stop err\n")
 			return nil, proc.StopUnknown, err
 		}
+		ZZEM(procgrp, "After stop")
 		if trapthread != nil {
 			dbp := procgrp.procForThread(trapthread.ID)
 			dbp.memthread = trapthread
-			// refresh memthread for every other process
+
+			// refresh memthread for every other process (not interesting for single-process case)
 			for _, p2 := range procgrp.procs {
 				if p2.exited || p2.detached || p2 == dbp {
+					fmt.Printf("continue\n")
 					continue
 				}
 				for _, th := range p2.threads {
 					p2.memthread = th
 					if th.SoftExc() {
+						fmt.Printf("break\n")
 						break
 					}
 				}
 			}
+
+			loc, _ := trapthread.Location()
+			fmt.Printf("ContinueOnce return trapthread at line %v, PC %v\n", loc.Line, loc.PC)
 			return trapthread, proc.StopUnknown, nil
 		}
-	}
+		// I think this is unexpected
+		fmt.Printf("trapthread nil -- loop again\n")
+	} // end main for
 }
 
 // FindBreakpoint finds the breakpoint for the given pc.
@@ -421,6 +464,18 @@ func (dbp *nativeProcess) postExit() {
 		dbp.ctty.Close()
 	}
 	dbp.os.Close()
+}
+
+func (dbp *nativeProcess) writeSoftwareWatchpoint(addr uint64) error {
+	addr = addr &^ (uint64(os.Getpagesize()) - 1)
+
+	// TODO should probably only remove read perms from existing prot mask, and restore old mask on deleting watchpoint
+	_, _, err := sys.Syscall(sys.SYS_MPROTECT, uintptr(addr), uintptr(os.Getpagesize()), uintptr(sys.PROT_NONE))
+	if err != syscall.Errno(0) {
+		fmt.Printf("ZZEM err from mprotect: %v\n", err.Error())
+		return err
+	}
+	return nil
 }
 
 func (dbp *nativeProcess) writeSoftwareBreakpoint(thread *nativeThread, addr uint64) error {
