@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"reflect"
+	"strings"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
@@ -50,6 +51,7 @@ type Breakpoint struct {
 
 	WatchExpr     string
 	WatchType     WatchType
+	WatchImpl     WatchImpl
 	HWBreakIndex  uint8 // hardware breakpoint index
 	watchStackOff int64 // for watchpoints of stack variables, offset of the address from top of the stack
 
@@ -174,6 +176,13 @@ func (wtype WatchType) Size() int {
 func (wtype WatchType) withSize(sz uint8) WatchType {
 	return WatchType((sz << 4) | uint8(wtype&0xf))
 }
+
+type WatchImpl int
+
+const (
+	WatchHardware WatchImpl = iota
+	WatchSoftware
+)
 
 var ErrHWBreakUnsupported = errors.New("hardware breakpoints not implemented")
 
@@ -504,7 +513,7 @@ func NewBreakpointMap() BreakpointMap {
 // SetBreakpoint sets a breakpoint at addr, and stores it in the process wide
 // break point table.
 func (t *Target) SetBreakpoint(logicalID int, addr uint64, kind BreakpointKind, cond ast.Expr) (*Breakpoint, error) {
-	return t.setBreakpointInternal(logicalID, addr, kind, 0, cond)
+	return t.setBreakpointInternal(logicalID, addr, kind, 0, WatchHardware, cond)
 }
 
 // SetEBPFTracepoint will attach a uprobe to the function
@@ -606,6 +615,12 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
 func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr) (*Breakpoint, error) {
+	// TODO hack for now: specify sw wp in expr
+	var wimpl WatchImpl
+	if real_expr, sw := strings.CutPrefix(expr, "WTF-SW-WP-"); sw {
+		expr = real_expr
+		wimpl = WatchSoftware
+	}
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
@@ -640,7 +655,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 	stackWatch := scope.g != nil && !scope.g.SystemStack && xv.Addr >= scope.g.stack.lo && xv.Addr < scope.g.stack.hi
 	fmt.Printf("SetWatchpoint; sz %v, DwarfType %v, Kind %v, Stack %v\n", sz, xv.Kind.String(), xv.DwarfType.String(), stackWatch)
 
-	bp, err := t.setBreakpointInternal(logicalID, xv.Addr, UserBreakpoint, wtype.withSize(uint8(sz)), cond)
+	bp, err := t.setBreakpointInternal(logicalID, xv.Addr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
 	if err != nil {
 		return bp, err
 	}
@@ -657,7 +672,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 	return bp, nil
 }
 
-func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind, wtype WatchType, cond ast.Expr) (*Breakpoint, error) {
+func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind, wtype WatchType, wimpl WatchImpl, cond ast.Expr) (*Breakpoint, error) {
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()
 		if !recorded {
@@ -721,7 +736,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	// hwidx = # existing wp
 	hwidx := uint8(0)
-	if wtype != 0 {
+	if wtype != 0 && wimpl == WatchHardware {
 		m := make(map[uint8]bool)
 		for _, bp := range bpmap.M {
 			if bp.WatchType != 0 {
@@ -738,6 +753,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 	newBreakpoint := &Breakpoint{
 		FunctionName: fnName,
 		WatchType:    wtype,
+		WatchImpl:    wimpl,
 		HWBreakIndex: hwidx,
 		File:         f,
 		Line:         l,
