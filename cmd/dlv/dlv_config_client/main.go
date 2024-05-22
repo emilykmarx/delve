@@ -21,7 +21,7 @@ const (
 func PropagateTaint(client *rpc2.RPCClient, watchexpr string, file string, lineno int) {
 	// PERF: Avoid re-parsing files
 	// TODO handle >4 wp
-	new_watchexprs := getExprsWritten(watchexpr, file, lineno)
+	new_watchexprs := taintedExprs(client, watchexpr, file, lineno)
 	for _, expr := range new_watchexprs {
 		fmt.Printf("Propagating taint from %v to %v\n", watchexpr, expr)
 		if _, err := client.CreateWatchpoint(current_scope, expr, api.WatchRead|api.WatchWrite); err != nil {
@@ -36,7 +36,7 @@ func main() {
 	client := rpc2.NewClient(listenAddr)
 
 	// Continue until variable declaration
-	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 12}
+	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 16}
 	if _, err := client.CreateBreakpoint(&var_decl_bp); err != nil {
 		log.Fatalf("Error creating breakpoint at %v: %v\n", var_decl_bp, err)
 	}
@@ -73,7 +73,7 @@ func main() {
 					// TODO skip if due to stack resize (but not if same line does a resize and a real read)
 
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
-					fmt.Printf("Hit watchpoint for %v\nAt %v\n\n", hit_bp.WatchExpr, hit_loc)
+					fmt.Printf("Hit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
 
 					PropagateTaint(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line)
 				} else {

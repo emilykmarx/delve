@@ -93,14 +93,41 @@ func exprToString(t ast.Expr) string {
 	return buf.String()
 }
 
-// Get exprs that are written on a line, excluding watchexpr
-func getExprsWritten(watchexpr string, file string, lineno int) (exprs_written []string) {
+// Get the name of param at index i, in function scope
+func paramCalleeName(root *ast.File, fn string, i int) (param string) {
+	for _, decl := range root.Decls {
+		fn_node, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		if fn_node.Name.Name != fn {
+			continue
+		}
+		params := fn_node.Type.Params.List
+		if len(params[i].Names) != 1 {
+			// idk when this happens
+			log.Fatalf("Fn %v param %v has %v names\n", fn, i, len(params[i].Names))
+		}
+		return params[i].Names[0].Name
+	}
+
+	// TODO model propagation for built-ins?
+	fmt.Printf("No declaration for function %v in AST -- ok if built-in\n", fn)
+	return
+}
+
+/* Assuming lineno reads watchexpr's location,
+ * get expressions tainted by the read.
+ * Note we don't check that watchexpr was read in the source,
+ * to handle aliasing */
+func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno int) (tainted_exprs []string) {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
 		log.Fatalf("Failed to parse source file %v: %v\n", file, err)
 	}
 
+	// DFS of file's AST
 	ast.Inspect(root, func(node ast.Node) bool {
 		// PERF: How to properly only inspect one line?
 		cur_line := -1
@@ -111,20 +138,43 @@ func getExprsWritten(watchexpr string, file string, lineno int) (exprs_written [
 			return true
 		}
 
+		// TODO is it possible to hit another wp while stepping/nexting?
+
 		switch typed_node := node.(type) {
+		case *ast.CallExpr:
+			// Assume watched location was passed as a param =>
+			// taint callee's copy of all params
+			for i := range typed_node.Args {
+				state, err := client.Step()
+				if err != nil || state.Exited || state.Err != nil {
+					log.Fatalf("Unexpected err %v or state %+v while stepping into %v\n", err, state, exprToString(typed_node.Fun))
+				}
+				state, err = client.Next()
+				if err != nil || state.Exited || state.Err != nil {
+					log.Fatalf("Unexpected err %v or state %+v while nexting in %v\n", err, state, exprToString(typed_node.Fun))
+				}
+
+				param_callee := paramCalleeName(root, exprToString(typed_node.Fun), i)
+				if param_callee != "" {
+					tainted_exprs = append(tainted_exprs, param_callee)
+				}
+			}
+
 		case *ast.AssignStmt:
-			for _, expr_written := range typed_node.Lhs {
-				expr_str := exprToString(expr_written)
+			// Assume watched location is one of the rhs values =>
+			// taint any vars assigned
+			for _, lhs := range typed_node.Lhs {
+				expr_str := exprToString(lhs)
 				if expr_str != watchexpr {
-					exprs_written = append(exprs_written, expr_str)
+					tainted_exprs = append(tainted_exprs, expr_str)
 				}
 			}
 		}
-		// TODO fct calls
+
 		return true
 	})
 
-	return exprs_written
+	return tainted_exprs
 }
 
 const (
