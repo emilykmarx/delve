@@ -634,7 +634,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, err
 	}
 	if xv.Addr == 0 || xv.Flags&VariableFakeAddress != 0 || xv.DwarfType == nil {
-		return nil, fmt.Errorf("can not watch %q; Addr %v, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
+		return nil, fmt.Errorf("can not watch %q; Addr 0x%x, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
 	}
 	if xv.Unreadable != nil {
 		return nil, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
