@@ -18,10 +18,10 @@ const (
 
 /* Given a line where a watchpoint hits,
  * add a watchpoint on any expressions tainted by read of watchexpr */
-func PropagateTaint(client *rpc2.RPCClient, watchexpr string, file string, lineno int) {
+func PropagateTaint(client *rpc2.RPCClient, watchexpr string, file string, lineno int, hit_bp *api.Breakpoint) {
 	// PERF: Avoid re-parsing files
 	// TODO handle >4 wp
-	new_watchexprs := taintedExprs(client, watchexpr, file, lineno)
+	new_watchexprs := taintedExprs(client, watchexpr, file, lineno, hit_bp)
 	for _, expr := range new_watchexprs {
 		fmt.Printf("Propagating taint from %v to %v\n", watchexpr, expr)
 		if _, err := client.CreateWatchpoint(current_scope, expr, api.WatchRead|api.WatchWrite); err != nil {
@@ -54,7 +54,8 @@ func main() {
 		log.Fatalf("Error creating watchpoint at %v: %v\n", config_var, err)
 	}
 
-	// TODO add a runtime.KeepAlive() to watched variables
+	// TODO somehow prevent compiler from reading watched vars from registers -
+	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
 	state := <-client.Continue()
 
 	for ; !state.Exited; state = <-client.Continue() {
@@ -67,7 +68,7 @@ func main() {
 			if hit_bp != nil {
 				if hit_bp.WatchExpr != "" {
 					instr, src_line := PCToPrevPCLine(client, state.SelectedGoroutine.CurrentLoc.PC)
-					hit_loc := fmt.Sprintf("%v:%v:%v:0x%x \n%v \n%v",
+					hit_loc := fmt.Sprintf("%v \nLine %v:%v:0x%x \n%v \n%v",
 						instr.Loc.File, instr.Loc.Line, instr.Loc.Function.Name(),
 						instr.Loc.PC, instr.Text, src_line)
 					// TODO skip if due to stack resize (but not if same line does a resize and a real read)
@@ -75,7 +76,8 @@ func main() {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 					fmt.Printf("Hit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
 
-					PropagateTaint(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line)
+					PropagateTaint(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line, hit_bp)
+
 				} else {
 					fmt.Printf("Hit breakpoint in %v\n\n", hit_bp.FunctionName)
 				}

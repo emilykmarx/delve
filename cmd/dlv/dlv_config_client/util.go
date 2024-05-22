@@ -17,7 +17,8 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
-/* Get instruction and source line corresponding to preceding PC, for selected goroutine */
+/* Get instruction and source line corresponding to preceding PC, for selected goroutine.
+ * Leaves PC at preceding one. */
 func PCToPrevPCLine(client *rpc2.RPCClient, pc uint64) (api.AsmInstruction, string) {
 	/* TODO for now, assume goroutine that hit the bp is currently selected.
 	 * Should instead switch to that goroutine (need to read doc carefully:
@@ -30,14 +31,6 @@ func PCToPrevPCLine(client *rpc2.RPCClient, pc uint64) (api.AsmInstruction, stri
 		log.Fatalf("Error reverse-stepping at PC 0x%x: %v\n", pc, err)
 	}
 	prev_pc := state.SelectedGoroutine.CurrentLoc.PC
-	state, err = client.StepInstruction(false)
-	if err != nil {
-		log.Fatalf("Error stepping at PC 0x%x: %v\n", prev_pc, err)
-	}
-	cur_pc := state.SelectedGoroutine.CurrentLoc.PC
-	if pc != cur_pc {
-		log.Fatalf("Failed to restore PC 0x%x; current PC is 0x%x\n", prev_pc, cur_pc)
-	}
 
 	// end is exclusive
 	_prev_instr, err := client.DisassembleRange(current_scope, prev_pc, pc, api.IntelFlavour) // dst, src
@@ -87,6 +80,54 @@ func PCToPrevPCLine(client *rpc2.RPCClient, pc uint64) (api.AsmInstruction, stri
 	return prev_instr, src_line
 }
 
+// Get identifiers that hit hit_bp, based on their current addrs
+func hitIdentifiers(client *rpc2.RPCClient, fset *token.FileSet, root *ast.File, lineno int, hit_bp *api.Breakpoint) (hit_idents []string) {
+	// 1. Get identifiers
+	idents := []*ast.Ident{}
+	ast.Inspect(root, func(node ast.Node) bool {
+		cur_line := -1
+		if node != nil {
+			cur_line = fset.Position(node.Pos()).Line
+		}
+		if cur_line != lineno {
+			return true
+		}
+		switch typed_node := node.(type) {
+		case *ast.Ident:
+			idents = append(idents, typed_node)
+		}
+		return true
+	})
+
+	// 2. Get addrs
+	if os.Setenv("TERM", "dumb") != nil {
+		log.Fatalf("Error setting TERM=dumb")
+	}
+
+	for _, ident := range idents {
+		t := terminal.New(client, nil)
+		// PERF: may be able to do this in single client call (with \n)
+		addr_line, err := t.GetOutput("p &" + ident.Name)
+		if err != nil {
+			// Things like package names don't have addresses
+			continue
+		}
+		parts := strings.Split(addr_line, "(")
+		part := parts[len(parts)-1]
+		addr_str := part[:len(part)-1]
+		var ident_addr uint64
+		fmt.Sscanf(addr_str, "0x%x", &ident_addr)
+
+		for _, watched_addr := range hit_bp.Addrs {
+			if watched_addr == ident_addr {
+				hit_idents = append(hit_idents, ident.Name)
+			}
+		}
+	}
+
+	return hit_idents
+}
+
 func exprToString(t ast.Expr) string {
 	var buf bytes.Buffer
 	printer.Fprint(&buf, token.NewFileSet(), t)
@@ -112,19 +153,49 @@ func paramCalleeName(root *ast.File, fn string, i int) (param string) {
 	}
 
 	// TODO model propagation for built-ins?
-	fmt.Printf("No declaration for function %v in AST -- ok if built-in\n", fn)
+	fmt.Printf("(No declaration for function %v in AST -- ok if built-in)\n", fn)
 	return
+}
+
+/* Whether expr is read in outer_expr, ignoring param passing,
+* since propagation for that is handled within the function.
+* E.g. `x := f(watchexpr)` doesn't necessarily taint x (depending on f),
+* but  `x := f() + watchexpr` does */
+func readsExpr(outer_expr ast.Node, expr string) bool {
+	is_read := false
+	ast.Inspect(outer_expr, func(node ast.Node) bool {
+		switch typed_node := node.(type) {
+		case *ast.CallExpr:
+			// don't explore this branch
+			return false
+		case *ast.Ident:
+			if typed_node.Name == expr {
+				is_read = true
+			}
+		}
+		return true
+	})
+
+	return is_read
 }
 
 /* Assuming lineno reads watchexpr's location,
  * get expressions tainted by the read.
  * Note we don't check that watchexpr was read in the source,
  * to handle aliasing */
-func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno int) (tainted_exprs []string) {
+func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno int, hit_bp *api.Breakpoint) (tainted_exprs []string) {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
 		log.Fatalf("Failed to parse source file %v: %v\n", file, err)
+	}
+
+	// Get hit idents while we're at hit PC (seems possible they could go out of scope on next PC)
+	hit_idents := hitIdentifiers(client, fset, root, lineno, hit_bp)
+	// Undo rev stepi, else we'll hit the watchpoint again
+	state, err := client.StepInstruction(false)
+	if err != nil || state.Err != nil {
+		log.Fatalf("Error restoring PC: %v\n", err)
 	}
 
 	// DFS of file's AST
@@ -139,16 +210,34 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 		}
 
 		// TODO is it possible to hit another wp while stepping/nexting?
+		// Executing a bp-hitting instr via stepInstruction doesn't hit the bp,
+		// but executing via continue does - not sure about next/step
 
 		switch typed_node := node.(type) {
+
 		case *ast.CallExpr:
-			// Assume watched location was passed as a param =>
-			// taint callee's copy of all params
-			for i := range typed_node.Args {
+			for i, arg := range typed_node.Args {
+				// Check if any hit_ident is read in arg
+				hit_arg := false
+				for _, hit_ident := range hit_idents {
+					if readsExpr(arg, hit_ident) {
+						hit_arg = true
+					}
+				}
+
+				if !hit_arg {
+					continue
+				}
+
+				// Watched location was passed as a param =>
+				// taint callee's copy of param
+
+				// Step into fct
 				state, err := client.Step()
 				if err != nil || state.Exited || state.Err != nil {
 					log.Fatalf("Unexpected err %v or state %+v while stepping into %v\n", err, state, exprToString(typed_node.Fun))
 				}
+				// Param is "fake" at function entry => next into function body
 				state, err = client.Next()
 				if err != nil || state.Exited || state.Err != nil {
 					log.Fatalf("Unexpected err %v or state %+v while nexting in %v\n", err, state, exprToString(typed_node.Fun))
@@ -161,12 +250,22 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 			}
 
 		case *ast.AssignStmt:
-			// Assume watched location is one of the rhs values =>
-			// taint any vars assigned
-			for _, lhs := range typed_node.Lhs {
-				expr_str := exprToString(lhs)
-				if expr_str != watchexpr {
-					tainted_exprs = append(tainted_exprs, expr_str)
+			hit_rhs := false
+			for _, rhs := range typed_node.Rhs {
+				for _, hit_ident := range hit_idents {
+					if readsExpr(rhs, hit_ident) {
+						hit_rhs = true
+					}
+				}
+			}
+			if hit_rhs {
+				// Watched location is read on the rhs =>
+				// taint lhs
+				for _, lhs := range typed_node.Lhs {
+					expr_str := exprToString(lhs)
+					if expr_str != watchexpr {
+						tainted_exprs = append(tainted_exprs, expr_str)
+					}
 				}
 			}
 		}
@@ -175,34 +274,4 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 	})
 
 	return tainted_exprs
-}
-
-const (
-	CODEQL_QUERY_PATH      = "../codeql-home/codeql-repo/go/ql/examples/snippets/"
-	CODEQL_QUERY_FILE      = "tmp_query.ql"
-	CODEQL_FILE_TEMPLATE   = "XXX_FILE"
-	CODEQL_LINENO_TEMPLATE = "-1"
-)
-
-func WriteQueryFile(file string, lineno int) {
-	input, err := os.ReadFile(CODEQL_QUERY_PATH + "util.qll")
-	if err != nil {
-		log.Fatalf("Error reading query template file: %v\n", err)
-	}
-
-	lines := strings.Split(string(input), "\n")
-
-	for i := range lines {
-		lines[i] = strings.ReplaceAll(lines[i], CODEQL_FILE_TEMPLATE, file)
-		lines[i] = strings.ReplaceAll(lines[i], CODEQL_LINENO_TEMPLATE, fmt.Sprintf("%v", lineno))
-	}
-	output := strings.Join(lines, "\n")
-	err = os.WriteFile(CODEQL_QUERY_FILE, []byte(output), 0644)
-	if err != nil {
-		log.Fatalf("Error writing query file: %v\n", err)
-	}
-}
-
-func ReadQueryOutput() {
-
 }
