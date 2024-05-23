@@ -64,7 +64,7 @@ func main() {
 					// TODO skip if due to stack resize (but not if same line does a resize and a real read)
 
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
-					fmt.Printf("Hit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
+					fmt.Printf("\nHit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
 
 					taintedExprs(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line, hit_bp)
 
