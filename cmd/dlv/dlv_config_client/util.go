@@ -26,6 +26,7 @@ func PCToPrevPCLine(client *rpc2.RPCClient, pc uint64) (api.AsmInstruction, stri
 	 * (remember to pass that scope to Disass)
 	 * May be convenient to do the check for stack resize at same time */
 
+	// Don't skip calls -- if previous instr was call, want to step back into that fct
 	state, err := client.ReverseStepInstruction(false)
 	if err != nil {
 		log.Fatalf("Error reverse-stepping at PC 0x%x: %v\n", pc, err)
@@ -179,10 +180,8 @@ func readsExpr(outer_expr ast.Node, expr string) bool {
 	return is_read
 }
 
-/* Assuming lineno reads watchexpr's location,
- * get expressions tainted by the read.
- * Note we don't check that watchexpr was read in the source,
- * to handle aliasing */
+/* Assuming lineno reads watchexpr's location, get expressions tainted by the read.
+ * Accounts for aliased reads (i.e. those that don't match watchexpr). */
 func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno int, hit_bp *api.Breakpoint) (tainted_exprs []string) {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
@@ -192,7 +191,7 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 
 	// Get hit idents while we're at hit PC (seems possible they could go out of scope on next PC)
 	hit_idents := hitIdentifiers(client, fset, root, lineno, hit_bp)
-	// Undo rev stepi, else we'll hit the watchpoint again
+	// Undo rev stepi, else we'll hit the watchpoint again when we try to step
 	state, err := client.StepInstruction(false)
 	if err != nil || state.Err != nil {
 		log.Fatalf("Error restoring PC: %v\n", err)
@@ -216,6 +215,22 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 		switch typed_node := node.(type) {
 
 		case *ast.CallExpr:
+			// TODO handle special case: Watched location appears in a call and elsewhere on the line.
+			// Currently if call hits first, on the second hit we error out trying to step into the call.
+
+			// Get params in scope
+			// Step into fct
+			state, err := client.Step()
+			if err != nil || state.Exited || state.Err != nil {
+				log.Fatalf("Unexpected err %v or state %+v while stepping into %v\n", err, state, exprToString(typed_node.Fun))
+			}
+			// Param is "fake" at function entry => next into function body
+			state, err = client.Next()
+			if err != nil || state.Exited || state.Err != nil {
+				log.Fatalf("Unexpected err %v or state %+v while nexting in %v\n", err, state, exprToString(typed_node.Fun))
+			}
+			fmt.Printf("PC after CallExpr step/next: 0x%x\n", state.SelectedGoroutine.CurrentLoc.PC)
+
 			for i, arg := range typed_node.Args {
 				// Check if any hit_ident is read in arg
 				hit_arg := false
@@ -232,19 +247,14 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 				// Watched location was passed as a param =>
 				// taint callee's copy of param
 
-				// Step into fct
-				state, err := client.Step()
-				if err != nil || state.Exited || state.Err != nil {
-					log.Fatalf("Unexpected err %v or state %+v while stepping into %v\n", err, state, exprToString(typed_node.Fun))
-				}
-				// Param is "fake" at function entry => next into function body
-				state, err = client.Next()
-				if err != nil || state.Exited || state.Err != nil {
-					log.Fatalf("Unexpected err %v or state %+v while nexting in %v\n", err, state, exprToString(typed_node.Fun))
-				}
-
 				param_callee := paramCalleeName(root, exprToString(typed_node.Fun), i)
 				if param_callee != "" {
+					fmt.Printf("Propagating taint from %v to %v\n", watchexpr, param_callee)
+					if _, err := client.CreateWatchpoint(current_scope, param_callee, api.WatchRead|api.WatchWrite); err != nil {
+						if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
+							log.Fatalf("Error creating watchpoint at %v: %v\n", param_callee, err)
+						}
+					}
 					tainted_exprs = append(tainted_exprs, param_callee)
 				}
 			}
@@ -264,11 +274,23 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 				for _, lhs := range typed_node.Lhs {
 					expr_str := exprToString(lhs)
 					if expr_str != watchexpr {
-						tainted_exprs = append(tainted_exprs, expr_str)
+						// next so lhs is in scope (handles :=)
+						state, err := client.Next()
+						if err != nil || state.Exited || state.Err != nil {
+							log.Fatalf("Unexpected err %v or state %+v while nexting\n", err, state)
+						}
+
+						fmt.Printf("Propagating taint from %v to %v\n", watchexpr, expr_str)
+						if _, err := client.CreateWatchpoint(current_scope, expr_str, api.WatchRead|api.WatchWrite); err != nil {
+							if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
+								log.Fatalf("Error creating watchpoint at %v: %v\n", expr_str, err)
+							}
+						}
 					}
 				}
 			}
-		}
+
+		} // end switch
 
 		return true
 	})

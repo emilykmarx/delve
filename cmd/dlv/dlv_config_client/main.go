@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
@@ -12,23 +13,8 @@ var (
 	current_scope = api.EvalScope{GoroutineID: -1, Frame: 0}
 )
 
-const (
-	CODEQL_DB = "../codeql-home/test_df_db"
-)
-
-/* Given a line where a watchpoint hits,
- * add a watchpoint on any expressions tainted by read of watchexpr */
-func PropagateTaint(client *rpc2.RPCClient, watchexpr string, file string, lineno int, hit_bp *api.Breakpoint) {
-	// PERF: Avoid re-parsing files
-	// TODO handle >4 wp
-	new_watchexprs := taintedExprs(client, watchexpr, file, lineno, hit_bp)
-	for _, expr := range new_watchexprs {
-		fmt.Printf("Propagating taint from %v to %v\n", watchexpr, expr)
-		if _, err := client.CreateWatchpoint(current_scope, expr, api.WatchRead|api.WatchWrite); err != nil {
-			log.Fatalf("Error creating watchpoint at %v: %v\n", expr, err)
-		}
-	}
-}
+// PERF: Avoid re-parsing files
+// TODO handle >4 wp
 
 func main() {
 	fmt.Printf("Starting delve config client\n\n")
@@ -36,9 +22,11 @@ func main() {
 	client := rpc2.NewClient(listenAddr)
 
 	// Continue until variable declaration
-	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 16}
+	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 22}
 	if _, err := client.CreateBreakpoint(&var_decl_bp); err != nil {
-		log.Fatalf("Error creating breakpoint at %v: %v\n", var_decl_bp, err)
+		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
+			log.Fatalf("Error creating breakpoint at %v: %v\n", var_decl_bp, err)
+		}
 	}
 
 	//config_var := "conf.search[0]"
@@ -51,7 +39,9 @@ func main() {
 	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
 	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
 	if _, err := client.CreateWatchpoint(current_scope, config_var, api.WatchRead|api.WatchWrite); err != nil {
-		log.Fatalf("Error creating watchpoint at %v: %v\n", config_var, err)
+		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
+			log.Fatalf("Error creating watchpoint at %v: %v\n", config_var, err)
+		}
 	}
 
 	// TODO somehow prevent compiler from reading watched vars from registers -
@@ -76,7 +66,7 @@ func main() {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 					fmt.Printf("Hit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
 
-					PropagateTaint(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line, hit_bp)
+					taintedExprs(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line, hit_bp)
 
 				} else {
 					fmt.Printf("Hit breakpoint in %v\n\n", hit_bp.FunctionName)
