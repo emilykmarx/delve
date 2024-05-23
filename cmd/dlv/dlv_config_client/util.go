@@ -158,6 +158,30 @@ func paramCalleeName(root *ast.File, fn string, i int) (param string) {
 	return
 }
 
+// Get the ith lhs of an assignment on lineno
+func lhsCallerName(fset *token.FileSet, root *ast.File, i int, lineno int) (lhs string) {
+	ast.Inspect(root, func(node ast.Node) bool {
+		cur_line := -1
+		if node != nil {
+			cur_line = fset.Position(node.Pos()).Line
+		}
+		if cur_line != lineno {
+			return true
+		}
+
+		switch typed_node := node.(type) {
+		case *ast.AssignStmt:
+			lhs_or_blank := exprToString(typed_node.Lhs[i])
+			if lhs_or_blank != "_" {
+				lhs = lhs_or_blank
+			}
+		}
+		return true
+	})
+
+	return lhs
+}
+
 /* Whether expr is read in outer_expr, ignoring param passing,
 * since propagation for that is handled within the function.
 * E.g. `x := f(watchexpr)` doesn't necessarily taint x (depending on f),
@@ -229,7 +253,6 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 			if err != nil || state.Exited || state.Err != nil {
 				log.Fatalf("Unexpected err %v or state %+v while nexting in %v\n", err, state, exprToString(typed_node.Fun))
 			}
-			fmt.Printf("PC after CallExpr step/next: 0x%x\n", state.SelectedGoroutine.CurrentLoc.PC)
 
 			for i, arg := range typed_node.Args {
 				// Check if any hit_ident is read in arg
@@ -256,6 +279,46 @@ func taintedExprs(client *rpc2.RPCClient, watchexpr string, file string, lineno 
 						}
 					}
 					tainted_exprs = append(tainted_exprs, param_callee)
+				}
+			}
+
+		case *ast.ReturnStmt:
+			// Watched location is read in return value =>
+			// taint corresponding lhs in caller
+			for i, ret := range typed_node.Results {
+				// Check if any hit_ident is read in ret
+				hit_ret := false
+				for _, hit_ident := range hit_idents {
+					if readsExpr(ret, hit_ident) {
+						hit_ret = true
+					}
+				}
+
+				if !hit_ret {
+					continue
+				}
+
+				var assign_lineno int
+				for i := 0; i < 2; i++ {
+					// Get caller lhs in scope (next twice to handle :=)
+					state, err = client.Next()
+					if err != nil || state.Exited || state.Err != nil {
+						log.Fatalf("Unexpected err %v or state %+v while nexting from ret\n", err, state)
+					}
+					if i == 0 {
+						assign_lineno = state.SelectedGoroutine.CurrentLoc.Line
+					}
+				}
+				// We've already inspected the corresp assign node at this point
+				lhs_caller := lhsCallerName(fset, root, i, assign_lineno)
+				if lhs_caller != "" {
+					fmt.Printf("Propagating taint from %v to %v\n", watchexpr, lhs_caller)
+					if _, err := client.CreateWatchpoint(current_scope, lhs_caller, api.WatchRead|api.WatchWrite); err != nil {
+						if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
+							log.Fatalf("Error creating watchpoint at %v: %v\n", lhs_caller, err)
+						}
+					}
+					tainted_exprs = append(tainted_exprs, lhs_caller)
 				}
 			}
 
