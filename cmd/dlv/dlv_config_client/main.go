@@ -20,9 +20,22 @@ func main() {
 	fmt.Printf("Starting delve config client\n\n")
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
+	//initial_bp_file := "/usr/local/go/src/net/dnsconfig_unix.go"
+	//initial_bp_line := 144 // about to return conf
+
+	/*
+		Hit watchpoint for conf.search[0], at:
+		/usr/local/go/src/net/dnsclient_unix.go
+		Line 509:net.(*dnsConfig).nameList:0x6ee2e3
+		mov rdi, qword ptr [rdx]
+		for _, suffix := range conf.search {
+	*/
+
+	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
+	initial_bp_line := 24
 
 	// Continue until variable declaration
-	var_decl_bp := api.Breakpoint{File: "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go", Line: 22}
+	var_decl_bp := api.Breakpoint{File: initial_bp_file, Line: initial_bp_line}
 	if _, err := client.CreateBreakpoint(&var_decl_bp); err != nil {
 		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
 			log.Fatalf("Error creating breakpoint at %v: %v\n", var_decl_bp, err)
@@ -58,10 +71,14 @@ func main() {
 			if hit_bp != nil {
 				if hit_bp.WatchExpr != "" {
 					instr, src_line := PCToPrevPCLine(client, state.SelectedGoroutine.CurrentLoc.PC)
+					if instr == nil {
+						// runtime
+						continue
+					}
 					hit_loc := fmt.Sprintf("%v \nLine %v:%v:0x%x \n%v \n%v",
 						instr.Loc.File, instr.Loc.Line, instr.Loc.Function.Name(),
 						instr.Loc.PC, instr.Text, src_line)
-					// TODO skip if due to stack resize (but not if same line does a resize and a real read)
+					// TODO skip if due to stack resize
 
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 					fmt.Printf("\nHit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
