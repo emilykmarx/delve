@@ -17,9 +17,23 @@ func ret_tainted(tainted_param_2 int) int {
 	return tainted_param_2
 }
 
+type Conf struct {
+	search []string
+}
+
+func composites() {
+	conf := &Conf{search: []string{"hi", "hello"}} // conf.search[0] is initially tainted
+	names := make([]string, 0, len(conf.search))
+	for _, suffix := range conf.search {
+		names = append(names, "localhost"+suffix)
+	}
+	fmt.Println(names)
+}
+
 // TODO automate this test better
 // Expect 11 hits
 func main() {
+	composites()
 	var stack int // Stack is initially tainted
 	var spacer int
 	// Hit for stack
