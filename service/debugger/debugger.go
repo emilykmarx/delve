@@ -1106,6 +1106,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int, expr st
 	if err != nil {
 		return nil, err
 	}
+	d.breakpointIDCounter += bp.DebuggerIDIncrement
 	if d.findBreakpointByName(expr) == nil {
 		bp.Logical.Name = expr
 	}

@@ -9,10 +9,6 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
-var (
-	current_scope = api.EvalScope{GoroutineID: -1, Frame: 0}
-)
-
 // PERF: Avoid re-parsing files
 // TODO handle >4 wp
 
@@ -20,19 +16,13 @@ func main() {
 	fmt.Printf("Starting delve config client\n\n")
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
-	//initial_bp_file := "/usr/local/go/src/net/dnsconfig_unix.go"
-	//initial_bp_line := 144 // about to return conf
-
 	/*
-		Hit watchpoint for conf.search[0], at:
-		/usr/local/go/src/net/dnsclient_unix.go
-		Line 509:net.(*dnsConfig).nameList:0x6ee2e3
-		mov rdi, qword ptr [rdx]
-		for _, suffix := range conf.search {
+		initial_bp_file := "/usr/local/go/src/net/dnsconfig_unix.go"
+		initial_bp_line := 144 // about to return conf
 	*/
 
 	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-	initial_bp_line := 24
+	initial_bp_line := 26
 
 	// Continue until variable declaration
 	var_decl_bp := api.Breakpoint{File: initial_bp_file, Line: initial_bp_line}
@@ -42,8 +32,8 @@ func main() {
 		}
 	}
 
-	//config_var := "conf.search[0]"
-	config_var := "stack"
+	config_var := "conf.search"
+	//	config_var := "stack"
 
 	if state := <-client.Continue(); state.Exited || state.Err != nil {
 		log.Fatalf("Unexpected state %+v before hitting declaration of watch variable: %v\n", state, config_var)
@@ -51,7 +41,7 @@ func main() {
 
 	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
 	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
-	if _, err := client.CreateWatchpoint(current_scope, config_var, api.WatchRead|api.WatchWrite); err != nil {
+	if _, err := client.CreateWatchpoint(api.EvalScope{GoroutineID: -1}, config_var, api.WatchRead|api.WatchWrite); err != nil {
 		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
 			log.Fatalf("Error creating watchpoint at %v: %v\n", config_var, err)
 		}
@@ -61,6 +51,7 @@ func main() {
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
 	state := <-client.Continue()
 
+	// TODO cleanup, incl make this a class (go version) to better package client, other state
 	for ; !state.Exited; state = <-client.Continue() {
 		if state.Err != nil {
 			log.Fatalf("Error in debugger state: %v\n", state.Err)
@@ -70,7 +61,7 @@ func main() {
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
 				if hit_bp.WatchExpr != "" {
-					instr, src_line := PCToPrevPCLine(client, state.SelectedGoroutine.CurrentLoc.PC)
+					instr, src_line, scope := PCToPrevPCLine(client, state.SelectedGoroutine.CurrentLoc.PC)
 					if instr == nil {
 						// runtime
 						continue
@@ -83,7 +74,7 @@ func main() {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 					fmt.Printf("\nHit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
 
-					taintedExprs(client, hit_bp.WatchExpr, instr.Loc.File, instr.Loc.Line, hit_bp)
+					taintedExprs(client, instr.Loc.File, instr.Loc.Line, hit_bp, scope)
 
 				} else {
 					fmt.Printf("Hit breakpoint in %v\n\n", hit_bp.FunctionName)

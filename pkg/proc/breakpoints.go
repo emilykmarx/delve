@@ -70,6 +70,8 @@ type Breakpoint struct {
 	RootFuncName string
 	// TraceFollowCalls indicates the depth of tracing
 	TraceFollowCalls int
+	// Target uses to tell Debugger to increment its breakpointIDCounter for additional watchpoints set
+	DebuggerIDIncrement int
 }
 
 // Breaklet represents one of multiple breakpoints that can overlap on a
@@ -640,13 +642,24 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
-		return nil, fmt.Errorf("can not watch variable of type %s, kind %v: wrong kind", xv.Kind.String(), xv.Kind)
+		return nil, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
 	}
+
 	sz := xv.DwarfType.Size()
+	debuggerIDIncrement := 0
 	if sz <= 0 {
 		return nil, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
 	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
-		// Watch only the addr field of the string - ops that only access len do not propagate taint for now
+		// Watch only the addr field of string/slice - ops that only access len/cap do not propagate taint for now
+		sz = 8
+		// Also watch the first character - somehow string concatenation avoids reading the addr, but does read the first bytes
+		// May want to also do this for slices?
+		debuggerIDIncrement += 1
+		_, err := t.SetWatchpoint(logicalID+1, scope, expr+"[0]", wtype, cond)
+		if err != nil {
+			return nil, fmt.Errorf("failed to set additional watch for first byte of string: %v", err)
+		}
+	} else if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		sz = 8
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
 		return nil, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
@@ -660,6 +673,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return bp, err
 	}
 	bp.WatchExpr = expr
+	bp.DebuggerIDIncrement = debuggerIDIncrement
 
 	if stackWatch {
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
