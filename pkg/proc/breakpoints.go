@@ -654,10 +654,13 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		sz = 8
 		// Also watch the first character - somehow string concatenation avoids reading the addr, but does read the first bytes
 		// May want to also do this for slices?
-		debuggerIDIncrement += 1
 		_, err := t.SetWatchpoint(logicalID+1, scope, expr+"[0]", wtype, cond)
 		if err != nil {
-			return nil, fmt.Errorf("failed to set additional watch for first byte of string: %v", err)
+			if _, ok := err.(BreakpointExistsError); !ok {
+				return nil, fmt.Errorf("failed to set additional watch for first byte of string: %v", err)
+			}
+		} else {
+			debuggerIDIncrement += 1
 		}
 	} else if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		sz = 8
