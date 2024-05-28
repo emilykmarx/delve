@@ -21,19 +21,35 @@ type Conf struct {
 	search []string
 }
 
+func f() string {
+	return "more"
+}
+
+func strings() {
+	// Swap out other s2 line and also run that
+	s := "hi"
+	s2 := f() + s // regular hit (of s) => propagate to s
+	//	s2 := "hello" + s      // runtime hit (of s[0]) => propagate to s2
+	fmt.Printf("%v\n", s2) // runtime hit => no propagate (args to print.go not tainted)
+}
+
 func composites() {
 	conf := &Conf{search: []string{"hi", "hello"}} // conf.search[0] is initially tainted
 	names := make([]string, 0, len(conf.search))
-	for _, suffix := range conf.search {
-		names = append(names, "localhost"+suffix)
+	for _, suffix := range conf.search { // hit for conf.search => propagate to suffix
+		names = append(names, "localhost"+suffix) // runtime hit (of suffix[0]) => propagate to names
 	}
 	fmt.Println(names)
+	// TODO also test hits for arr[i], just arr (hopefully they hit for the arr ptr watch, unlike strings)
 }
 
-// TODO automate this test better
+// TODO add test for stack resize
+// TODO automate this test better - maybe don't rely on hitting wp?
+// Adding new tests in diff functions may maintain asm for old ones?
 // Expect 11 hits
 func main() {
 	composites()
+	return
 	var stack int // Stack is initially tainted
 	var spacer int
 	// Hit for stack

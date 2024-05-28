@@ -14,6 +14,7 @@ import (
 
 func main() {
 	fmt.Printf("Starting delve config client\n\n")
+	log.SetFlags(log.Lshortfile)
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
 	/*
@@ -22,7 +23,7 @@ func main() {
 	*/
 
 	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-	initial_bp_line := 26
+	initial_bp_line := 38
 
 	// Continue until variable declaration
 	var_decl_bp := api.Breakpoint{File: initial_bp_file, Line: initial_bp_line}
@@ -61,23 +62,19 @@ func main() {
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
 				if hit_bp.WatchExpr != "" {
-					instr, src_line, scope := PCToPrevPCLine(client, state.SelectedGoroutine.CurrentLoc.PC)
+					// Don't use current PC -- may be a runtime fct
+					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
+
+					fmt.Println("\n\n*** Hit watchpoint ***")
+					instr, prev_wp := hittingLine(client, hit_bp)
 					if instr == nil {
 						// runtime
 						continue
 					}
-					hit_loc := fmt.Sprintf("%v \nLine %v:%v:0x%x \n%v \n%v",
-						instr.Loc.File, instr.Loc.Line, instr.Loc.Function.Name(),
-						instr.Loc.PC, instr.Text, src_line)
-					// TODO skip if due to stack resize
 
-					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
-					fmt.Printf("\nHit watchpoint for %v, at:\n%v\n\n", hit_bp.WatchExpr, hit_loc)
-
-					taintedExprs(client, instr.Loc.File, instr.Loc.Line, hit_bp, scope)
-
+					propagateTaint(client, instr.Loc.File, instr.Loc.Line, hit_bp, prev_wp)
 				} else {
-					fmt.Printf("Hit breakpoint in %v\n\n", hit_bp.FunctionName)
+					fmt.Printf("Hit breakpoint in %v\n", hit_bp.FunctionName)
 				}
 			}
 		}
