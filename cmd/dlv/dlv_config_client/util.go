@@ -65,8 +65,16 @@ var handledBuiltins = map[string]bool{"append": true}
 
 // TODO should also consider modeling other built-ins
 // Whether return value is tainted
-func handleBuiltinFct(fn string) bool {
-	// Any elem tainted, or slice already tainted => ret tainted
-	// (handles possible realloc)
-	return fn == "append"
+func (tc *TaintCheck) handleBuiltinFct(call_node *ast.CallExpr) bool {
+	if exprToString(call_node.Fun) == "append" {
+		fmt.Println("handling builtin")
+		// Any elem tainted, or slice already tainted => ret tainted
+		// (handles possible realloc)
+		for _, arg := range call_node.Args {
+			if tc.isTainted(arg) {
+				return true
+			}
+		}
+	}
+	return false
 }
