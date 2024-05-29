@@ -24,6 +24,10 @@ type Conf struct {
 func f() string {
 	return "more"
 }
+func g(s string) string {
+	println(s)
+	return s
+}
 
 func strings() {
 	// Swap out other s2 line and also run that
@@ -34,12 +38,16 @@ func strings() {
 }
 
 func composites() {
+	// TODO once this passes: update comments
 	conf := &Conf{search: []string{"hi", "hello"}} // conf.search[0] is initially tainted
 	names := make([]string, 0, len(conf.search))
 	for _, suffix := range conf.search { // hit for conf.search => propagate to suffix
 		names = append(names, "localhost"+suffix) // runtime hit (of suffix[0]) => propagate to names
 	}
 	fmt.Println(names)
+	if conf.search[0] == "hi" { // check conf.search wp still exists (it doesn't...)
+		fmt.Println("yep")
+	}
 	// TODO also test hits for arr[i], just arr (hopefully they hit for the arr ptr watch, unlike strings)
 }
 
