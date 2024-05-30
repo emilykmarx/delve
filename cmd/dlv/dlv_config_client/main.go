@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/go-delve/delve/service/api"
@@ -24,7 +23,7 @@ func main() {
 	*/
 
 	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-	initial_bp_line := 43
+	initial_bp_line := 48
 
 	// Continue until variable declaration
 	var_decl_bp := api.Breakpoint{File: initial_bp_file, Line: initial_bp_line}
@@ -36,7 +35,7 @@ func main() {
 
 	//config_var := "s"
 	config_var := "conf.search"
-	//	config_var := "stack"
+	//config_var := "stack"
 
 	if state := <-client.Continue(); state.Exited || state.Err != nil {
 		log.Fatalf("Unexpected state %+v before hitting declaration of watch variable: %v\n", state, config_var)
@@ -53,6 +52,7 @@ func main() {
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
 	state := <-client.Continue()
+	pending_wp := make(map[uint64][]string)
 
 	for ; !state.Exited; state = <-client.Continue() {
 		if state.Err != nil {
@@ -62,43 +62,22 @@ func main() {
 		for _, thread := range state.Threads {
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
+				tc := TaintCheck{client: client, hit_bp: hit_bp, pending_wp: pending_wp}
 				if hit_bp.WatchExpr != "" {
-					tc := TaintCheck{client: client, hit_bp: hit_bp}
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 
 					fmt.Println("\n\n*** Hit watchpoint ***")
-					fmt.Println("Bp before handling:")
-					bps, err := tc.client.ListBreakpoints(true)
-					if err != nil {
-						log.Fatalf("ERR")
-					}
-					for _, bp := range bps {
-						for _, addr := range bp.Addrs {
-							fmt.Printf("%v, %x\n", bp.WatchExpr, addr)
-						}
-					}
 					tc.hittingLine()
 					tc.propagateTaint()
-					tc.restore(thread.PC)
-					fmt.Println("Bp after handling:")
-					bps, err = tc.client.ListBreakpoints(true)
-					if err != nil {
-						log.Fatalf("ERR")
-					}
-					for _, bp := range bps {
-						for _, addr := range bp.Addrs {
-							fmt.Printf("%v, %x\n", bp.WatchExpr, addr)
-						}
-					}
 				} else {
-					fmt.Printf("Hit breakpoint in %v\n", hit_bp.FunctionName)
+					fmt.Printf("\n\nHit breakpoint at %v:%v\n", hit_bp.File, hit_bp.Line)
+					tc.setPendingWp()
 				}
 			}
 		}
 
 		for _, wp_oos := range state.WatchOutOfScope {
 			fmt.Printf("Watchpoint on %v went out of scope since last continue\n", wp_oos.WatchExpr)
-			os.Exit(1)
 		}
 	}
 
