@@ -6,6 +6,7 @@ import (
 )
 
 func ret_untainted(tainted_param int) int {
+	// line w/o stmt
 	runtime.KeepAlive(tainted_param)
 	fmt.Printf("Reading tainted_param %v\n", tainted_param)
 	return 2
@@ -24,40 +25,51 @@ type Conf struct {
 func f() string {
 	return "more"
 }
-func g(s string) string {
-	println(s)
-	return s
-}
 
+// Expect 4 hits, failure to set last wp
 func strings() {
-	// Swap out other s2 line and also run that
-	s := "hi"
-	s2 := f() + s // regular hit (of s) => propagate to s
-	//	s2 := "hello" + s      // runtime hit (of s[0]) => propagate to s2
-	fmt.Printf("%v\n", s2) // runtime hit => no propagate (args to print.go not tainted)
+	s := "hi" // s is initially tainted
+	// regular hit (of s) => propagate to s2.
+	// also runtime hit (of s[0]) => propagate to s2
+	s2 := f() + s
+	// regular hit (of s2) => no defn for Printf
+	// also runtime hit (of s2[0]) => try propagate to print.go buffer, but too large and out of hw wp
+	fmt.Printf("%v\n", s2)
 }
 
-func composites() {
+// Expect 12 hits
+func structSliceRangeBuiltins() {
 	// TODO once this passes: update comments
-	conf := &Conf{search: []string{"hi", "hello"}} // conf.search[0] is initially tainted
+	conf := &Conf{search: []string{"hi", "hello"}} // conf.search is initially tainted
 	names := make([]string, 0, len(conf.search))
-	for _, suffix := range conf.search { // hit for conf.search => propagate to suffix
-		names = append(names, "localhost"+suffix) // runtime hit (of suffix[0]) => propagate to names
+	// 1st iter: hit for conf.search x 2 => propagate to suffix
+	// 2nd iter: hit for suffix => nowhere to propagate
+	for _, suffix := range conf.search {
+		// runtime hit (of suffix[0]) => propagate to names (once exit range)
+		names = append(names, "localhost"+suffix)
 	}
-	fmt.Println(names)
-	if conf.search[0] == "hi" { // check conf.search wp still exists (it doesn't...)
+	fmt.Println(names)          // hit for names
+	if conf.search[0] == "hi" { // hit for conf.search x 6, suffix[0] (reusing mem)
 		fmt.Println("yep")
 	}
-	// TODO also test hits for arr[i], just arr (hopefully they hit for the arr ptr watch, unlike strings)
+}
+
+// Expect 6 hits
+func callAndAssign() {
+	var stack int // Stack is initially tainted
+	// Hit for stack x 2, tainted_param_2 x 2
+	runtime.KeepAlive(stack)
+	a := ret_tainted(stack) + stack // Call+assign, hit in both => propagate to tainted_param and a
+	// Hit for a x 2
+	fmt.Printf("Using a%v\n", a)
+	runtime.KeepAlive(a)
 }
 
 // TODO add test for stack resize
 // TODO automate this test better - maybe don't rely on hitting wp?
-// Adding new tests in diff functions may maintain asm for old ones?
+// Add new tests in diff functions to maintain asm for old ones
 // Expect 11 hits
 func main() {
-	composites()
-	return
 	var stack int // Stack is initially tainted
 	var spacer int
 	// Hit for stack
