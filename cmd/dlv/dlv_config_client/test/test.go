@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"sync"
 )
 
 func ret_untainted(tainted_param int) int {
@@ -24,6 +25,27 @@ type Conf struct {
 
 func f() string {
 	return "more"
+}
+
+func funcLitGoroutine() {
+	var wg sync.WaitGroup
+
+	fqdn := "fqdn" // fqdn is initially tainted
+	var queryFn func(fqdn string)
+
+	queryFn = func(fqdn string) {
+		wg.Add(1)
+		fmt.Printf("Using fdqn: %v\n", fqdn) // hit for fqdn => ignore from there (prop w/in Printf -- should maybe ignore...)
+		go func() {
+			defer wg.Done()
+
+			fmt.Printf("Using fdqn in goroutine: %v\n", fqdn) // hit for fqdn => ignore from there (prop w/in Printf -- should maybe ignore...)
+		}()
+	}
+
+	runtime.KeepAlive(fqdn)
+	queryFn(fqdn) // hit for fqdn => propagate to arg
+	wg.Wait()
 }
 
 // Expect 4 hits, failure to set last wp
@@ -66,10 +88,13 @@ func callAndAssign() {
 }
 
 // TODO add test for stack resize
-// TODO automate this test better - maybe don't rely on hitting wp?
+// TODO automate this test better - maybe don't rely on hitting wp? Also check server output for errors
 // Add new tests in diff functions to maintain asm for old ones
 // Expect 11 hits
 func main() {
+	funcLitGoroutine()
+	return
+
 	var stack int // Stack is initially tainted
 	var spacer int
 	// Hit for stack

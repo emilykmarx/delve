@@ -23,7 +23,7 @@ func main() {
 	*/
 
 	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-	initial_bp_line := 48
+	initial_bp_line := 34
 
 	// Continue until variable declaration
 	var_decl_bp := api.Breakpoint{File: initial_bp_file, Line: initial_bp_line}
@@ -34,8 +34,8 @@ func main() {
 	}
 
 	//config_var := "s"
-	config_var := "conf.search"
-	//config_var := "stack"
+	//config_var := "conf.search"
+	config_var := "fqdn"
 
 	if state := <-client.Continue(); state.Exited || state.Err != nil {
 		log.Fatalf("Unexpected state %+v before hitting declaration of watch variable: %v\n", state, config_var)
@@ -52,7 +52,8 @@ func main() {
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
 	state := <-client.Continue()
-	pending_wp := make(map[uint64][]string)
+	pending_watchexpr := make(map[uint64][]string)
+	pending_watchargs := make(map[uint64][]int)
 
 	for ; !state.Exited; state = <-client.Continue() {
 		if state.Err != nil {
@@ -62,12 +63,16 @@ func main() {
 		for _, thread := range state.Threads {
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
-				tc := TaintCheck{client: client, hit_bp: hit_bp, pending_wp: pending_wp}
+				tc := TaintCheck{client: client, hit_bp: hit_bp,
+					pending_watchexpr: pending_watchexpr, pending_watchargs: pending_watchargs}
 				if hit_bp.WatchExpr != "" {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 
 					fmt.Println("\n\n*** Hit watchpoint ***")
-					tc.hittingLine()
+					if !tc.hittingLine() {
+						fmt.Printf("Ignoring\n")
+						continue
+					}
 					tc.propagateTaint()
 				} else {
 					fmt.Printf("\n\nHit breakpoint at %v:%v\n", hit_bp.File, hit_bp.Line)
