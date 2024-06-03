@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/go-delve/delve/pkg/terminal"
+	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
 )
 
@@ -77,4 +78,17 @@ func (tc *TaintCheck) handleBuiltinFct(call_node *ast.CallExpr) bool {
 		}
 	}
 	return false
+}
+
+func (tc *TaintCheck) printStacktrace() {
+	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
+	if err != nil {
+		log.Fatalf("Error getting stacktrace: %v\n", err)
+	}
+	for _, frame := range stack {
+		loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
+			frame.File, frame.Line, frame.Function.Name(),
+			frame.PC)
+		fmt.Println(loc)
+	}
 }
