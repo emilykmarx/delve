@@ -1054,9 +1054,11 @@ func (s *RPCServer) DumpCancel(arg DumpCancelIn, out *DumpCancelOut) error {
 }
 
 type CreateWatchpointIn struct {
-	Scope api.EvalScope
-	Expr  string
-	Type  api.WatchType
+	Scope     api.EvalScope
+	Expr      string
+	Watchaddr uint64
+	Size      int64
+	Type      api.WatchType
 }
 
 type CreateWatchpointOut struct {
@@ -1065,7 +1067,8 @@ type CreateWatchpointOut struct {
 
 func (s *RPCServer) CreateWatchpoint(arg CreateWatchpointIn, out *CreateWatchpointOut) error {
 	var err error
-	out.Breakpoint, err = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.Type)
+	out.Breakpoint, err = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall,
+		&arg.Expr, &arg.Watchaddr, &arg.Size, arg.Type)
 	return err
 }
 
