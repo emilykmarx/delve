@@ -6,6 +6,21 @@ import (
 	"sync"
 )
 
+func multiRound() {
+	// vars[0] initially tainted, bp_addr = range stmt
+	vars := []int{0, 1, 2, 3, 4}
+	for i := range vars {
+		if i > 0 {
+			// hit for vars[i-1] => prop to vars[i]
+			// Round 1: set wp for vars[1,2,3], 4 is pending
+			// Round 2: set wp for vars[4]
+			vars[i] = vars[i-1]
+			// put off properly finding when var is in scope (should likely be next TODO...)
+			fmt.Println()
+		}
+	}
+}
+
 func ret_untainted(tainted_param int) int {
 	// line w/o stmt
 	runtime.KeepAlive(tainted_param)
@@ -92,7 +107,7 @@ func callAndAssign() {
 // Add new tests in diff functions to maintain asm for old ones
 // Expect 11 hits
 func main() {
-	funcLitGoroutine()
+	multiRound()
 	return
 
 	var stack int // Stack is initially tainted

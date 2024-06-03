@@ -3,14 +3,69 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 
-	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
 )
 
 // PERF: Avoid re-parsing files
-// TODO handle >4 wp
+
+// One round of replay
+func (tc *TaintCheck) replay() {
+	fmt.Println("Replay")
+
+	state := <-tc.client.Continue()
+
+	for ; !state.Exited; state = <-tc.client.Continue() {
+		fmt.Println("continued")
+		if state.Err != nil {
+			log.Fatalf("Error in debugger state: %v\n", state.Err)
+		}
+
+		for _, thread := range state.Threads {
+			hit_bp := thread.Breakpoint
+			if hit_bp != nil {
+				tc.hit = Hit{hit_bp: hit_bp}
+				if hit_bp.WatchExpr != "" {
+					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
+
+					fmt.Printf("\n\n*** Hit watchpoint for %v ***\n", hit_bp.WatchExpr)
+					if !tc.hittingLine() {
+						fmt.Printf("Ignoring\n")
+						continue
+					}
+					tc.propagateTaint()
+				} else {
+					fmt.Printf("\n\nHit breakpoint at %v:%v (0x%x)\n", hit_bp.File, hit_bp.Line, hit_bp.Addr)
+					tc.onPendingWp()
+				}
+			}
+		}
+
+		for _, wp_oos := range state.WatchOutOfScope {
+			fmt.Printf("Watchpoint on %v went out of scope since last continue\n", wp_oos.WatchExpr)
+		}
+	}
+
+	// Clear wp but keep bp
+	bps, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps {
+		if bp.WatchExpr != "" {
+			fmt.Printf("Clearing bp for 0x%x\n", bp.Addr)
+			tc.client.ClearBreakpoint(bp.ID)
+		}
+	}
+
+	for wp := range tc.round_done_wps {
+		tc.done_wps[wp] = true
+	}
+	tc.round_done_wps = make(map[watchpoint]bool)
+
+	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
+	tc.client.Restart(false)
+}
 
 func main() {
 	fmt.Printf("Starting delve config client\n\n")
@@ -23,70 +78,31 @@ func main() {
 	*/
 
 	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-	initial_bp_line := 34
-
-	// Continue until variable declaration
-	var_decl_bp := api.Breakpoint{File: initial_bp_file, Line: initial_bp_line}
-	if _, err := client.CreateBreakpoint(&var_decl_bp); err != nil {
-		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
-			log.Fatalf("Error creating breakpoint at %v: %v\n", var_decl_bp, err)
-		}
-	}
+	initial_bp_line := 12
 
 	//config_var := "s"
 	//config_var := "conf.search"
-	config_var := "fqdn"
-
-	if state := <-client.Continue(); state.Exited || state.Err != nil {
-		log.Fatalf("Unexpected state %+v before hitting declaration of watch variable: %v\n", state, config_var)
-	}
-
-	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
-	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
-	if _, err := client.CreateWatchpoint(api.EvalScope{GoroutineID: -1}, config_var, api.WatchRead|api.WatchWrite); err != nil {
-		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") { // ok if existed
-			log.Fatalf("Error creating watchpoint at %v: %v\n", config_var, err)
-		}
-	}
+	config_var := "vars[0]"
 
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
-	state := <-client.Continue()
+
 	pending_watchexpr := make(map[uint64][]string)
 	pending_watchargs := make(map[uint64][]int)
+	done_wps := make(map[watchpoint]bool)
+	round_done_wps := make(map[watchpoint]bool)
+	tc := TaintCheck{client: client,
+		pending_watchexpr: pending_watchexpr, pending_watchargs: pending_watchargs,
+		done_wps: done_wps, round_done_wps: round_done_wps}
+	init_loc := tc.lineWithStmt(nil, initial_bp_file, initial_bp_line)
 
-	for ; !state.Exited; state = <-client.Continue() {
-		if state.Err != nil {
-			log.Fatalf("Error in debugger state: %v\n", state.Err)
-		}
+	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
+	tc.recordPendingWp(nil, []string{config_var}, init_loc, nil)
 
-		for _, thread := range state.Threads {
-			hit_bp := thread.Breakpoint
-			if hit_bp != nil {
-				tc := TaintCheck{client: client, hit_bp: hit_bp,
-					pending_watchexpr: pending_watchexpr, pending_watchargs: pending_watchargs}
-				if hit_bp.WatchExpr != "" {
-					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
-
-					fmt.Println("\n\n*** Hit watchpoint ***")
-					if !tc.hittingLine() {
-						fmt.Printf("Ignoring\n")
-						continue
-					}
-					tc.propagateTaint()
-				} else {
-					fmt.Printf("\n\nHit breakpoint at %v:%v\n", hit_bp.File, hit_bp.Line)
-					tc.setPendingWp()
-				}
-			}
-		}
-
-		for _, wp_oos := range state.WatchOutOfScope {
-			fmt.Printf("Watchpoint on %v went out of scope since last continue\n", wp_oos.WatchExpr)
-		}
+	for len(tc.pending_watchexpr) > 0 || len(tc.pending_watchargs) > 0 {
+		tc.replay()
 	}
 
-	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
 	fmt.Println("Detaching delve config client")
 	client.Detach(false)
 }
