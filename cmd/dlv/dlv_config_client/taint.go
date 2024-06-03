@@ -12,7 +12,7 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
-type watchpoint struct {
+type DoneWp struct {
 	bp_addr uint64
 	wp_addr uint64
 }
@@ -25,24 +25,28 @@ type Hit struct {
 	frame int
 }
 
+// TODO add test for multiple watch addrs at same bp addr (e.g. multiple args tainted)
+type PendingWp struct {
+	watchexprs []string
+	watchargs  []int
+	watchaddrs []uint64
+}
+
 // TODO remove unused stuff, update comments on all fcts
 type TaintCheck struct {
 	hit    Hit
 	client *rpc2.RPCClient
 
-	// LEFT OFF: need to store addr w/ wp waiting for hw, to handle e.g. loop
-
 	// "Pending" = waiting for var to be in scope, or for hw wp to free up
-	// Addr to set at => watchexpr
-	pending_watchexpr map[uint64][]string
-	// Addr to set at => argno
-	pending_watchargs map[uint64][]int
+	// Key: Bp addr where exprs go in scope
+	// Value: Before hit corresp bp in any round, expr info. After, watch addr
+	pending_wps map[uint64]PendingWp
 
 	// Have already been set in an earlier round
-	done_wps map[watchpoint]bool
+	done_wps map[DoneWp]bool
 
 	// Set in this round (separate from done_wps to allow re-setting wp in a round)
-	round_done_wps map[watchpoint]bool
+	round_done_wps map[DoneWp]bool
 }
 
 /* If hit was in runtime, stepout to the first non-runtime function.
@@ -390,49 +394,119 @@ func (tc *TaintCheck) recordPendingWp(exprs []ast.Expr, expr_strs []string, loc 
 
 	for _, expr := range exprs {
 		expr_str := exprToString(expr)
-		// TODO add test for append w/ realloc
-		// TODO does append of a tainted value hit wp? (Currently is hitting bc of string concat and/or slice already being tainted)
-		tc.pending_watchexpr[addr] = append(tc.pending_watchexpr[addr], expr_str)
-		fmt.Printf("ZZEM record pending wp for %v, bp addr 0x%x\n", expr_str, addr)
+		expr_strs = append(expr_strs, expr_str)
 	}
+	// TODO add test for append w/ realloc
+	// TODO does append of a tainted value hit wp? (Currently is hitting bc of string concat and/or slice already being tainted)
 	for _, expr_str := range expr_strs {
-		tc.pending_watchexpr[addr] = append(tc.pending_watchexpr[addr], expr_str)
+		existing_info := tc.pending_wps[addr]
+		existing_info.watchexprs = append(existing_info.watchexprs, expr_str)
+		tc.pending_wps[addr] = existing_info
 		fmt.Printf("ZZEM record pending wp for %v, bp addr 0x%x\n", expr_str, addr)
 	}
 	if argno != nil {
-		tc.pending_watchargs[addr] = append(tc.pending_watchargs[addr], *argno)
+		existing_info := tc.pending_wps[addr]
+		existing_info.watchargs = append(existing_info.watchargs, *argno)
+		tc.pending_wps[addr] = existing_info
 	}
 }
 
-func (tc *TaintCheck) onSetWpDone(wp watchpoint) {
-	if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
-		log.Fatalf("Failed to clear bp at 0x%x: %v\n", wp.bp_addr, err)
+func (tc *TaintCheck) onSetWpDone(wp DoneWp) {
+	info, ok := tc.pending_wps[wp.bp_addr]
+	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
+		// Nothing left pending at this bp addr
+		if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
+			log.Fatalf("Failed to clear bp at 0x%x: %v\n", wp.bp_addr, err)
+		}
+		delete(tc.pending_wps, wp.bp_addr)
 	}
 
-	delete(tc.pending_watchexpr, wp.bp_addr)
-	delete(tc.pending_watchargs, wp.bp_addr)
 	tc.round_done_wps[wp] = true
+	if ok {
+		fmt.Printf("ZZEM exit setWp; info %+v\n", info)
+	} else {
+		fmt.Printf("ZZEM exit setWp; no more info\n")
+	}
 }
 
-func (tc *TaintCheck) setWp(watchexpr string, bp_addr uint64) {
-	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-
-	loadcfg := api.LoadConfig{FollowPointers: true}
-	xv, err := tc.client.EvalVariable(scope, watchexpr, loadcfg)
-	if err != nil || xv.Addr == 0 {
-		log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
+// TODO move these to util.go
+// Remove watchexpr from list of pending ones for this bp_addr (if it existed)
+func (tc *TaintCheck) deleteWatchExpr(watchexpr string, bp_addr uint64) {
+	info, ok := tc.pending_wps[bp_addr]
+	if !ok {
+		return
 	}
-	wp := watchpoint{bp_addr: bp_addr, wp_addr: xv.Addr}
-	fmt.Printf("ZZEM setWp for %v (0x%x)\n", watchexpr, wp.wp_addr)
+	new_watchexprs := []string{}
+	for _, expr := range info.watchexprs {
+		if expr != watchexpr {
+			new_watchexprs = append(new_watchexprs, expr)
+		}
+	}
+	info.watchexprs = new_watchexprs
+	tc.pending_wps[bp_addr] = info
+}
+
+// Remove watchaddr from list of pending ones for this bp_addr (if it existed)
+func (tc *TaintCheck) deleteWatchAddr(watchaddr uint64, bp_addr uint64) {
+	info, ok := tc.pending_wps[bp_addr]
+	if !ok {
+		return
+	}
+	new_watchaddrs := []uint64{}
+	for _, addr := range info.watchaddrs {
+		if addr != watchaddr {
+			new_watchaddrs = append(new_watchaddrs, addr)
+		}
+	}
+	info.watchaddrs = new_watchaddrs
+	tc.pending_wps[bp_addr] = info
+}
+
+func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64) {
+	fmt.Printf("ZZEM enter setWp; watchexpr %v, bp_addr 0x%x\n", watchexpr, bp_addr)
+	if watchaddr != nil {
+		fmt.Printf("watchaddr 0x%x\n", *watchaddr)
+	}
+
+	fmt.Println("bps:")
+	bps_prev, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps_prev {
+		fmt.Printf("bp addr: %x\n", bp.Addr)
+	}
+	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
+	if watchexpr != nil {
+		loadcfg := api.LoadConfig{FollowPointers: true}
+		xv, err := tc.client.EvalVariable(scope, *watchexpr, loadcfg)
+		if err != nil || xv.Addr == 0 {
+			log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
+		}
+		tc.deleteWatchExpr(*watchexpr, bp_addr)
+		watchaddr = &xv.Addr
+	}
+
+	wp := DoneWp{bp_addr: bp_addr, wp_addr: *watchaddr}
 	if tc.done_wps[wp] {
 		// Already traced this addr in a previous round
 		fmt.Printf("Already traced in prev round\n") // TODO add test for this
+		tc.deleteWatchAddr(*watchaddr, bp_addr)
 		tc.onSetWpDone(wp)
 		return
 	}
+
 	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
-	if _, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite); err != nil {
-		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") {
+
+	var wp_err error
+	if watchexpr != nil {
+		_, wp_err = tc.client.CreateWatchpoint(scope, *watchexpr, api.WatchRead|api.WatchWrite)
+	} else {
+		// TODO proper size
+		_, wp_err = tc.client.CreateWatchpointNoEval(scope, *watchaddr, 8, api.WatchRead|api.WatchWrite)
+	}
+	if wp_err != nil {
+		if !strings.HasPrefix(wp_err.Error(), "Breakpoint exists at") {
 			// Check # of wp after create, since it may have been a dup
 			bps, list_err := tc.client.ListBreakpoints(true)
 			if list_err != nil {
@@ -447,15 +521,20 @@ func (tc *TaintCheck) setWp(watchexpr string, bp_addr uint64) {
 			if n_wps == 4 {
 				// Stays pending
 				fmt.Printf("Ran out of hw wp; staying pending\n")
+				info := tc.pending_wps[bp_addr]
+				info.watchaddrs = append(info.watchaddrs, *watchaddr)
+				tc.pending_wps[bp_addr] = info
+				fmt.Printf("ZZEM exit setWp; info %+v\n", info)
 				return
 			} else {
-				log.Fatalf("Failed to set watch for %v: %v\n", watchexpr, err)
+				log.Fatalf("Failed to set watch for %v (0x%x): %v\n", watchexpr, *watchaddr, wp_err)
 			}
 		}
+	} else {
+		tc.deleteWatchAddr(*watchaddr, bp_addr)
 	}
 
 	tc.onSetWpDone(wp)
-	fmt.Printf("ZZEM set wp for %v (0x%x)\n", watchexpr, wp.wp_addr)
 }
 
 // Bp for pending wp hit => try to set a hw wp
@@ -464,20 +543,25 @@ func (tc *TaintCheck) onPendingWp() {
 		log.Fatalf("Wrong number of addrs at pending wp; addrs %v\n", tc.hit.hit_bp.Addrs)
 	}
 	bp_addr := tc.hit.hit_bp.Addrs[0]
-
-	if len(tc.pending_watchexpr[bp_addr]) == 0 && len(tc.pending_watchargs[bp_addr]) == 0 {
+	info := tc.pending_wps[bp_addr]
+	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}
 
-	for _, watchexpr := range tc.pending_watchexpr[bp_addr] {
-		tc.setWp(watchexpr, bp_addr)
+	fmt.Printf("ZZEM onPendingWp, bp addr 0x%x\nInfo %+v\n", bp_addr, info)
+
+	for _, watchaddr := range info.watchaddrs {
+		tc.setWp(nil, bp_addr, &watchaddr)
+	}
+	for _, watchexpr := range tc.pending_wps[bp_addr].watchexprs {
+		tc.setWp(&watchexpr, bp_addr, nil)
 	}
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	for _, argno := range tc.pending_watchargs[bp_addr] {
+	for _, argno := range tc.pending_wps[bp_addr].watchargs {
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
-		tc.setWp(args[argno].Name, bp_addr)
+		tc.setWp(&args[argno].Name, bp_addr, nil)
 	}
 }

@@ -614,6 +614,29 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 	return t.proc.SetUProbe(fn.Name, goidOffset, args)
 }
 
+// Set watchpoint whose addr and size is already known
+// EvalScope just used to determine stack location
+func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, watchaddr uint64, sz int64, wtype WatchType,
+	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
+	stackWatch := scope.g != nil && !scope.g.SystemStack && watchaddr >= scope.g.stack.lo && watchaddr < scope.g.stack.hi
+
+	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
+	if err != nil {
+		fmt.Printf("ZZEM failed to setBreakpointInternal\n")
+		return bp, err
+	}
+	bp.WatchExpr = "NoEval" // We could use the expr used to record the pending wp, but not needed
+
+	if stackWatch {
+		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
+		err := t.setStackWatchBreakpoints(scope, bp)
+		if err != nil {
+			return bp, err
+		}
+	}
+	return bp, nil
+}
+
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
 func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr) (*Breakpoint, error) {
@@ -668,28 +691,16 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
 	}
 
-	stackWatch := scope.g != nil && !scope.g.SystemStack && xv.Addr >= scope.g.stack.lo && xv.Addr < scope.g.stack.hi
-	fmt.Printf("SetWatchpoint; sz %v, DwarfType %v, Kind %v, Stack %v\n", sz, xv.Kind.String(), xv.DwarfType.String(), stackWatch)
-
-	bp, err := t.setBreakpointInternal(logicalID, xv.Addr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
+	bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Addr, sz, wtype, cond, wimpl)
 	if err != nil {
 		return bp, err
 	}
-	bp.WatchExpr = expr
 	bp.DebuggerIDIncrement = debuggerIDIncrement
-
-	if stackWatch {
-		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
-		err := t.setStackWatchBreakpoints(scope, bp)
-		if err != nil {
-			return bp, err
-		}
-	}
-
-	return bp, nil
+	return bp, err
 }
 
 func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind, wtype WatchType, wimpl WatchImpl, cond ast.Expr) (*Breakpoint, error) {
+	//fmt.Printf("enter setBreakpointInternal; id %v, addr %x, kind %v, wtype %v, wimpl %v, cond %v\n", logicalID, addr, kind, wtype, wimpl, cond)
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()
 		if !recorded {
@@ -787,6 +798,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	bpmap.M[addr] = newBreakpoint
 
+	fmt.Println("exit setBreakpointInternal")
 	return newBreakpoint, nil
 }
 

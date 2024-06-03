@@ -1094,7 +1094,8 @@ func (d *Debugger) findBreakpointByName(name string) *api.Breakpoint {
 }
 
 // CreateWatchpoint creates a watchpoint on the specified expression.
-func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int, expr string, wtype api.WatchType) (*api.Breakpoint, error) {
+func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
+	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType) (*api.Breakpoint, error) {
 	p := d.target.Selected
 
 	s, err := proc.ConvertEvalScope(p, goid, frame, deferredCall)
@@ -1102,13 +1103,19 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int, expr st
 		return nil, err
 	}
 	d.breakpointIDCounter++
-	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil)
-	if err != nil {
-		return nil, err
+	var bp *proc.Breakpoint
+	var wp_err error
+	if expr != nil {
+		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil)
+	} else {
+		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchHardware)
+	}
+	if wp_err != nil {
+		return nil, wp_err
 	}
 	d.breakpointIDCounter += bp.DebuggerIDIncrement
-	if d.findBreakpointByName(expr) == nil {
-		bp.Logical.Name = expr
+	if expr != nil && d.findBreakpointByName(*expr) == nil {
+		bp.Logical.Name = *expr
 	}
 	return d.convertBreakpoint(bp.Logical), nil
 }

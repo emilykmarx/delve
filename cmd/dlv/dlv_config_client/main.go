@@ -12,6 +12,14 @@ import (
 // One round of replay
 func (tc *TaintCheck) replay() {
 	fmt.Println("Replay")
+	fmt.Println("bps:")
+	bps_prev, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps_prev {
+		fmt.Printf("bp addr: %x\n", bp.Addr)
+	}
 
 	state := <-tc.client.Continue()
 
@@ -61,7 +69,7 @@ func (tc *TaintCheck) replay() {
 	for wp := range tc.round_done_wps {
 		tc.done_wps[wp] = true
 	}
-	tc.round_done_wps = make(map[watchpoint]bool)
+	tc.round_done_wps = make(map[DoneWp]bool)
 
 	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
 	tc.client.Restart(false)
@@ -87,19 +95,19 @@ func main() {
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
 
-	pending_watchexpr := make(map[uint64][]string)
-	pending_watchargs := make(map[uint64][]int)
-	done_wps := make(map[watchpoint]bool)
-	round_done_wps := make(map[watchpoint]bool)
+	pending_wps := make(map[uint64]PendingWp)
+	done_wps := make(map[DoneWp]bool)
+	round_done_wps := make(map[DoneWp]bool)
 	tc := TaintCheck{client: client,
-		pending_watchexpr: pending_watchexpr, pending_watchargs: pending_watchargs,
-		done_wps: done_wps, round_done_wps: round_done_wps}
+		pending_wps: pending_wps,
+		done_wps:    done_wps, round_done_wps: round_done_wps}
 	init_loc := tc.lineWithStmt(nil, initial_bp_file, initial_bp_line)
 
 	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
 	tc.recordPendingWp(nil, []string{config_var}, init_loc, nil)
 
-	for len(tc.pending_watchexpr) > 0 || len(tc.pending_watchargs) > 0 {
+	//for len(tc.pending_wps) > 0 {
+	for i := 0; i < 2; i++ {
 		tc.replay()
 	}
 

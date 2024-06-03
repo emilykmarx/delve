@@ -271,9 +271,15 @@ func (c *RPCClient) CreateEBPFTracepoint(fnName string) error {
 	return c.call("CreateEBPFTracepoint", CreateEBPFTracepointIn{FunctionName: fnName}, &out)
 }
 
+func (c *RPCClient) CreateWatchpointNoEval(scope api.EvalScope, watchaddr uint64, sz int64, wtype api.WatchType) (*api.Breakpoint, error) {
+	var out CreateWatchpointOut
+	err := c.call("CreateWatchpoint", CreateWatchpointIn{Scope: scope, Watchaddr: watchaddr, Size: sz, Type: wtype}, &out)
+	return out.Breakpoint, err
+}
+
 func (c *RPCClient) CreateWatchpoint(scope api.EvalScope, expr string, wtype api.WatchType) (*api.Breakpoint, error) {
 	var out CreateWatchpointOut
-	err := c.call("CreateWatchpoint", CreateWatchpointIn{scope, expr, wtype}, &out)
+	err := c.call("CreateWatchpoint", CreateWatchpointIn{Scope: scope, Expr: expr, Type: wtype}, &out)
 	return out.Breakpoint, err
 }
 

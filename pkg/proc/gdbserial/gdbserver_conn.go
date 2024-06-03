@@ -434,9 +434,17 @@ const (
 
 // setBreakpoint executes a 'Z' (insert breakpoint) command of type '0' and kind '1' or '4'
 func (conn *gdbConn) setBreakpoint(addr uint64, typ breakpointType, kind int) error {
+	//fmt.Printf("enter setBreakpoint, addr %x type %v kind %v\n", addr, typ, kind)
 	conn.outbuf.Reset()
 	fmt.Fprintf(&conn.outbuf, "$Z%d,%x,%d", typ, addr, kind)
+	pkt := fmt.Sprintf("$Z%d,%x,%d", typ, addr, kind)
+	if typ == accessWatchpoint {
+		fmt.Printf("setBreakpoint; packet %v\n", pkt)
+	}
 	_, err := conn.exec(conn.outbuf.Bytes(), "set breakpoint")
+	if err != nil {
+		fmt.Printf("exit setBreakpoint; err %v\n", err)
+	}
 	return err
 }
 
