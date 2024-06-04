@@ -1105,7 +1105,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	d.breakpointIDCounter++
 	var bp *proc.Breakpoint
 	var wp_err error
-	if expr != nil {
+	if *expr != "" {
 		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil)
 	} else {
 		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchHardware)
