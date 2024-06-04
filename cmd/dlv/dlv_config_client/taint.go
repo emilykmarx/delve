@@ -241,7 +241,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) bool {
 	return is_tainted
 }
 
-// If calling line has an assign or range, return corresp lhs and the next line
+// If calling line has an assign or range, return corresp lhs and the next line's location
 // (TODO same caveats about linear assumption as for Assign)
 func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
@@ -250,7 +250,9 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
 	}
 	call_file := stack[1].File
 	call_line := stack[1].Line
-	return getLhs(i, call_file, call_line), api.Location{File: call_file, Line: call_line}
+	fmt.Printf("callerLhs returning loc %v:%v\n", call_file, call_line)
+	next_line := tc.lineWithStmt(nil, call_file, call_line+1)
+	return getLhs(i, call_file, call_line), next_line
 }
 
 /* Assuming this line hits hit_bp, propagate taint to other exprs on line.
@@ -411,17 +413,16 @@ func (tc *TaintCheck) recordPendingWp(exprs []ast.Expr, expr_strs []string, loc 
 	}
 }
 
-func (tc *TaintCheck) onSetWpDone(wp DoneWp) {
-	info, ok := tc.pending_wps[wp.bp_addr]
+func (tc *TaintCheck) onPendingWpDone(bp_addr uint64) {
+	info, ok := tc.pending_wps[bp_addr]
 	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		// Nothing left pending at this bp addr
 		if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
-			log.Fatalf("Failed to clear bp at 0x%x: %v\n", wp.bp_addr, err)
+			log.Fatalf("Failed to clear bp at 0x%x: %v\n", bp_addr, err)
 		}
-		delete(tc.pending_wps, wp.bp_addr)
+		delete(tc.pending_wps, bp_addr)
 	}
 
-	tc.round_done_wps[wp] = true
 	if ok {
 		fmt.Printf("ZZEM exit setWp; info %+v\n", info)
 	} else {
@@ -462,6 +463,7 @@ func (tc *TaintCheck) deleteWatchAddr(watchaddr uint64, bp_addr uint64) {
 	tc.pending_wps[bp_addr] = info
 }
 
+// This should handle being called multiple times for same bpaddr+watchaddr
 func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64) {
 	fmt.Printf("ZZEM enter setWp; watchexpr %v, bp_addr 0x%x\n", watchexpr, bp_addr)
 	if watchaddr != nil {
@@ -492,7 +494,6 @@ func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64
 		// Already traced this addr in a previous round
 		fmt.Printf("Already traced in prev round\n") // TODO add test for this
 		tc.deleteWatchAddr(*watchaddr, bp_addr)
-		tc.onSetWpDone(wp)
 		return
 	}
 
@@ -500,6 +501,7 @@ func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64
 
 	var wp_err error
 	if watchexpr != nil {
+		// TODO (minor): fix error propagation here: if rr returns E01 (in gdbserial), logs "expected operand" here
 		_, wp_err = tc.client.CreateWatchpoint(scope, *watchexpr, api.WatchRead|api.WatchWrite)
 	} else {
 		// TODO proper size
@@ -534,7 +536,7 @@ func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64
 		tc.deleteWatchAddr(*watchaddr, bp_addr)
 	}
 
-	tc.onSetWpDone(wp)
+	tc.round_done_wps[wp] = true
 }
 
 // Bp for pending wp hit => try to set a hw wp
@@ -564,4 +566,7 @@ func (tc *TaintCheck) onPendingWp() {
 		}
 		tc.setWp(&args[argno].Name, bp_addr, nil)
 	}
+
+	// cleanup
+	tc.onPendingWpDone(bp_addr)
 }

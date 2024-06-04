@@ -80,17 +80,17 @@ func main() {
 	log.SetFlags(log.Lshortfile)
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
+	initial_bp_file := "/usr/local/go/src/net/dnsconfig_unix.go"
+	initial_bp_line := 144 // about to return conf
+
 	/*
-		initial_bp_file := "/usr/local/go/src/net/dnsconfig_unix.go"
-		initial_bp_line := 144 // about to return conf
+		initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
+		initial_bp_line := 14
 	*/
 
-	initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-	initial_bp_line := 12
-
 	//config_var := "s"
-	//config_var := "conf.search"
-	config_var := "vars[0]"
+	config_var := "conf.search"
+	//config_var := "vars[0]"
 
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
@@ -106,8 +106,7 @@ func main() {
 	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
 	tc.recordPendingWp(nil, []string{config_var}, init_loc, nil)
 
-	//for len(tc.pending_wps) > 0 {
-	for i := 0; i < 2; i++ {
+	for len(tc.pending_wps) > 0 {
 		tc.replay()
 	}
 
