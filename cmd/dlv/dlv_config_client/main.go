@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 
@@ -78,19 +79,14 @@ func (tc *TaintCheck) replay() {
 func main() {
 	fmt.Printf("Starting delve config client\n\n")
 	log.SetFlags(log.Lshortfile)
+	initial_bp_file := flag.String("initial_bp_file", "", "File to set initial breakpoint")
+	initial_bp_line := flag.Int("initial_bp_line", 0, "Line number to set initial breakpoint")
+	initial_watchexpr := flag.String("initial_watchexpr", "", "Expression to set initial watchpoint")
+	flag.Parse()
+	fmt.Printf("initial file: %v, line %v, watchexpr %v\n", *initial_bp_file, *initial_bp_line, *initial_watchexpr)
+
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
-	initial_bp_file := "/usr/local/go/src/net/dnsconfig_unix.go"
-	initial_bp_line := 144 // about to return conf
-
-	/*
-		initial_bp_file := "/home/emily/projects/config_tracing/delve/cmd/dlv/dlv_config_client/test/test.go"
-		initial_bp_line := 14
-	*/
-
-	//config_var := "s"
-	config_var := "conf.search"
-	//config_var := "vars[0]"
 
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
@@ -101,10 +97,10 @@ func main() {
 	tc := TaintCheck{client: client,
 		pending_wps: pending_wps,
 		done_wps:    done_wps, round_done_wps: round_done_wps}
-	init_loc := tc.lineWithStmt(nil, initial_bp_file, initial_bp_line)
+	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line)
 
-	fmt.Printf("Setting initial watchpoint on %v\n", config_var)
-	tc.recordPendingWp(nil, []string{config_var}, init_loc, nil)
+	fmt.Printf("Setting initial watchpoint on %v\n", *initial_watchexpr)
+	tc.recordPendingWp(nil, []string{*initial_watchexpr}, init_loc, nil)
 
 	for len(tc.pending_wps) > 0 {
 		tc.replay()
