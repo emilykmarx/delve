@@ -6,88 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	protest "github.com/go-delve/delve/pkg/proc/test"
 )
 
-func multiRound() {
-	// vars[0] initially tainted, bp_addr = range stmt
-	vars := []int{0, 1, 2, 3, 4, 5}
-	for i := range vars {
-		if i > 0 {
-			// hit for vars[i-1] => prop to vars[i]
-			// Round 1: set wp for vars[1,2,3], 4 and 5 are pending
-			// Round 2: set wp for vars[4,5]
-			vars[i] = vars[i-1]
-			// put off properly finding when var is in scope (should likely be next TODO...)
-			fmt.Println()
-		}
-	}
-}
-
-type Conf struct {
-	search []string
-}
-
-func f() string {
-	return "more"
-}
-
-func funcLitGoroutine() {
-	var wg sync.WaitGroup
-
-	fqdn := "fqdn" // fqdn is initially tainted
-	var queryFn func(fqdn string)
-
-	queryFn = func(fqdn string) {
-		wg.Add(1)
-		fmt.Printf("Using fdqn: %v\n", fqdn) // hit for fqdn => ignore from there (prop w/in Printf -- should maybe ignore...)
-		go func() {
-			defer wg.Done()
-
-			fmt.Printf("Using fdqn in goroutine: %v\n", fqdn) // hit for fqdn => ignore from there (prop w/in Printf -- should maybe ignore...)
-		}()
-	}
-
-	runtime.KeepAlive(fqdn)
-	queryFn(fqdn) // hit for fqdn => propagate to arg
-	wg.Wait()
-}
-
-/*
-// Expect 4 hits, failure to set last wp
-func strings() {
-	s := "hi" // s is initially tainted
-	// regular hit (of s) => propagate to s2.
-	// also runtime hit (of s[0]) => propagate to s2
-	s2 := f() + s
-	// regular hit (of s2) => no defn for Printf
-	// also runtime hit (of s2[0]) => try propagate to print.go buffer, but too large and out of hw wp
-	fmt.Printf("%v\n", s2)
-}
-*/
-
-// Expect 12 hits
-func structSliceRangeBuiltins() {
-	// TODO once this passes: update comments
-	conf := &Conf{search: []string{"hi", "hello"}} // conf.search is initially tainted
-	names := make([]string, 0, len(conf.search))
-	// 1st iter: hit for conf.search x 2 => propagate to suffix
-	// 2nd iter: hit for suffix => nowhere to propagate
-	for _, suffix := range conf.search {
-		// runtime hit (of suffix[0]) => propagate to names (once exit range)
-		names = append(names, "localhost"+suffix)
-	}
-	fmt.Println(names)          // hit for names
-	if conf.search[0] == "hi" { // hit for conf.search x 6, suffix[0] (reusing mem)
-		fmt.Println("yep")
-	}
-}
+// TODO add tests for runtime hits
 
 // Build client
 func getClientBin(t *testing.T) string {
@@ -196,11 +122,4 @@ func run(t *testing.T, testfile string, initial_bp_line int, initial_watchexpr s
 	if len(server_err.savedOutput) > 0 {
 		t.Fatalf("Delve server errored while client running")
 	}
-}
-
-// TODO add tests for runtime hits
-func main() {
-	multiRound()
-	return
-
 }
