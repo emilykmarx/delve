@@ -700,10 +700,15 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 }
 
 func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind, wtype WatchType, wimpl WatchImpl, cond ast.Expr) (*Breakpoint, error) {
-	//fmt.Printf("enter setBreakpointInternal; id %v, addr %x, kind %v, wtype %v, wimpl %v, cond %v\n", logicalID, addr, kind, wtype, wimpl, cond)
+	if wtype != 0 {
+		fmt.Printf("enter setBreakpointInternal for wp; id %v, addr %x, kind %v, wtype %v, wimpl %v, cond %v\n", logicalID, addr, kind, wtype, wimpl, cond)
+	}
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()
 		if !recorded {
+			if wtype != 0 {
+				fmt.Printf("exit setBreakpointInternal for wp w/ err: from Valid() %v\n", err)
+			}
 			return nil, err
 		}
 	}
@@ -747,7 +752,8 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	// Overlaps existing bp (I think)
 	if bp, ok := bpmap.M[addr]; ok {
-		if !bp.canOverlap(kind) {
+		if wtype != 0 && !bp.canOverlap(kind) {
+			fmt.Printf("exit setBreakpointInternal for wp w/ BreakpointExistsError\n")
 			return bp, BreakpointExistsError{bp.File, bp.Line, bp.Addr}
 		}
 		bp.Breaklets = append(bp.Breaklets, newBreaklet)
@@ -790,6 +796,9 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	err := t.proc.WriteBreakpoint(newBreakpoint)
 	if err != nil {
+		if wtype != 0 {
+			fmt.Printf("exit setBreakpointInternal for wp w/ err from WriteBreakpoint: %v\n", err)
+		}
 		return nil, err
 	}
 
@@ -798,7 +807,9 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	bpmap.M[addr] = newBreakpoint
 
-	fmt.Println("exit setBreakpointInternal")
+	if wtype != 0 {
+		fmt.Println("exit setBreakpointInternal for wp w/o err")
+	}
 	return newBreakpoint, nil
 }
 

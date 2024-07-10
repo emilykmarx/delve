@@ -16,6 +16,60 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
+// Remove watchexpr from list of pending ones for this bp_addr (if it existed)
+func (tc *TaintCheck) deleteWatchExpr(watchexpr string, bp_addr uint64) {
+	info, ok := tc.pending_wps[bp_addr]
+	if !ok {
+		return
+	}
+	new_watchexprs := []string{}
+	for _, expr := range info.watchexprs {
+		if expr != watchexpr {
+			new_watchexprs = append(new_watchexprs, expr)
+		}
+	}
+	info.watchexprs = new_watchexprs
+	tc.pending_wps[bp_addr] = info
+}
+
+// Remove watchaddr from list of pending ones for this bp_addr (if it existed)
+func (tc *TaintCheck) deleteWatchAddr(watchaddr uint64, bp_addr uint64) {
+	info, ok := tc.pending_wps[bp_addr]
+	if !ok {
+		return
+	}
+	new_watchaddrs := []uint64{}
+	for _, addr := range info.watchaddrs {
+		if addr != watchaddr {
+			new_watchaddrs = append(new_watchaddrs, addr)
+		}
+	}
+	info.watchaddrs = new_watchaddrs
+	tc.pending_wps[bp_addr] = info
+}
+
+// number of existing wps
+func (tc *TaintCheck) nWps() int {
+	bps, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	n_wps := 0
+	for _, bp := range bps {
+		if bp.WatchExpr != "" {
+			n_wps += 1
+		}
+	}
+
+	return n_wps
+}
+
+// pretty-print
+func (pendingwp PendingWp) String() string {
+	return fmt.Sprintf("{watchexprs %v watchargs %v watchaddrs %x}",
+		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.watchaddrs)
+}
+
 // Get line of source (as string)
 func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 	if os.Setenv("TERM", "dumb") != nil {

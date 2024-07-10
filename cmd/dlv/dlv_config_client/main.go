@@ -25,7 +25,6 @@ func (tc *TaintCheck) replay() {
 	state := <-tc.client.Continue()
 
 	for ; !state.Exited; state = <-tc.client.Continue() {
-		fmt.Println("continued")
 		if state.Err != nil {
 			log.Fatalf("Error in debugger state: %v\n", state.Err)
 		}
@@ -36,22 +35,17 @@ func (tc *TaintCheck) replay() {
 				tc.hit = Hit{hit_bp: hit_bp}
 				if hit_bp.WatchExpr != "" {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
-
 					fmt.Printf("\n\n*** Hit watchpoint for %v ***\n", hit_bp.WatchExpr)
-					if !tc.hittingLine() {
-						fmt.Printf("Ignoring\n")
-						continue
-					}
-					tc.propagateTaint()
+					tc.onWatchpointHit()
 				} else {
 					fmt.Printf("\n\nHit breakpoint at %v:%v (0x%x)\n", hit_bp.File, hit_bp.Line, hit_bp.Addr)
-					tc.onPendingWp()
+					tc.onBreakpointHit()
 				}
 			}
 		}
 
 		for _, wp_oos := range state.WatchOutOfScope {
-			fmt.Printf("Watchpoint on %v went out of scope since last continue\n", wp_oos.WatchExpr)
+			fmt.Printf("Watchpoint on %v (0x%x) went out of scope since last continue\n", wp_oos.WatchExpr, wp_oos.Addr)
 		}
 	}
 

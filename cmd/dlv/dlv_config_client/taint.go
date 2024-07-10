@@ -17,8 +17,8 @@ type DoneWp struct {
 	wp_addr uint64
 }
 
+// Things that should be reset for each hit
 type Hit struct {
-	// Scope: per hit
 	hit_bp    *api.Breakpoint
 	hit_instr *api.AsmInstruction
 	// Frame to check taint in (first non-runtime frame)
@@ -32,7 +32,6 @@ type PendingWp struct {
 	watchaddrs []uint64
 }
 
-// TODO remove unused stuff, update comments on all fcts
 type TaintCheck struct {
 	hit    Hit
 	client *rpc2.RPCClient
@@ -49,24 +48,23 @@ type TaintCheck struct {
 	round_done_wps map[DoneWp]bool
 }
 
-/* If hit was in runtime, stepout to the first non-runtime function.
- * Check that line for taint as usual.
+/* If hit was in runtime, either ignore (e.g. newstack), or
+ * record first non-runtime frame as line to check taint in
+ * (can't assume that line will additionally have a non-runtime hit (e.g. some memmoves).
  * TODO in e.g. Printf, tainted line may be up the stack - analyze every non-runtime line?
- * Return false to ignore this hit. */
+ * Return false to ignore. */
 func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
-	// Check for runtime function
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	// TODO check for partially loaded (in any calls with LoadConfig)
 	if err != nil {
 		log.Fatalf("Error getting stacktrace: %v\n", err)
 	}
 
-	/* This assumes runtime function was called implicitly (e.g. newstack/memmove),
-	 * so doesn't create new vars and doesn't propagate taint via return.
-	 * TODO eventually consider explicit runtime calls */
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
 		fmt.Println("Runtime hit - runtime portion of stack (with PC one after hitting instr):")
 		for i, frame := range stack {
+			// TODO skip hits from sysmon thread (sw wp commit may hv a test?)
+			// What is the case when runtime.main hits again?
 			if frame.Function.Name() == "runtime.newstack" || frame.Function.Name() == "runtime.main" {
 				fmt.Printf("Hit in runtime.newstack or runtime.main\n")
 				return nil, false
@@ -86,8 +84,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	return nil, true
 }
 
-/* If non-runtime, stepout takes us to the instr next in linear stream after call.
- * Return false to ignore this hit. */
+/* Return false to ignore this hit. */
 func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 	state, err := tc.client.GetState()
 	if err != nil {
@@ -105,13 +102,14 @@ func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 		log.Fatalf("Error disassembling at PC 0x%x: %v\n", pc, err)
 	}
 
+	// Ignore prints for convenience; cpu.doinit was from delve bug that maintained OOS wp on restart, could likely remove
 	if strings.HasSuffix(fct_instr[0].Loc.File, "fmt/print.go") || strings.Contains(fct_instr[0].Loc.Function.Name(), "cpu.doinit") {
 		return false
 	}
 
-	// There aren't any branching instr that touch memory, right?
-	// So hitting instr should always be linearly previous?
-	// (Or for runtime hit, frame is function that called runtime)
+	// TODO this assumes hitting instr is always linearly previous,
+	// but not true for branching instr that touch memory (e.g. cmov)
+	// Only applies to non-runtime hit?
 	for i, instr := range fct_instr {
 		if instr.Loc.PC == pc {
 			tc.hit.hit_instr = &fct_instr[i-1]
@@ -124,8 +122,6 @@ func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 }
 
 /* Get instruction and source line corresponding to preceding PC, for selected goroutine.
- * If hit in runtime, clear wp, step out of runtime and return cleared wp.
- * Leave PC at preceding one (hitting instr).
  * Return false to ignore this hit. */
 func (tc *TaintCheck) hittingLine() bool {
 	/* TODO for now, assume goroutine that hit the bp is currently selected.
@@ -133,7 +129,6 @@ func (tc *TaintCheck) hittingLine() bool {
 	 * https://github.com/go-delve/delve/blob/master/Documentation/api/ClientHowto.md#using-rpcservercommand)
 	 * (remember to pass that scope to Disass) */
 
-	tc.printStacktrace()
 	non_runtime_frame, handle := tc.handleRuntimeHit()
 	if !handle || !tc.prevInstr(non_runtime_frame) {
 		return false
@@ -190,7 +185,6 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr) {
 func (tc *TaintCheck) isTainted(expr ast.Expr) bool {
 	loadcfg := api.LoadConfig{FollowPointers: true}
 	is_tainted := false
-	fmt.Printf("ZZEM enter isTainted; expr %v\n", exprToString(expr))
 
 	ast.Inspect(expr, func(node ast.Node) bool {
 		if is_tainted {
@@ -211,7 +205,6 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) bool {
 			if err != nil || xv.Addr == 0 { // Addr == 0 for e.g. x + 1, but not e.g. x[1]
 				// Try evaluating any children
 			} else {
-				fmt.Printf("Eval expr %v\n", exprToString(node.(ast.Expr)))
 				for _, watch_addr := range tc.hit.hit_bp.Addrs {
 					// TODO get these sizes (once support tainted composite types in delve) - bp UserData?
 					// For now, overapproximate
@@ -237,7 +230,6 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) bool {
 		return true
 	})
 
-	fmt.Printf("ZZEM isTainted return %v\n", is_tainted)
 	return is_tainted
 }
 
@@ -279,7 +271,6 @@ func (tc *TaintCheck) propagateTaint() {
 		switch typed_node := node.(type) {
 
 		case *ast.CallExpr:
-			fmt.Println("CallExpr")
 			if handledBuiltins[exprToString(typed_node.Fun)] {
 				return false // will be handled in assign/range
 			}
@@ -296,7 +287,6 @@ func (tc *TaintCheck) propagateTaint() {
 			}
 
 		case *ast.ReturnStmt:
-			fmt.Println("ReturnStmt")
 			// Watched location is read in return value =>
 			// taint corresponding assign lhs/range value in caller, if any
 			// TODO handle function composition (for builtins too - will need diff handling)
@@ -316,7 +306,6 @@ func (tc *TaintCheck) propagateTaint() {
 		// TODO except for if/else, maybe others
 		// And Range: If next line is }, set on next iter
 		case *ast.AssignStmt:
-			fmt.Println("AssignStmt")
 			hit_rhs := false
 			for _, rhs := range typed_node.Rhs {
 				// TODO properly handle multiple rhs (unsure of semantics)
@@ -331,11 +320,9 @@ func (tc *TaintCheck) propagateTaint() {
 				tc.recordPendingWp(typed_node.Lhs, nil, pending_loc, nil)
 			}
 		case *ast.RangeStmt:
-			fmt.Println("RangeStmt")
 			// TODO handle Range properly (once support tainted composite types in delve):
 			// If only part of the rhs is tainted, value expr should only be tainted on corresp iters
 			if tc.isTainted(typed_node.X) && typed_node.Value != nil {
-				// TODO comment if this works
 				// Watched location is read on the rhs =>
 				// taint value expr
 				pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1)
@@ -404,7 +391,7 @@ func (tc *TaintCheck) recordPendingWp(exprs []ast.Expr, expr_strs []string, loc 
 		existing_info := tc.pending_wps[addr]
 		existing_info.watchexprs = append(existing_info.watchexprs, expr_str)
 		tc.pending_wps[addr] = existing_info
-		fmt.Printf("ZZEM record pending wp for %v, bp addr 0x%x\n", expr_str, addr)
+		fmt.Printf("ZZEM recordPendingWp for %v, bp addr 0x%x\n", expr_str, addr)
 	}
 	if argno != nil {
 		existing_info := tc.pending_wps[addr]
@@ -413,7 +400,7 @@ func (tc *TaintCheck) recordPendingWp(exprs []ast.Expr, expr_strs []string, loc 
 	}
 }
 
-func (tc *TaintCheck) onPendingWpDone(bp_addr uint64) {
+func (tc *TaintCheck) onBreakpointHitDone(bp_addr uint64) {
 	info, ok := tc.pending_wps[bp_addr]
 	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		// Nothing left pending at this bp addr
@@ -424,60 +411,33 @@ func (tc *TaintCheck) onPendingWpDone(bp_addr uint64) {
 	}
 
 	if ok {
-		fmt.Printf("ZZEM exit setWp; info %+v\n", info)
+		fmt.Printf("ZZEM exit onBreakpointHitDone; info %v\n", info)
 	} else {
-		fmt.Printf("ZZEM exit setWp; no more info\n")
+		fmt.Printf("ZZEM exit onBreakpointHitDone; no more info\n")
 	}
-}
-
-// TODO move these to util.go
-// Remove watchexpr from list of pending ones for this bp_addr (if it existed)
-func (tc *TaintCheck) deleteWatchExpr(watchexpr string, bp_addr uint64) {
-	info, ok := tc.pending_wps[bp_addr]
-	if !ok {
-		return
-	}
-	new_watchexprs := []string{}
-	for _, expr := range info.watchexprs {
-		if expr != watchexpr {
-			new_watchexprs = append(new_watchexprs, expr)
-		}
-	}
-	info.watchexprs = new_watchexprs
-	tc.pending_wps[bp_addr] = info
-}
-
-// Remove watchaddr from list of pending ones for this bp_addr (if it existed)
-func (tc *TaintCheck) deleteWatchAddr(watchaddr uint64, bp_addr uint64) {
-	info, ok := tc.pending_wps[bp_addr]
-	if !ok {
-		return
-	}
-	new_watchaddrs := []uint64{}
-	for _, addr := range info.watchaddrs {
-		if addr != watchaddr {
-			new_watchaddrs = append(new_watchaddrs, addr)
-		}
-	}
-	info.watchaddrs = new_watchaddrs
-	tc.pending_wps[bp_addr] = info
 }
 
 // This should handle being called multiple times for same bpaddr+watchaddr
-func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64) {
-	fmt.Printf("ZZEM enter setWp; watchexpr %v, bp_addr 0x%x\n", watchexpr, bp_addr)
+func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr *uint64) {
+	fmt.Printf("ZZEM enter trySetWatchpoint, bp_addr 0x%x\n", bp_addr)
+	if watchexpr != nil {
+		fmt.Printf("watchexpr %v\n", *watchexpr)
+	}
 	if watchaddr != nil {
 		fmt.Printf("watchaddr 0x%x\n", *watchaddr)
 	}
 
-	fmt.Println("bps:")
+	fmt.Println("wps:")
 	bps_prev, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
 		log.Fatalf("Error listing breakpoints: %v\n", list_err)
 	}
 	for _, bp := range bps_prev {
-		fmt.Printf("bp addr: %x\n", bp.Addr)
+		if bp.WatchExpr != "" {
+			fmt.Printf("0x%x\n", bp.Addr)
+		}
 	}
+
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	if watchexpr != nil {
 		loadcfg := api.LoadConfig{FollowPointers: true}
@@ -499,48 +459,56 @@ func (tc *TaintCheck) setWp(watchexpr *string, bp_addr uint64, watchaddr *uint64
 
 	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
 
+	var created_wp *api.Breakpoint
 	var wp_err error
 	if watchexpr != nil {
 		// TODO (minor): fix error propagation here: if rr returns E01 (in gdbserial), logs "expected operand" here
-		_, wp_err = tc.client.CreateWatchpoint(scope, *watchexpr, api.WatchRead|api.WatchWrite)
+		created_wp, wp_err = tc.client.CreateWatchpoint(scope, *watchexpr, api.WatchRead|api.WatchWrite)
 	} else {
 		// TODO proper size
-		_, wp_err = tc.client.CreateWatchpointNoEval(scope, *watchaddr, 8, api.WatchRead|api.WatchWrite)
+		created_wp, wp_err = tc.client.CreateWatchpointNoEval(scope, *watchaddr, 8, api.WatchRead|api.WatchWrite)
 	}
+	existed := false
 	if wp_err != nil {
 		if !strings.HasPrefix(wp_err.Error(), "Breakpoint exists at") {
 			// Check # of wp after create, since it may have been a dup
-			bps, list_err := tc.client.ListBreakpoints(true)
-			if list_err != nil {
-				log.Fatalf("Error listing breakpoints: %v\n", list_err)
-			}
-			n_wps := 0
-			for _, bp := range bps {
-				if bp.WatchExpr != "" {
-					n_wps += 1
-				}
-			}
-			if n_wps == 4 {
+			if tc.nWps() == 4 {
 				// Stays pending
 				fmt.Printf("Ran out of hw wp; staying pending\n")
-				info := tc.pending_wps[bp_addr]
-				info.watchaddrs = append(info.watchaddrs, *watchaddr)
-				tc.pending_wps[bp_addr] = info
-				fmt.Printf("ZZEM exit setWp; info %+v\n", info)
+				if watchexpr != nil {
+					// Just evaluated => add new watchaddr
+					info := tc.pending_wps[bp_addr]
+					info.watchaddrs = append(info.watchaddrs, *watchaddr)
+					tc.pending_wps[bp_addr] = info
+				}
 				return
 			} else {
 				log.Fatalf("Failed to set watch for %v (0x%x): %v\n", watchexpr, *watchaddr, wp_err)
 			}
+		} else {
+			existed = true
+			fmt.Printf("ZZEM wp existed\n")
 		}
-	} else {
-		tc.deleteWatchAddr(*watchaddr, bp_addr)
 	}
 
+	if !existed {
+		fmt.Printf("ZZEM created wp at 0x%x\n", created_wp.Addrs[0])
+	}
+	tc.deleteWatchAddr(*watchaddr, bp_addr)
 	tc.round_done_wps[wp] = true
 }
 
-// Bp for pending wp hit => try to set a hw wp
-func (tc *TaintCheck) onPendingWp() {
+// Watchpoint hit => record any new pending watchpoints
+func (tc *TaintCheck) onWatchpointHit() {
+	if !tc.hittingLine() {
+		fmt.Printf("Ignoring\n")
+		return
+	}
+	tc.propagateTaint()
+}
+
+// Breakpoint for pending watchpoint hit => try to set the watchpoint
+func (tc *TaintCheck) onBreakpointHit() {
 	if len(tc.hit.hit_bp.Addrs) != 1 {
 		log.Fatalf("Wrong number of addrs at pending wp; addrs %v\n", tc.hit.hit_bp.Addrs)
 	}
@@ -550,13 +518,13 @@ func (tc *TaintCheck) onPendingWp() {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}
 
-	fmt.Printf("ZZEM onPendingWp, bp addr 0x%x\nInfo %+v\n", bp_addr, info)
+	fmt.Printf("ZZEM onBreakpointHit, bp addr 0x%x\nInfo %v\n", bp_addr, info)
 
 	for _, watchaddr := range info.watchaddrs {
-		tc.setWp(nil, bp_addr, &watchaddr)
+		tc.trySetWatchpoint(nil, bp_addr, &watchaddr)
 	}
 	for _, watchexpr := range tc.pending_wps[bp_addr].watchexprs {
-		tc.setWp(&watchexpr, bp_addr, nil)
+		tc.trySetWatchpoint(&watchexpr, bp_addr, nil)
 	}
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	for _, argno := range tc.pending_wps[bp_addr].watchargs {
@@ -564,9 +532,9 @@ func (tc *TaintCheck) onPendingWp() {
 		if err != nil {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
-		tc.setWp(&args[argno].Name, bp_addr, nil)
+		tc.trySetWatchpoint(&args[argno].Name, bp_addr, nil)
 	}
 
 	// cleanup
-	tc.onPendingWpDone(bp_addr)
+	tc.onBreakpointHitDone(bp_addr)
 }

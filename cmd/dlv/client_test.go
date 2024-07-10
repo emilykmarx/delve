@@ -181,7 +181,9 @@ func run(t *testing.T, testfile string, initial_bp_line int, initial_watchexpr s
 	record_time := waitForReplay(t, &server_out, &server_err)
 
 	// Run dlv client until exit or timeout (assume replay time <= 3x record time)
-	ctx, cancel = context.WithTimeout(context.Background(), 3*record_time)
+	client_timeout := 3 * record_time
+	t.Logf("Starting client with timeout %v\n", client_timeout)
+	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()
 	client := exec.CommandContext(ctx, getClientBin(t),
 		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", initial_bp_line),
@@ -194,13 +196,9 @@ func run(t *testing.T, testfile string, initial_bp_line int, initial_watchexpr s
 	if len(server_err.savedOutput) > 0 {
 		t.Fatalf("Delve server errored while client running")
 	}
-	server.Process.Kill()
-	server.Wait()
 }
 
-// TODO add test for stack resize
-// TODO automate this test better - maybe don't rely on hitting wp? Also check server output for errors
-// Add new tests in diff functions to maintain asm for old ones
+// TODO add tests for runtime hits
 func main() {
 	multiRound()
 	return
