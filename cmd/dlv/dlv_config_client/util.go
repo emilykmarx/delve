@@ -16,6 +16,22 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
+// Remove watcharg from list of pending ones for this bp_addr (if it existed)
+func (tc *TaintCheck) deleteWatchArg(watcharg int, bp_addr uint64) {
+	info, ok := tc.pending_wps[bp_addr]
+	if !ok {
+		return
+	}
+	new_watchargs := []int{}
+	for _, argno := range info.watchargs {
+		if argno != watcharg {
+			new_watchargs = append(new_watchargs, argno)
+		}
+	}
+	info.watchargs = new_watchargs
+	tc.pending_wps[bp_addr] = info
+}
+
 // Remove watchexpr from list of pending ones for this bp_addr (if it existed)
 func (tc *TaintCheck) deleteWatchExpr(watchexpr string, bp_addr uint64) {
 	info, ok := tc.pending_wps[bp_addr]

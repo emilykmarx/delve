@@ -5,17 +5,6 @@ import (
 	"runtime"
 )
 
-// Expect 6 hits
-func callAndAssign() {
-	var stack int // Stack is initially tainted
-	// Hit for stack x 2, tainted_param_2 x 2
-	runtime.KeepAlive(stack)
-	a := ret_tainted(stack) + stack // Call+assign, hit in both => propagate to tainted_param and a
-	// Hit for a x 2
-	fmt.Printf("Using a%v\n", a)
-	runtime.KeepAlive(a)
-}
-
 func ret_untainted(tainted_param int) int {
 	// line w/o stmt
 	runtime.KeepAlive(tainted_param)
@@ -43,7 +32,7 @@ func main() {
 	y := ret_untainted(spacer+1) + 3 // Call+assign, hit in call, untainted ret => propagate to tainted_param
 	runtime.KeepAlive(y)
 	// Hit for spacer, tainted_param_2 x 2
-	y = ret_tainted(spacer+1) + 3 // Call+assign, hit in call, tainted ret => propagate to tainted_param and y
+	y = ret_tainted(spacer+1) + 3 // Call+assign, hit in call, tainted ret => propagate to tainted_param_2 and y
 	// Hit for y
 	fmt.Printf("Using y%v\n", y)
 	// Hit for spacer
@@ -52,6 +41,4 @@ func main() {
 	fmt.Printf("Using z%v\n", z)
 	// Hit for z
 	runtime.KeepAlive(z)
-
-	callAndAssign()
 }

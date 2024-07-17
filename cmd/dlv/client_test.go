@@ -29,8 +29,34 @@ func getClientBin(t *testing.T) string {
 	return clientbin
 }
 
-func TestCallAndAssign(t *testing.T) {
-	run(t, "call_assign.go", 37, "stack")
+func TestCallAndAssign1(t *testing.T) {
+	lines := []int{26, 30, 10, 16, 37, 41}
+	watchexprs := []string{"stack", "spacer", "tainted_param", "tainted_param_2", "y", "z"}
+	run(t, "call_assign_1.go", lines, watchexprs)
+}
+
+func TestCallAndAssign2(t *testing.T) {
+	lines := []int{18, 9, 21}
+	watchexprs := []string{"stack", "tainted_param_2", "a"}
+	run(t, "call_assign_2.go", lines, watchexprs)
+}
+
+func TestStrings(t *testing.T) {
+	lines := []int{13, 14}
+	watchexprs := []string{"s", "s2"}
+	run(t, "strings.go", lines, watchexprs)
+}
+
+func TestStructSliceRangeBuiltins(t *testing.T) {
+	lines := []int{11, 16, 18}
+	watchexprs := []string{"conf.search", "suffix", "names"}
+	run(t, "struct_slice_range_builtins.go", lines, watchexprs)
+}
+
+func TestFuncLitGoRoutine(t *testing.T) {
+	lines := []int{13, 16}
+	watchexprs := []string{"fqdn", "fqdn"}
+	run(t, "funclit_goroutine.go", lines, watchexprs)
 }
 
 func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) time.Duration {
@@ -76,17 +102,20 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 	return os.Stdout.Write(p)
 }
 
-func run(t *testing.T, testfile string, initial_bp_line int, initial_watchexpr string) {
+// Expect to set watchpoints for watchexprs on corresponding lines
+func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 	// Start dlv server, wait for it to finish recording
-	var server_out saveOutput
-	var server_err saveOutput
-
 	listenAddr := "localhost:4040"
 	fixturePath := filepath.Join(protest.FindFixturesDir(), "dlv_config_client", testfile)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := exec.CommandContext(ctx, getDlvBin(t), "debug", "--headless", "--backend=rr",
 		"--api-version=2", "--accept-multiclient", "--listen", listenAddr, fixturePath)
+
+	var server_out saveOutput
+	var server_err saveOutput
+	server.Stdout = &server_out
+	server.Stderr = &server_err
 
 	// Remove testfile binary
 	defer func() {
@@ -100,9 +129,6 @@ func run(t *testing.T, testfile string, initial_bp_line int, initial_watchexpr s
 		}
 	}()
 
-	server.Stdout = &server_out
-	server.Stderr = &server_err
-
 	assertNoError(server.Start(), t, "start headless instance")
 	record_time := waitForReplay(t, &server_out, &server_err)
 
@@ -112,14 +138,38 @@ func run(t *testing.T, testfile string, initial_bp_line int, initial_watchexpr s
 	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()
 	client := exec.CommandContext(ctx, getClientBin(t),
-		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", initial_bp_line),
-		"-initial_watchexpr="+initial_watchexpr)
-	out, err := client.CombinedOutput()
-	fmt.Printf("Client output: %s\n", string(out))
-	assertNoError(err, t, "client output")
+		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", lines[0]),
+		"-initial_watchexpr="+watchexprs[0])
 
-	// Final server error check (TODO test this)
+	var client_out saveOutput
+	var client_err saveOutput
+	client.Stdout = &client_out
+	client.Stderr = &client_err
+
+	assertNoError(client.Run(), t, "run client")
+
+	// Check for errors during replay
+	if len(client_err.savedOutput) > 0 {
+		t.Fatalf("Delve client errored: %s", client_err.savedOutput)
+	}
 	if len(server_err.savedOutput) > 0 {
-		t.Fatalf("Delve server errored while client running")
+		t.Fatalf("Delve server errored while client running: %s", server_err.savedOutput)
+	}
+
+	checkWatchpoints(t, client_out.savedOutput, lines, watchexprs)
+}
+
+func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []string) {
+	log_msg_format := "CreateWatchpoint: line %v, watchexpr %v\n"
+	for i, line := range lines {
+		log_msg := fmt.Sprintf(log_msg_format, line, watchexprs[i])
+		if !strings.Contains(string(stdout), log_msg) {
+			t.Fatalf("Client did not log creation of expected watchpoint: %v", log_msg)
+		}
+	}
+
+	n_created_wp := strings.Count(string(stdout), "CreateWatchpoint: ")
+	if n_created_wp != len(lines) {
+		t.Fatalf("Client created %v watchpoints, expected %v", n_created_wp, len(lines))
 	}
 }

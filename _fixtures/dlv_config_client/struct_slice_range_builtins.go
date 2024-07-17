@@ -6,9 +6,7 @@ type Conf struct {
 	search []string
 }
 
-// Expect 12 hits
 func main() {
-	// TODO once this passes: update comments
 	conf := &Conf{search: []string{"hi", "hello"}} // conf.search is initially tainted
 	names := make([]string, 0, len(conf.search))
 	// 1st iter: hit for conf.search x 2 => propagate to suffix

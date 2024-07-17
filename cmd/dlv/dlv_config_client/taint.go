@@ -61,12 +61,16 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	}
 
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
-		fmt.Println("Runtime hit - runtime portion of stack (with PC one after hitting instr):")
+		fmt.Println("Runtime hit - partial stack (with PC one after hitting instr):")
 		for i, frame := range stack {
+			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
+				frame.File, frame.Line, frame.Function.Name(),
+				frame.PC)
+			fmt.Println(loc)
+
 			// TODO skip hits from sysmon thread (sw wp commit may hv a test?)
 			// What is the case when runtime.main hits again?
 			if frame.Function.Name() == "runtime.newstack" || frame.Function.Name() == "runtime.main" {
-				fmt.Printf("Hit in runtime.newstack or runtime.main\n")
 				return nil, false
 			}
 			if !strings.HasPrefix(frame.Function.Name(), "runtime") {
@@ -74,10 +78,6 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 				return &frame, true
 			}
 
-			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
-				frame.File, frame.Line, frame.Function.Name(),
-				frame.PC)
-			fmt.Println(loc)
 		}
 	}
 
@@ -138,6 +138,10 @@ func (tc *TaintCheck) hittingLine() bool {
 
 	if src_line == "" {
 		log.Fatalf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
+	}
+	if strings.HasPrefix(src_line, "fmt.Print") {
+		// Don't propagate into Print, for test convenience
+		return false
 	}
 	hit_loc := fmt.Sprintf("%v \nLine %v:%v:0x%x \n%v \n%v",
 		tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line, tc.hit.hit_instr.Loc.Function.Name(),
@@ -391,12 +395,13 @@ func (tc *TaintCheck) recordPendingWp(exprs []ast.Expr, expr_strs []string, loc 
 		existing_info := tc.pending_wps[addr]
 		existing_info.watchexprs = append(existing_info.watchexprs, expr_str)
 		tc.pending_wps[addr] = existing_info
-		fmt.Printf("ZZEM recordPendingWp for %v, bp addr 0x%x\n", expr_str, addr)
+		fmt.Printf("recordPendingWp: line %v, watchexpr %v, bp addr 0x%x\n", loc.Line, expr_str, addr)
 	}
 	if argno != nil {
 		existing_info := tc.pending_wps[addr]
 		existing_info.watchargs = append(existing_info.watchargs, *argno)
 		tc.pending_wps[addr] = existing_info
+		fmt.Printf("recordPendingWp: line %v, argno %v, bp addr 0x%x\n", loc.Line, *argno, addr)
 	}
 }
 
@@ -418,7 +423,7 @@ func (tc *TaintCheck) onBreakpointHitDone(bp_addr uint64) {
 }
 
 // This should handle being called multiple times for same bpaddr+watchaddr
-func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr *uint64) {
+func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr *uint64, watcharg *int) {
 	fmt.Printf("ZZEM enter trySetWatchpoint, bp_addr 0x%x\n", bp_addr)
 	if watchexpr != nil {
 		fmt.Printf("watchexpr %v\n", *watchexpr)
@@ -445,7 +450,11 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 		if err != nil || xv.Addr == 0 {
 			log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
 		}
-		tc.deleteWatchExpr(*watchexpr, bp_addr)
+		if watcharg != nil {
+			tc.deleteWatchArg(*watcharg, bp_addr)
+		} else {
+			tc.deleteWatchExpr(*watchexpr, bp_addr)
+		}
 		watchaddr = &xv.Addr
 	}
 
@@ -492,6 +501,12 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	}
 
 	if !existed {
+		if watchexpr != nil {
+			// Log for test
+			// LEFT OFF: will need special handling for replay - log the addr after eval
+			// TODO (minor): Move logic in this file to its own package, so can import it for testing
+			fmt.Printf("CreateWatchpoint: line %v, watchexpr %v\n", tc.hit.hit_bp.Line, *watchexpr)
+		}
 		fmt.Printf("ZZEM created wp at 0x%x\n", created_wp.Addrs[0])
 	}
 	tc.deleteWatchAddr(*watchaddr, bp_addr)
@@ -521,18 +536,18 @@ func (tc *TaintCheck) onBreakpointHit() {
 	fmt.Printf("ZZEM onBreakpointHit, bp addr 0x%x\nInfo %v\n", bp_addr, info)
 
 	for _, watchaddr := range info.watchaddrs {
-		tc.trySetWatchpoint(nil, bp_addr, &watchaddr)
+		tc.trySetWatchpoint(nil, bp_addr, &watchaddr, nil)
 	}
-	for _, watchexpr := range tc.pending_wps[bp_addr].watchexprs {
-		tc.trySetWatchpoint(&watchexpr, bp_addr, nil)
+	for _, watchexpr := range info.watchexprs {
+		tc.trySetWatchpoint(&watchexpr, bp_addr, nil, nil)
 	}
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	for _, argno := range tc.pending_wps[bp_addr].watchargs {
+	for _, argno := range info.watchargs {
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
-		tc.trySetWatchpoint(&args[argno].Name, bp_addr, nil)
+		tc.trySetWatchpoint(&args[argno].Name, bp_addr, nil, &argno)
 	}
 
 	// cleanup

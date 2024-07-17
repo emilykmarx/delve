@@ -14,15 +14,15 @@ func main() {
 
 	queryFn = func(fqdn string) {
 		wg.Add(1)
-		fmt.Printf("Using fdqn: %v\n", fqdn) // hit for fqdn => ignore from there (prop w/in Printf -- should maybe ignore...)
+		fmt.Printf("Using fdqn: %v\n", fqdn)
 		go func() {
 			defer wg.Done()
 
-			fmt.Printf("Using fdqn in goroutine: %v\n", fqdn) // hit for fqdn => ignore from there (prop w/in Printf -- should maybe ignore...)
+			fmt.Printf("Using fdqn in goroutine: %v\n", fqdn)
 		}()
 	}
 
 	runtime.KeepAlive(fqdn)
-	queryFn(fqdn) // hit for fqdn => propagate to arg
+	queryFn(fqdn) // hit for fqdn => propagate to callee
 	wg.Wait()
 }

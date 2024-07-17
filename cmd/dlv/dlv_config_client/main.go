@@ -13,15 +13,6 @@ import (
 // One round of replay
 func (tc *TaintCheck) replay() {
 	fmt.Println("Replay")
-	fmt.Println("bps:")
-	bps_prev, list_err := tc.client.ListBreakpoints(true)
-	if list_err != nil {
-		log.Fatalf("Error listing breakpoints: %v\n", list_err)
-	}
-	for _, bp := range bps_prev {
-		fmt.Printf("bp addr: %x\n", bp.Addr)
-	}
-
 	state := <-tc.client.Continue()
 
 	for ; !state.Exited; state = <-tc.client.Continue() {
@@ -77,7 +68,6 @@ func main() {
 	initial_bp_line := flag.Int("initial_bp_line", 0, "Line number to set initial breakpoint")
 	initial_watchexpr := flag.String("initial_watchexpr", "", "Expression to set initial watchpoint")
 	flag.Parse()
-	fmt.Printf("initial file: %v, line %v, watchexpr %v\n", *initial_bp_file, *initial_bp_line, *initial_watchexpr)
 
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
