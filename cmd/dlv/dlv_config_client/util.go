@@ -16,6 +16,7 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
+// TODO (minor): Combine these 3 deletion fcts - Go has generics now
 // Remove watcharg from list of pending ones for this bp_addr (if it existed)
 func (tc *TaintCheck) deleteWatchArg(watcharg int, bp_addr uint64) {
 	info, ok := tc.pending_wps[bp_addr]

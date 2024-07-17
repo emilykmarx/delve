@@ -25,7 +25,6 @@ type Hit struct {
 	frame int
 }
 
-// TODO add test for multiple watch addrs at same bp addr (e.g. multiple args tainted)
 type PendingWp struct {
 	watchexprs []string
 	watchargs  []int
@@ -489,6 +488,10 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 					info := tc.pending_wps[bp_addr]
 					info.watchaddrs = append(info.watchaddrs, *watchaddr)
 					tc.pending_wps[bp_addr] = info
+					// Log for test (alternative is to store watchexpr - would also allow us to pass it to delve,
+					// which would be convenient but require more storage)
+					fmt.Printf("Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x%x\n",
+						tc.hit.hit_bp.Line, *watchexpr, *watchaddr)
 				}
 				return
 			} else {
@@ -503,9 +506,11 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	if !existed {
 		if watchexpr != nil {
 			// Log for test
-			// LEFT OFF: will need special handling for replay - log the addr after eval
 			// TODO (minor): Move logic in this file to its own package, so can import it for testing
 			fmt.Printf("CreateWatchpoint: line %v, watchexpr %v\n", tc.hit.hit_bp.Line, *watchexpr)
+		} else {
+			fmt.Printf("CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n",
+				tc.hit.hit_bp.Line, *watchaddr)
 		}
 		fmt.Printf("ZZEM created wp at 0x%x\n", created_wp.Addrs[0])
 	}

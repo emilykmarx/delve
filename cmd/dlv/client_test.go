@@ -59,6 +59,12 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	run(t, "funclit_goroutine.go", lines, watchexprs)
 }
 
+func TestMultiRound(t *testing.T) {
+	lines := []int{8, 15, 15, 15, 15, 15}
+	watchexprs := []string{"vars[0]", "vars[i]", "vars[i]", "vars[i]", "vars[i]", "vars[i]"}
+	run(t, "multiround.go", lines, watchexprs)
+}
+
 func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) time.Duration {
 	start := time.Now()
 	// Wait for output so can check error
@@ -160,15 +166,40 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 }
 
 func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []string) {
-	log_msg_format := "CreateWatchpoint: line %v, watchexpr %v\n"
+	log_create := "CreateWatchpoint: line %v, watchexpr %v\n"
+	log_create_hw_pending := "CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n"
+	log_record_hw_pending := "Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x"
+	hw_pending_watchaddrs := make([]int, len(lines))
+
+	// Get addrs of hw-pending wps
 	for i, line := range lines {
-		log_msg := fmt.Sprintf(log_msg_format, line, watchexprs[i])
+		log_msg := fmt.Sprintf(log_record_hw_pending, line, watchexprs[i])
+		if idx := strings.Index(string(stdout), log_msg); idx != -1 {
+			var watchaddr uint64
+			line := string(stdout)[idx+len(log_msg):]
+			if _, err := fmt.Sscanf(line, "%x\n", &watchaddr); err != nil {
+				t.Fatalf("Wrong log format")
+			}
+			fmt.Printf("watchaddr: %x\n", watchaddr)
+			// Expect to see this watchexpr created with addr, not expr
+			hw_pending_watchaddrs[i] = int(watchaddr)
+			watchexprs[i] = ""
+		}
+	}
+
+	// Check expected wps were created
+	for i, line := range lines {
+		log_msg := fmt.Sprintf(log_create, line, watchexprs[i])
+		if hw_pending_watchaddrs[i] != 0 {
+			log_msg = fmt.Sprintf(log_create_hw_pending, line, hw_pending_watchaddrs[i])
+		}
 		if !strings.Contains(string(stdout), log_msg) {
 			t.Fatalf("Client did not log creation of expected watchpoint: %v", log_msg)
 		}
 	}
 
-	n_created_wp := strings.Count(string(stdout), "CreateWatchpoint: ")
+	// Check no unexpected wps were created
+	n_created_wp := strings.Count(string(stdout), "CreateWatchpoint")
 	if n_created_wp != len(lines) {
 		t.Fatalf("Client created %v watchpoints, expected %v", n_created_wp, len(lines))
 	}
