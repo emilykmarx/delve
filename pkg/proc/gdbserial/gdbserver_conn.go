@@ -437,10 +437,6 @@ func (conn *gdbConn) setBreakpoint(addr uint64, typ breakpointType, kind int) er
 	//fmt.Printf("enter setBreakpoint, addr %x type %v kind %v\n", addr, typ, kind)
 	conn.outbuf.Reset()
 	fmt.Fprintf(&conn.outbuf, "$Z%d,%x,%d", typ, addr, kind)
-	pkt := fmt.Sprintf("$Z%d,%x,%d", typ, addr, kind)
-	if typ == accessWatchpoint {
-		fmt.Printf("setBreakpoint for wp; packet %v\n", pkt)
-	}
 	_, err := conn.exec(conn.outbuf.Bytes(), "set breakpoint")
 	if err != nil {
 		fmt.Printf("exit setBreakpoint w/ err %v\n", err)
@@ -452,10 +448,6 @@ func (conn *gdbConn) setBreakpoint(addr uint64, typ breakpointType, kind int) er
 func (conn *gdbConn) clearBreakpoint(addr uint64, typ breakpointType, kind int) error {
 	conn.outbuf.Reset()
 	fmt.Fprintf(&conn.outbuf, "$z%d,%x,%d", typ, addr, kind)
-	pkt := fmt.Sprintf("$z%d,%x,%d", typ, addr, kind)
-	if typ == accessWatchpoint {
-		fmt.Printf("clearBreakpoint for wp; packet %v\n", pkt)
-	}
 	_, err := conn.exec(conn.outbuf.Bytes(), "clear breakpoint")
 	if err != nil {
 		fmt.Printf("exit clearBreakpoint w/ err %v\n", err)

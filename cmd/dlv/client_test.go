@@ -48,8 +48,9 @@ func TestStrings(t *testing.T) {
 }
 
 func TestStructSliceRangeBuiltins(t *testing.T) {
-	lines := []int{11, 16, 18}
-	watchexprs := []string{"conf.search", "suffix", "names"}
+	// This is unfinished (ran into the bug midway)
+	lines := []int{11, 16, 19, 24}
+	watchexprs := []string{"conf.search", "suffix", "names", "names"}
 	run(t, "struct_slice_range_builtins.go", lines, watchexprs)
 }
 
@@ -166,7 +167,7 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 }
 
 func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []string) {
-	log_create := "CreateWatchpoint: line %v, watchexpr %v\n"
+	log_create := "CreateWatchpoint: line %v, watchexpr %v, watchaddr 0x"
 	log_create_hw_pending := "CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n"
 	log_record_hw_pending := "Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x"
 	hw_pending_watchaddrs := make([]int, len(lines))
@@ -194,7 +195,7 @@ func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []str
 			log_msg = fmt.Sprintf(log_create_hw_pending, line, hw_pending_watchaddrs[i])
 		}
 		if !strings.Contains(string(stdout), log_msg) {
-			t.Fatalf("Client did not log creation of expected watchpoint: %v", log_msg)
+			t.Fatalf("Client did not log creation of expected watchpoint: %v", log_msg+"<X>")
 		}
 	}
 

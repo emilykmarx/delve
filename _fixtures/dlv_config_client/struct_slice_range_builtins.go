@@ -6,7 +6,7 @@ type Conf struct {
 	search []string
 }
 
-func main() {
+func struct_slice_append() []string {
 	conf := &Conf{search: []string{"hi", "hello"}} // conf.search is initially tainted
 	names := make([]string, 0, len(conf.search))
 	// 1st iter: hit for conf.search x 2 => propagate to suffix
@@ -15,8 +15,14 @@ func main() {
 		// runtime hit (of suffix[0]) => propagate to names (once exit range)
 		names = append(names, "localhost"+suffix)
 	}
-	fmt.Println(names)          // hit for names
-	if conf.search[0] == "hi" { // hit for conf.search x 6, suffix[0] (reusing mem)
-		fmt.Println("yep")
-	}
+
+	//fmt.Println() // If remove, too late to hit return?
+	return names
+}
+
+func main() {
+	names := struct_slice_append() // propagate to caller copy of names
+	names2 := make([]string, len(names))
+	copy(names2, names) // propagate to names2
+	fmt.Println()
 }

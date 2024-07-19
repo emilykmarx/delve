@@ -16,55 +16,6 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
-// TODO (minor): Combine these 3 deletion fcts - Go has generics now
-// Remove watcharg from list of pending ones for this bp_addr (if it existed)
-func (tc *TaintCheck) deleteWatchArg(watcharg int, bp_addr uint64) {
-	info, ok := tc.pending_wps[bp_addr]
-	if !ok {
-		return
-	}
-	new_watchargs := []int{}
-	for _, argno := range info.watchargs {
-		if argno != watcharg {
-			new_watchargs = append(new_watchargs, argno)
-		}
-	}
-	info.watchargs = new_watchargs
-	tc.pending_wps[bp_addr] = info
-}
-
-// Remove watchexpr from list of pending ones for this bp_addr (if it existed)
-func (tc *TaintCheck) deleteWatchExpr(watchexpr string, bp_addr uint64) {
-	info, ok := tc.pending_wps[bp_addr]
-	if !ok {
-		return
-	}
-	new_watchexprs := []string{}
-	for _, expr := range info.watchexprs {
-		if expr != watchexpr {
-			new_watchexprs = append(new_watchexprs, expr)
-		}
-	}
-	info.watchexprs = new_watchexprs
-	tc.pending_wps[bp_addr] = info
-}
-
-// Remove watchaddr from list of pending ones for this bp_addr (if it existed)
-func (tc *TaintCheck) deleteWatchAddr(watchaddr uint64, bp_addr uint64) {
-	info, ok := tc.pending_wps[bp_addr]
-	if !ok {
-		return
-	}
-	new_watchaddrs := []uint64{}
-	for _, addr := range info.watchaddrs {
-		if addr != watchaddr {
-			new_watchaddrs = append(new_watchaddrs, addr)
-		}
-	}
-	info.watchaddrs = new_watchaddrs
-	tc.pending_wps[bp_addr] = info
-}
-
 // number of existing wps
 func (tc *TaintCheck) nWps() int {
 	bps, list_err := tc.client.ListBreakpoints(true)
@@ -133,24 +84,6 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 	return addr1 < addr2+sz2 && addr2 < addr1+sz1
 }
 
-var handledBuiltins = map[string]bool{"append": true}
-
-// TODO should also consider modeling other built-ins
-// Whether return value is tainted
-func (tc *TaintCheck) handleBuiltinFct(call_node *ast.CallExpr) bool {
-	if exprToString(call_node.Fun) == "append" {
-		fmt.Println("handling builtin")
-		// Any elem tainted, or slice already tainted => ret tainted
-		// (handles possible realloc)
-		for _, arg := range call_node.Args {
-			if tc.isTainted(arg) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (tc *TaintCheck) printStacktrace() {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	if err != nil {
@@ -161,5 +94,46 @@ func (tc *TaintCheck) printStacktrace() {
 			frame.File, frame.Line, frame.Function.Name(),
 			frame.PC)
 		fmt.Println(loc)
+	}
+}
+
+// Find the next line on or after this one with a statement, so we can set a bp.
+// May want to consider doing this with PC when handle the non-linear stuff
+func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int) api.Location {
+	var loc string
+	if fn != nil {
+		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, *fn, true, nil)
+		if err != nil {
+			log.Fatalf("Error finding location: %v\n", err)
+		}
+		file = locs[0].File
+		lineno = locs[0].Line + 1
+	}
+
+	for { // TODO make loop safer
+		loc = fmt.Sprintf("%v:%v", file, lineno)
+		// TODO(minor): how to pass in substitutePath rules? (2nd ret is related)
+		// Lines with instr only
+		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, loc, true, nil)
+		if len(locs) == 1 {
+			return locs[0]
+		}
+		if err != nil && !strings.HasPrefix(err.Error(), "could not find statement") {
+			log.Fatalf("Error finding location: %v\n", err)
+		}
+		if len(locs) > 1 || (len(locs) > 0 && len(locs[0].PCs) != 1) {
+			// Unsure when this would happen - don't support for now
+			log.Fatalf("Too many locations: %v\n", locs)
+		}
+		lineno += 1
+	}
+}
+
+func (tc *TaintCheck) setBp(addr uint64) {
+	bp := api.Breakpoint{Addrs: []uint64{addr}}
+	if _, err := tc.client.CreateBreakpoint(&bp); err != nil {
+		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") {
+			log.Fatalf("Failed to create breakpoint at %v: %v\n", addr, err)
+		}
 	}
 }
