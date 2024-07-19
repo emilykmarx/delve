@@ -48,9 +48,8 @@ func TestStrings(t *testing.T) {
 }
 
 func TestStructSliceRangeBuiltins(t *testing.T) {
-	// This is unfinished (ran into the bug midway)
-	lines := []int{11, 16, 19, 24}
-	watchexprs := []string{"conf.search", "suffix", "names", "names"}
+	lines := []int{11, 16, 19, 25, 27}
+	watchexprs := []string{"conf.search", "suffix", "names", "names", "names2"}
 	run(t, "struct_slice_range_builtins.go", lines, watchexprs)
 }
 
@@ -66,7 +65,8 @@ func TestMultiRound(t *testing.T) {
 	run(t, "multiround.go", lines, watchexprs)
 }
 
-func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) time.Duration {
+// Return true to retry
+func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) (time.Duration, bool) {
 	start := time.Now()
 	// Wait for output so can check error
 	for ; len(stdout.savedOutput) == 0; time.Sleep(time.Second) {
@@ -77,7 +77,12 @@ func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) time.Du
 
 	for {
 		if len(stderr.savedOutput) > 0 {
-			t.Fatalf("Delve server errored while starting up (perf counters in use?)")
+			if strings.Contains(string(stderr.savedOutput), "check_working_counters()") {
+				// perf counters in use => try again (should resolve shortly)
+				return 0, true
+			} else {
+				t.Fatalf("Delve server errored while starting up")
+			}
 		}
 
 		err := exec.Command("bash", "-c", "ps aux | grep 'rr replay' | grep -v grep").Run()
@@ -94,7 +99,7 @@ func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) time.Du
 			}
 		} else {
 			// Found replay
-			return time.Since(start)
+			return time.Since(start), false
 		}
 	}
 }
@@ -116,13 +121,6 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 	fixturePath := filepath.Join(protest.FindFixturesDir(), "dlv_config_client", testfile)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	server := exec.CommandContext(ctx, getDlvBin(t), "debug", "--headless", "--backend=rr",
-		"--api-version=2", "--accept-multiclient", "--listen", listenAddr, fixturePath)
-
-	var server_out saveOutput
-	var server_err saveOutput
-	server.Stdout = &server_out
-	server.Stderr = &server_err
 
 	// Remove testfile binary
 	defer func() {
@@ -136,8 +134,20 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 		}
 	}()
 
-	assertNoError(server.Start(), t, "start headless instance")
-	record_time := waitForReplay(t, &server_out, &server_err)
+	var server_out saveOutput
+	var server_err saveOutput
+	var record_time time.Duration
+
+	for retry := true; retry; {
+		server := exec.CommandContext(ctx, getDlvBin(t), "debug", "--headless", "--backend=rr",
+			"--api-version=2", "--accept-multiclient", "--listen", listenAddr, fixturePath)
+		server_out = saveOutput{}
+		server_err = saveOutput{}
+		server.Stdout = &server_out
+		server.Stderr = &server_err
+		assertNoError(server.Start(), t, "start headless instance")
+		record_time, retry = waitForReplay(t, &server_out, &server_err)
+	}
 
 	// Run dlv client until exit or timeout (assume replay time <= 3x record time)
 	client_timeout := 3 * record_time

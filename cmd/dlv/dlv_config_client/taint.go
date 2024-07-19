@@ -172,7 +172,8 @@ func (tc *TaintCheck) propagateTaint() {
 			fmt.Printf("CallExpr; fn %v\n", fn)
 			if fn == "copy" {
 				if tc.isTainted(typed_node.Args[1]) {
-					// TODO won't necessarily be next line
+					// TODO won't necessarily be next line - could actually set at current loc,
+					// but need a special case for that
 					fmt.Println("about to recordPendingWp for copy")
 					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)

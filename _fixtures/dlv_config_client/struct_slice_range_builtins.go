@@ -16,7 +16,7 @@ func struct_slice_append() []string {
 		names = append(names, "localhost"+suffix)
 	}
 
-	//fmt.Println() // If remove, too late to hit return?
+	fmt.Println()
 	return names
 }
 

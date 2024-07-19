@@ -227,10 +227,12 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 // This should handle being called multiple times for same bpaddr+watchaddr
 func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr *uint64, watcharg *int) {
 	// 1. Evaluate expr, if haven't yet
+	var xv *api.Variable
+	var err error
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	if watchexpr != nil {
 		loadcfg := api.LoadConfig{FollowPointers: true}
-		xv, err := tc.client.EvalVariable(scope, *watchexpr, loadcfg)
+		xv, err = tc.client.EvalVariable(scope, *watchexpr, loadcfg)
 		if err != nil || xv.Addr == 0 {
 			log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
 		}
@@ -307,7 +309,16 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 		tainting_param := TaintingParam{param: tc.config_var, flow: DataFlow}
 		tc.mem_param_map[created_wp.Addrs[0]] = TaintingVals{params: map[TaintingParam]struct{}{tainting_param: {}}}
 	} else {
+		if _, ok := tc.mem_param_map[info.tainting_wp_addr]; !ok {
+			log.Fatalf("No mem-param map entry for watchpoint 0x%x\n", info.tainting_wp_addr)
+		}
 		tc.mem_param_map[created_wp.Addrs[0]] = tc.mem_param_map[info.tainting_wp_addr]
+
+		//if xv != nil && xv.RealType == "string" {
+		// LEFT OFF see notebook
+		// also add first byte here if created, and to watchaddr if stays pending
+		// Wait: what if only hv room for str pointer wp, but not 1st B? (add test for that)
+		//}
 	}
 }
 
