@@ -170,6 +170,7 @@ func ConvertVar(v *proc.Variable) *Variable {
 		OnlyAddr: v.OnlyAddr,
 		Name:     v.Name,
 		Kind:     v.Kind,
+		Watchsz:  v.Watchsz,
 		Len:      v.Len,
 		Cap:      v.Cap,
 		Flags:    VariableFlags(v.Flags),

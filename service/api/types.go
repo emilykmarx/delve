@@ -322,6 +322,9 @@ type Variable struct {
 
 	Kind reflect.Kind `json:"kind"`
 
+	// Required size of watchpoint
+	Watchsz int64 `json:"watchsz"`
+
 	// Strings have their length capped at proc.maxArrayValues, use Len for the real length of a string
 	// Function variables will store the name of the function in this field
 	Value string `json:"value"`

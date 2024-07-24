@@ -33,11 +33,6 @@ func (tc *TaintCheck) replay() {
 			}
 		}
 
-		fmt.Printf("Mem-config map after continue (before removing OOS):\n")
-		for k, v := range tc.mem_param_map {
-			fmt.Printf("0x%x => %+v\n", k, v)
-		}
-
 		for _, wp_oos := range state.WatchOutOfScope {
 			fmt.Printf("Watchpoint on 0x%x went out of scope since last continue\n", wp_oos.Addrs[0])
 			delete(tc.mem_param_map, wp_oos.Addrs[0])
@@ -55,10 +50,10 @@ func (tc *TaintCheck) replay() {
 		}
 	}
 
-	for wp := range tc.round_done_wps {
-		tc.done_wps[wp] = struct{}{}
+	for wp, tainting_vals := range tc.round_done_wps {
+		tc.done_wps[wp] = tainting_vals
 	}
-	tc.round_done_wps = make(map[DoneWp]struct{})
+	tc.round_done_wps = make(map[DoneWp]TaintingVals)
 
 	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
 	tc.client.Restart(false)
@@ -80,13 +75,12 @@ func main() {
 
 	tc := TaintCheck{client: client,
 		pending_wps: make(map[uint64]PendingWp),
-		done_wps:    make(map[DoneWp]struct{}), round_done_wps: make(map[DoneWp]struct{}),
+		done_wps:    make(map[DoneWp]TaintingVals), round_done_wps: make(map[DoneWp]TaintingVals),
 		mem_param_map: make(map[uint64]TaintingVals)}
 	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line)
 
+	// This will be replaced by a config breakpoint
 	fmt.Printf("Configuration variable: %v\n", *initial_watchexpr)
-	tc.config_var = *initial_watchexpr
-	tc.config_bp = init_loc.PC
 	tc.recordPendingWp(*initial_watchexpr, init_loc, nil)
 
 	for len(tc.pending_wps) > 0 {

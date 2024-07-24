@@ -336,6 +336,12 @@ func (c *RPCClient) GetThread(id int) (*api.Thread, error) {
 	return out.Thread, err
 }
 
+func (c *RPCClient) EvalWatchexpr(scope api.EvalScope, expr string) (*api.Variable, error) {
+	var out EvalOut
+	err := c.call("EvalWatchexpr", EvalIn{scope, expr, nil}, &out)
+	return out.Variable, err
+}
+
 func (c *RPCClient) EvalVariable(scope api.EvalScope, expr string, cfg api.LoadConfig) (*api.Variable, error) {
 	var out EvalOut
 	err := c.call("Eval", EvalIn{scope, expr, &cfg}, &out)

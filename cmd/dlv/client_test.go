@@ -42,20 +42,24 @@ func TestCallAndAssign2(t *testing.T) {
 }
 
 func TestStrings(t *testing.T) {
-	lines := []int{13, 14}
-	watchexprs := []string{"s", "s2"}
+	lines := []int{13, 13, 14, 14}
+	watchexprs := []string{"s", "s", "s2", "s2"}
 	run(t, "strings.go", lines, watchexprs)
 }
 
 func TestStructSliceRangeBuiltins(t *testing.T) {
-	lines := []int{11, 16, 19, 25, 27}
-	watchexprs := []string{"conf.search", "suffix", "names", "names", "names2"}
+	lines := []int{11, 16, 16, 19, 25, 27}
+	watchexprs := []string{"conf.search",
+		"suffix", "suffix", // two for string
+		"names", "names_caller", "names2"}
 	run(t, "struct_slice_range_builtins.go", lines, watchexprs)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
-	lines := []int{13, 16}
-	watchexprs := []string{"fqdn", "fqdn"}
+	lines := []int{13, 13, 16}
+	// Compiler uses same memory for chars of both fqdn strings,
+	// so only expect wp for chars on 13
+	watchexprs := []string{"fqdn", "fqdn", "fqdn"}
 	run(t, "funclit_goroutine.go", lines, watchexprs)
 }
 
@@ -176,36 +180,52 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 	checkWatchpoints(t, client_out.savedOutput, lines, watchexprs)
 }
 
-func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []string) {
-	log_create := "CreateWatchpoint: line %v, watchexpr %v, watchaddr 0x"
-	log_create_hw_pending := "CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n"
-	log_record_hw_pending := "Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x"
-	hw_pending_watchaddrs := make([]int, len(lines))
-
-	// Get addrs of hw-pending wps
-	for i, line := range lines {
-		log_msg := fmt.Sprintf(log_record_hw_pending, line, watchexprs[i])
-		if idx := strings.Index(string(stdout), log_msg); idx != -1 {
-			var watchaddr uint64
-			line := string(stdout)[idx+len(log_msg):]
-			if _, err := fmt.Sscanf(line, "%x\n", &watchaddr); err != nil {
-				t.Fatalf("Wrong log format")
-			}
-			fmt.Printf("watchaddr: %x\n", watchaddr)
-			// Expect to see this watchexpr created with addr, not expr
-			hw_pending_watchaddrs[i] = int(watchaddr)
-			watchexprs[i] = ""
+func parseWatchAddr(t *testing.T, stdout []byte, log_msg string) *uint64 {
+	if idx := strings.Index(string(stdout), log_msg); idx != -1 {
+		var watchaddr uint64
+		line := string(stdout)[idx+len(log_msg):]
+		if _, err := fmt.Sscanf(line, "%x\n", &watchaddr); err != nil {
+			t.Fatalf("Wrong log format")
 		}
+		return &watchaddr
 	}
+	return nil
+}
 
-	// Check expected wps were created
+func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []string) {
+	create_nonpending_fmt := "CreateWatchpoint: line %v, watchexpr %v, watchaddr 0x"
+	create_hw_pending_fmt := "CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n"
+	record_hw_pending_fmt := "Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x"
+
+	// Check expected wps were created, and mem-config map was updated
 	for i, line := range lines {
-		log_msg := fmt.Sprintf(log_create, line, watchexprs[i])
-		if hw_pending_watchaddrs[i] != 0 {
-			log_msg = fmt.Sprintf(log_create_hw_pending, line, hw_pending_watchaddrs[i])
+		var create string
+		var watchaddr uint64
+		record_hw_pending := fmt.Sprintf(record_hw_pending_fmt, line, watchexprs[i])
+		pending_watchaddr := parseWatchAddr(t, stdout, record_hw_pending)
+		if pending_watchaddr != nil {
+			// Expect to see this watchexpr created with addr, not expr
+			create = fmt.Sprintf(create_hw_pending_fmt, line, *pending_watchaddr)
+			watchaddr = *pending_watchaddr
+		} else {
+			create = fmt.Sprintf(create_nonpending_fmt, line, watchexprs[i])
+			nonpending_watchaddr := parseWatchAddr(t, stdout, create)
+			if nonpending_watchaddr == nil {
+				t.Fatalf("Client did not log watchaddr for non-pending watchpoint: %v", create)
+			}
+			watchaddr = *nonpending_watchaddr
 		}
-		if !strings.Contains(string(stdout), log_msg) {
-			t.Fatalf("Client did not log creation of expected watchpoint: %v", log_msg+"<X>")
+
+		// wp
+		if !strings.Contains(string(stdout), create) {
+			t.Fatalf("Client did not log creation of expected watchpoint: %v", create)
+		}
+
+		// mem-config map
+		mem_param_fmt := "\tMemory-parameter map: 0x%x => {params:map[{param:%v flow:1}:{}]}\n"
+		mem_param := fmt.Sprintf(mem_param_fmt, watchaddr, watchexprs[0])
+		if !strings.Contains(string(stdout), mem_param) {
+			t.Fatalf("Client did not log expected update of memory-parameter map: %v", mem_param)
 		}
 	}
 

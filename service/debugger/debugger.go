@@ -1093,6 +1093,18 @@ func (d *Debugger) findBreakpointByName(name string) *api.Breakpoint {
 	return nil
 }
 
+func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string) (*proc.Variable, error) {
+	d.targetMutex.Lock()
+	defer d.targetMutex.Unlock()
+	p := d.target.Selected
+
+	s, err := proc.ConvertEvalScope(p, goid, frame, deferredCall)
+	if err != nil {
+		return nil, err
+	}
+	return p.EvalWatchexpr(s, expr)
+}
+
 // CreateWatchpoint creates a watchpoint on the specified expression.
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType) (*api.Breakpoint, error) {
@@ -1113,7 +1125,6 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	if wp_err != nil {
 		return nil, wp_err
 	}
-	d.breakpointIDCounter += bp.DebuggerIDIncrement
 	if expr != nil && d.findBreakpointByName(*expr) == nil {
 		bp.Logical.Name = *expr
 	}

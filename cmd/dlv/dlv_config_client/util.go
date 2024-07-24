@@ -16,6 +16,14 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
+// Add pending wp's tainted vals to existing ones
+func (tc *TaintCheck) updateTaintingVals(info PendingWp, bp_addr uint64, watchaddr uint64) {
+	for new_val := range info.tainting_vals.params {
+		tc.mem_param_map[watchaddr].params[new_val] = struct{}{}
+	}
+	tc.pending_wps[bp_addr] = info
+}
+
 // number of existing wps
 func (tc *TaintCheck) nWps() int {
 	bps, list_err := tc.client.ListBreakpoints(true)

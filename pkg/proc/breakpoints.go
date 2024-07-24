@@ -70,8 +70,6 @@ type Breakpoint struct {
 	RootFuncName string
 	// TraceFollowCalls indicates the depth of tracing
 	TraceFollowCalls int
-	// Target uses to tell Debugger to increment its breakpointIDCounter for additional watchpoints set
-	DebuggerIDIncrement int
 }
 
 // Breaklet represents one of multiple breakpoints that can overlap on a
@@ -637,19 +635,8 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, watchaddr 
 	return bp, nil
 }
 
-// SetWatchpoint sets a data breakpoint at addr and stores it in the
-// process wide break point table.
-func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr) (*Breakpoint, error) {
-	// TODO hack for now: specify sw wp in expr
-	var wimpl WatchImpl
-	if real_expr, sw := strings.CutPrefix(expr, "WTF-SW-WP-"); sw {
-		expr = real_expr
-		wimpl = WatchSoftware
-	}
-	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
-		return nil, errors.New("at least one of read and write must be set for watchpoint")
-	}
-
+// Eval expr, check the result for watchability
+func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error) {
 	n, err := parser.ParseExpr(expr)
 	if err != nil {
 		return nil, err
@@ -669,33 +656,45 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 	}
 
 	sz := xv.DwarfType.Size()
-	debuggerIDIncrement := 0
+
 	if sz <= 0 {
 		return nil, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
 	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
 		// Watch only the addr field of string/slice - ops that only access len/cap do not propagate taint for now
 		sz = 8
-		// Also watch the first character - somehow string concatenation avoids reading the addr, but does read the first bytes
-		// May want to also do this for slices?
-		_, err := t.SetWatchpoint(logicalID+1, scope, expr+"[0]", wtype, cond)
-		if err != nil {
-			if _, ok := err.(BreakpointExistsError); !ok {
-				return nil, fmt.Errorf("failed to set additional watch for first byte of string: %v", err)
-			}
-		} else {
-			debuggerIDIncrement += 1
-		}
 	} else if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		sz = 8
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
 		return nil, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
 	}
 
-	bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Addr, sz, wtype, cond, wimpl)
+	xv.Watchsz = sz
+	return xv, nil
+}
+
+// SetWatchpoint sets a data breakpoint at addr and stores it in the
+// process wide break point table.
+func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr) (*Breakpoint, error) {
+	// TODO hack for now: specify sw wp in expr
+	var wimpl WatchImpl
+	if real_expr, sw := strings.CutPrefix(expr, "WTF-SW-WP-"); sw {
+		expr = real_expr
+		wimpl = WatchSoftware
+	}
+
+	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
+		return nil, errors.New("at least one of read and write must be set for watchpoint")
+	}
+
+	xv, err := t.EvalWatchexpr(scope, expr)
+	if err != nil {
+		return nil, err
+	}
+
+	bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
 	if err != nil {
 		return bp, err
 	}
-	bp.DebuggerIDIncrement = debuggerIDIncrement
 	return bp, err
 }
 

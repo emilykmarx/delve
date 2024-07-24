@@ -21,8 +21,8 @@ func struct_slice_append() []string {
 }
 
 func main() {
-	names := struct_slice_append() // propagate to caller copy of names
-	names2 := make([]string, len(names))
-	copy(names2, names) // propagate to names2
+	names_caller := struct_slice_append() // propagate to caller copy of names
+	names2 := make([]string, len(names_caller))
+	copy(names2, names_caller) // propagate to names2
 	fmt.Println()
 }

@@ -102,6 +102,7 @@ type Variable struct {
 	DwarfType godwarf.Type
 	RealType  godwarf.Type
 	Kind      reflect.Kind
+	Watchsz   int64
 	mem       MemoryReadWriter
 	bi        *BinaryInfo
 

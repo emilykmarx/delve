@@ -137,6 +137,9 @@ var builtinFcts = map[string]bool{
 func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) bool {
 	// Any elem tainted, or slice already tainted => ret tainted
 	// (handles possible realloc)
+	if exprToString(call_node.Fun) != "append" {
+		return false
+	}
 	for _, arg := range call_node.Args {
 		if tc.isTainted(arg) {
 			return true

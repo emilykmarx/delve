@@ -526,6 +526,15 @@ type EvalOut struct {
 	Variable *api.Variable
 }
 
+func (s *RPCServer) EvalWatchexpr(arg EvalIn, out *EvalOut) error {
+	v, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr)
+	if err != nil {
+		return err
+	}
+	out.Variable = api.ConvertVar(v)
+	return nil
+}
+
 // Eval returns a variable in the specified context.
 //
 // See https://github.com/go-delve/delve/blob/master/Documentation/cli/expr.md
