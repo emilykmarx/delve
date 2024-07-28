@@ -30,44 +30,114 @@ func getClientBin(t *testing.T) string {
 }
 
 func TestCallAndAssign1(t *testing.T) {
-	lines := []int{26, 30, 10, 16, 37, 41}
-	watchexprs := []string{"stack", "spacer", "tainted_param", "tainted_param_2", "y", "z"}
-	run(t, "call_assign_1.go", lines, watchexprs)
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 26, watchexpr: "stack"},
+		{kind: CreateNonPending, lineno: 30, watchexpr: "spacer"},
+		{kind: CreateNonPending, lineno: 10, watchexpr: "tainted_param"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "tainted_param_2"},
+		{kind: CreateNonPending, lineno: 37, watchexpr: "y"},
+		{kind: CreateNonPending, lineno: 41, watchexpr: "z"},
+	}
+	run(t, "call_assign_1.go", expected_logs)
 }
 
 func TestCallAndAssign2(t *testing.T) {
-	lines := []int{18, 9, 21}
-	watchexprs := []string{"stack", "tainted_param_2", "a"}
-	run(t, "call_assign_2.go", lines, watchexprs)
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 18, watchexpr: "stack"},
+		{kind: CreateNonPending, lineno: 9, watchexpr: "tainted_param_2"},
+		{kind: CreateNonPending, lineno: 21, watchexpr: "a"},
+	}
+	run(t, "call_assign_2.go", expected_logs)
 }
 
 func TestStrings(t *testing.T) {
-	lines := []int{13, 13, 14, 14}
-	watchexprs := []string{"s", "s", "s2", "s2"}
-	run(t, "strings.go", lines, watchexprs)
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 13, watchexpr: "s"},
+		{kind: CreateNonPending, lineno: 13, watchexpr: "s[0]"},
+		{kind: CreateNonPending, lineno: 14, watchexpr: "s2"},
+		{kind: CreateNonPending, lineno: 14, watchexpr: "s2[0]"},
+	}
+	run(t, "strings.go", expected_logs)
 }
 
 func TestStructSliceRangeBuiltins(t *testing.T) {
-	lines := []int{11, 16, 16, 19, 25, 27}
-	watchexprs := []string{"conf.search",
-		"suffix", "suffix", // two for string
-		"names", "names_caller", "names2"}
-	run(t, "struct_slice_range_builtins.go", lines, watchexprs)
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 11, watchexpr: "conf.search"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "suffix"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "suffix[0]"},
+		{kind: CreateNonPending, lineno: 19, watchexpr: "names"},
+		{kind: CreateNonPending, lineno: 25, watchexpr: "names_caller"},
+		{kind: CreateNonPending, lineno: 27, watchexpr: "names2"},
+	}
+	run(t, "struct_slice_range_builtins.go", expected_logs)
+}
+
+func TestArrays(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 7, watchexpr: "arr[0]"},
+		{kind: CreateNonPending, lineno: 8, watchexpr: "s"},
+	}
+	run(t, "arrays.go", expected_logs)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
-	lines := []int{13, 13, 16}
 	// Compiler uses same memory for chars of both fqdn strings,
 	// so only expect wp for chars on 13
-	watchexprs := []string{"fqdn", "fqdn", "fqdn"}
-	run(t, "funclit_goroutine.go", lines, watchexprs)
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 13, watchexpr: "fqdn"},
+		{kind: CreateNonPending, lineno: 13, watchexpr: "fqdn[0]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "fqdn"},
+	}
+	run(t, "funclit_goroutine.go", expected_logs)
+}
+func TestMultiRound(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 8, watchexpr: "vars[0]"},
+		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
+		{kind: RecordHWPending, lineno: 15, watchexpr: "vars[i]"},
+		{kind: CreateHWPending, lineno: 15, watchexpr: "vars[i]", recorded_wp: 4},
+		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
+	}
+
+	run(t, "multiround.go", expected_logs)
 }
 
-func TestMultiRound(t *testing.T) {
-	lines := []int{8, 15, 15, 15, 15, 15}
-	watchexprs := []string{"vars[0]", "vars[i]", "vars[i]", "vars[i]", "vars[i]", "vars[i]"}
-	run(t, "multiround.go", lines, watchexprs)
+// Not fully automated, but here for convenience.
+// (Need to manually run xenon, then place outfiles here)
+/*
+func TestXenon(t *testing.T) {
+	lines := []int{144,
+		509, 509, 515,
+		663, 663,
+		651, 651,
+		259, 259,
+		1902, 1902,
+		1907}
+	watchexprs := []string{"conf.search", // dnsconfig_unix.go:dnsReadConfig()
+		"suffix", "suffix", "names", // dnsclient_unix.go:nameList()
+		"fqdn", "fqdn", // dnsclient_unix.go:goLookupIPCNAMEOrder()
+		"fqdn", "fqdn", // dnsclient_unix.go:queryFn()
+		"name", "name", // dnsclient_unix.go:tryOneName()
+		"name", "name", // message.go:NewName()
+		"n.Data", // message.go:NewName()
+		// Unsure what will happen from here - manually check when wps hit, make sure taint propagation happens as expected
+	}
+	files := []string{"server_out.txt", "server_err.txt", "client_out.txt", "client_err.txt"}
+	outs := make([][]byte, len(files))
+	for i, file := range files {
+		out, err := os.ReadFile(file)
+		if _, ok := err.(*os.PathError); ok {
+			t.Skip("Missing xenon log file")
+		}
+		assertNoError(err, t, "open Xenon file")
+		outs[i] = out
+	}
+
+	checkOutput(t, outs[3], outs[1], outs[2], lines, watchexprs)
 }
+*/
 
 // Return true to retry
 func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) (time.Duration, bool) {
@@ -119,7 +189,7 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 }
 
 // Expect to set watchpoints for watchexprs on corresponding lines
-func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
+func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
 	// Start dlv server, wait for it to finish recording
 	listenAddr := "localhost:4040"
 	fixturePath := filepath.Join(protest.FindFixturesDir(), "dlv_config_client", testfile)
@@ -159,8 +229,8 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()
 	client := exec.CommandContext(ctx, getClientBin(t),
-		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", lines[0]),
-		"-initial_watchexpr="+watchexprs[0])
+		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", expected_logs[0].lineno),
+		"-initial_watchexpr="+expected_logs[0].watchexpr)
 
 	var client_out saveOutput
 	var client_err saveOutput
@@ -169,69 +239,101 @@ func run(t *testing.T, testfile string, lines []int, watchexprs []string) {
 
 	assertNoError(client.Run(), t, "run client")
 
+	checkOutput(t, client_err.savedOutput, server_err.savedOutput, client_out.savedOutput, expected_logs)
+}
+
+func checkOutput(t *testing.T, client_err []byte, server_err []byte, client_out []byte, expected_logs []expectedWpLog) {
 	// Check for errors during replay
-	if len(client_err.savedOutput) > 0 {
-		t.Fatalf("Delve client errored: %s", client_err.savedOutput)
+	if len(client_err) > 0 {
+		t.Fatalf("Delve client errored: %s", client_err)
 	}
-	if len(server_err.savedOutput) > 0 {
-		t.Fatalf("Delve server errored while client running: %s", server_err.savedOutput)
+	if len(server_err) > 0 {
+		t.Fatalf("Delve server errored while client running: %s", server_err)
 	}
-
-	checkWatchpoints(t, client_out.savedOutput, lines, watchexprs)
+	checkWatchpoints(t, client_out, expected_logs)
 }
 
-func parseWatchAddr(t *testing.T, stdout []byte, log_msg string) *uint64 {
-	if idx := strings.Index(string(stdout), log_msg); idx != -1 {
-		var watchaddr uint64
-		line := string(stdout)[idx+len(log_msg):]
-		if _, err := fmt.Sscanf(line, "%x\n", &watchaddr); err != nil {
-			t.Fatalf("Wrong log format")
-		}
-		return &watchaddr
-	}
-	return nil
+type WpLogType string
+
+const (
+	CreateNonPending WpLogType = "CreateNonPending"
+	CreateHWPending  WpLogType = "CreateHWPending"
+	RecordHWPending  WpLogType = "RecordHWPending"
+)
+
+// A log message about a watchpoint
+type expectedWpLog struct {
+	kind      WpLogType
+	lineno    int
+	watchexpr string
+	// for CreateHWPending, index of corresponding recorded wp (address should match)
+	recorded_wp int
+	// to be filled in
+	watchaddr uint64
 }
 
-func checkWatchpoints(t *testing.T, stdout []byte, lines []int, watchexprs []string) {
-	create_nonpending_fmt := "CreateWatchpoint: line %v, watchexpr %v, watchaddr 0x"
-	create_hw_pending_fmt := "CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n"
-	record_hw_pending_fmt := "Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x"
-
-	// Check expected wps were created, and mem-config map was updated
-	for i, line := range lines {
-		var create string
+func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog) {
+	// CreateNonPending or RecordHWPending
+	watchexpr_fmt := "%s lineno %d watchexpr %s watchaddr 0x%x"
+	// CreateHWPending
+	addr_only_fmt := "%s lineno %d watchaddr 0x%x"
+	// LEFT OFF
+	// Finish w/ array test, then xenon
+	next_wp_log := 0         // index of the next log we expect to see
+	expect_memparam := false // whether we expect to see a memory-parameter update next
+	mem_param_fmt := "\tMemory-parameter map: 0x%x => {params:map[{param:%s flow:1}:{}]}\n"
+	for _, line := range strings.Split(string(stdout), "\n") {
+		var lineno int
+		var watchexpr string
 		var watchaddr uint64
-		record_hw_pending := fmt.Sprintf(record_hw_pending_fmt, line, watchexprs[i])
-		pending_watchaddr := parseWatchAddr(t, stdout, record_hw_pending)
-		if pending_watchaddr != nil {
-			// Expect to see this watchexpr created with addr, not expr
-			create = fmt.Sprintf(create_hw_pending_fmt, line, *pending_watchaddr)
-			watchaddr = *pending_watchaddr
-		} else {
-			create = fmt.Sprintf(create_nonpending_fmt, line, watchexprs[i])
-			nonpending_watchaddr := parseWatchAddr(t, stdout, create)
-			if nonpending_watchaddr == nil {
-				t.Fatalf("Client did not log watchaddr for non-pending watchpoint: %v", create)
+		var kind string
+		expected_log := expected_logs[next_wp_log]
+
+		// Check for creating/recording wps and updating mem-param map, in expected order
+		if _, err := fmt.Sscanf(line, watchexpr_fmt, &kind, &lineno, &watchexpr, &watchaddr); err == nil {
+			if expect_memparam {
+				t.Fatalf("Client did not log expected update of memory-parameter map for %+v", expected_logs[next_wp_log-1])
 			}
-			watchaddr = *nonpending_watchaddr
+			if kind == string(CreateNonPending) {
+				expect_memparam = true
+			} else {
+				// RecordHWPending
+			}
+			assertEqual(t, lineno, expected_log.lineno)
+			assertEqual(t, watchexpr, expected_log.watchexpr)
+			expected_logs[next_wp_log].watchaddr = watchaddr
+			next_wp_log++
+		} else if _, err := fmt.Sscanf(line, addr_only_fmt, &kind, &lineno, &watchaddr); err == nil {
+			// CreateHWPending => addr should match recorded
+			if expect_memparam {
+				t.Fatalf("Client did not log expected update of memory-parameter map for %+v", expected_logs[next_wp_log-1])
+			}
+			expect_memparam = true
+			assertEqual(t, expected_logs[expected_log.recorded_wp].watchaddr, watchaddr)
+			assertEqual(t, lineno, expected_log.lineno)
+			expected_logs[next_wp_log].watchaddr = watchaddr
+			next_wp_log++
+		} else if _, err := fmt.Sscanf(line, mem_param_fmt, &watchaddr, &watchexpr); err == nil {
+			if !expect_memparam {
+				t.Fatalf("Found unexpected memory-parameter map update: %v\n", line)
+			}
+			assertEqual(t, watchaddr, expected_logs[next_wp_log-1].watchaddr)
+			assertEqual(t, watchexpr, expected_logs[0].watchexpr)
+			expect_memparam = false
 		}
 
-		// wp
-		if !strings.Contains(string(stdout), create) {
-			t.Fatalf("Client did not log creation of expected watchpoint: %v", create)
-		}
-
-		// mem-config map
-		mem_param_fmt := "\tMemory-parameter map: 0x%x => {params:map[{param:%v flow:1}:{}]}\n"
-		mem_param := fmt.Sprintf(mem_param_fmt, watchaddr, watchexprs[0])
-		if !strings.Contains(string(stdout), mem_param) {
-			t.Fatalf("Client did not log expected update of memory-parameter map: %v", mem_param)
+		if next_wp_log == len(expected_logs) {
+			// found all expected
+			break
 		}
 	}
+
+	assertEqual(t, next_wp_log, len(expected_logs))
 
 	// Check no unexpected wps were created
-	n_created_wp := strings.Count(string(stdout), "CreateWatchpoint")
-	if n_created_wp != len(lines) {
-		t.Fatalf("Client created %v watchpoints, expected %v", n_created_wp, len(lines))
-	}
+	n_wp_logs := strings.Count(string(stdout), string(CreateNonPending))
+	n_wp_logs += strings.Count(string(stdout), string(CreateHWPending))
+	n_wp_logs += strings.Count(string(stdout), string(RecordHWPending))
+	assertEqual(t, n_wp_logs, len(expected_logs))
+
 }

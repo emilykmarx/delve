@@ -238,7 +238,7 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	}
 }
 
-// Eval watchexpr, return addr(s) to set watch on, delete expr from pending
+// Eval watchexpr, return var(s) to set watch on, delete expr from pending
 func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *int) []api.Variable {
 	// Slicing doesn't result in a watchable expr - we just want to watch the whole slice
 	orig_watchexpr := watchexpr
@@ -257,6 +257,7 @@ func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *
 	} else {
 		delete(tc.pending_wps[bp_addr].watchexprs, orig_watchexpr)
 	}
+
 	watchvars = append(watchvars, *xv)
 	if xv.RealType == "string" {
 		// Also watch the first character of a string - string concatenation doesn't read the address
@@ -276,7 +277,7 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	if watchexpr != nil {
 		fmt.Printf("watchexpr: %v\n", *watchexpr)
 	}
-	fmt.Printf("watchaddr: %x\n", watchaddr)
+	fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
 
 	wp := DoneWp{bp_addr: bp_addr, wp_addr: watchaddr}
 	info := tc.pending_wps[bp_addr]
@@ -310,7 +311,7 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 			tc.pending_wps[bp_addr] = info
 			// Log for test (alternative is to store watchexpr - would also allow us to pass it to delve,
 			// which would be convenient but require more storage)
-			fmt.Printf("Hardware-pending createWatchpoint: line %v, watchexpr %v, watchaddr 0x%x\n",
+			fmt.Printf("RecordHWPending lineno %d watchexpr %s watchaddr 0x%x\n",
 				tc.hit.hit_bp.Line, *watchexpr, watchaddr)
 		}
 		return
@@ -320,7 +321,7 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// TODO (minor): fix error propagation here: if rr returns E01 (in gdbserial), logs "expected operand" here
-	created_wp, err := tc.client.CreateWatchpointNoEval(scope, watchaddr, sz, api.WatchRead|api.WatchWrite)
+	_, err := tc.client.CreateWatchpointNoEval(scope, watchaddr, sz, api.WatchRead|api.WatchWrite)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", watchaddr, err)
 	}
@@ -329,19 +330,19 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 		// Log for test
 		// TODO (minor): Move logic in this file to its own package, so can import it for testing
 		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
-		fmt.Printf("CreateWatchpoint: line %v, watchexpr %v, watchaddr 0x%x\n",
+		fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
 			tc.hit.hit_bp.Line, *watchexpr, watchaddr)
 	} else {
-		fmt.Printf("CreateWatchpoint (was hardware-pending): line %v, watchaddr 0x%x\n",
+		fmt.Printf("CreateHWPending lineno %d watchaddr 0x%x\n",
 			tc.hit.hit_bp.Line, watchaddr)
 	}
 	delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
 	tc.round_done_wps[wp] = info.tainting_vals
 
 	// 5. Add to mem-param map
-	tc.mem_param_map[created_wp.Addrs[0]] = info.tainting_vals
+	tc.mem_param_map[watchaddr] = info.tainting_vals
 	// Log for testing
-	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", created_wp.Addrs[0], info.tainting_vals)
+	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
 }
 
 // Watchpoint hit => record any new pending watchpoints

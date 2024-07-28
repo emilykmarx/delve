@@ -655,6 +655,9 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 		return nil, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
 	}
 
+	if xv.Name == "" {
+		xv.Name = expr
+	}
 	sz := xv.DwarfType.Size()
 
 	if sz <= 0 {
@@ -664,6 +667,9 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 		sz = 8
 	} else if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		sz = 8
+	} else if _, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
+		// Watch only the first byte of array - TODO works for slicing, but not indexing into a byte past the first
+		return t.EvalWatchexpr(scope, expr+"[0]")
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
 		return nil, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
 	}

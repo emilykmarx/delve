@@ -61,6 +61,15 @@ func assertNoError(err error, t testing.TB, s string) {
 	}
 }
 
+func assertEqual[T comparable](t testing.TB, v1 T, v2 T) {
+	t.Helper()
+	if v1 != v2 {
+		_, file, line, _ := runtime.Caller(1)
+		fname := filepath.Base(file)
+		t.Fatalf("failed assertion at %s:%d: %v != %v\n", fname, line, v1, v2)
+	}
+}
+
 func projectRoot() string {
 	wd, err := os.Getwd()
 	if err != nil {
