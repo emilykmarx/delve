@@ -60,7 +60,7 @@ func TestStrings(t *testing.T) {
 	run(t, "strings.go", expected_logs)
 }
 
-func TestStructSliceRangeBuiltins(t *testing.T) {
+func TestSliceRangeBuiltins(t *testing.T) {
 	expected_logs := []expectedWpLog{
 		{kind: CreateNonPending, lineno: 11, watchexpr: "conf.search"},
 		{kind: CreateNonPending, lineno: 16, watchexpr: "suffix"},
@@ -69,7 +69,19 @@ func TestStructSliceRangeBuiltins(t *testing.T) {
 		{kind: CreateNonPending, lineno: 25, watchexpr: "names_caller"},
 		{kind: CreateNonPending, lineno: 27, watchexpr: "names2"},
 	}
-	run(t, "struct_slice_range_builtins.go", expected_logs)
+	run(t, "slice_range_builtins.go", expected_logs)
+}
+
+func TestStructs(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 21, watchexpr: "arr[0]"},
+		{kind: CreateNonPending, lineno: 22, watchexpr: "struct_lit.Data[0]"},
+		{kind: CreateNonPending, lineno: 24, watchexpr: "s.Data[0]"},
+		{kind: CreateNonPending, lineno: 15, watchexpr: "s_callee.Data[0]"},
+		// s.callee OOS
+		{kind: CreateNonPending, lineno: 26, watchexpr: "s_caller.Data[0]"},
+	}
+	run(t, "structs.go", expected_logs)
 }
 
 func TestArrays(t *testing.T) {
@@ -106,36 +118,58 @@ func TestMultiRound(t *testing.T) {
 
 // Not fully automated, but here for convenience.
 // (Need to manually run xenon, then place outfiles here)
+// Note there is concurrency, so it's technically possible this is a brittle test
+// (assumes a certain ordering).
 /*
 func TestXenon(t *testing.T) {
-	lines := []int{144,
-		509, 509, 515,
-		663, 663,
-		651, 651,
-		259, 259,
-		1902, 1902,
-		1907}
-	watchexprs := []string{"conf.search", // dnsconfig_unix.go:dnsReadConfig()
-		"suffix", "suffix", "names", // dnsclient_unix.go:nameList()
-		"fqdn", "fqdn", // dnsclient_unix.go:goLookupIPCNAMEOrder()
-		"fqdn", "fqdn", // dnsclient_unix.go:queryFn()
-		"name", "name", // dnsclient_unix.go:tryOneName()
-		"name", "name", // message.go:NewName()
-		"n.Data", // message.go:NewName()
-		// Unsure what will happen from here - manually check when wps hit, make sure taint propagation happens as expected
+	expected_logs := []expectedWpLog{
+		// LEFT OFF: Try Xenon
+		// ROUND 1
+		// dnsconfig_unix.go:dnsReadConfig()
+		{kind: CreateNonPending, lineno: 144, watchexpr: "conf.search"},
+
+		// dnsclient_unix.go:nameList()
+		{kind: CreateNonPending, lineno: 510, watchexpr: "suffix"},
+		{kind: CreateNonPending, lineno: 510, watchexpr: "suffix[0]"},
+		{kind: CreateNonPending, lineno: 515, watchexpr: "names"},
+
+		// OOS: suffix, names
+
+		// dnsclient_unix.go:goLookupIPCNAMEOrder()
+		{kind: CreateNonPending, lineno: 664, watchexpr: "fqdn"},
+		{kind: CreateNonPending, lineno: 664, watchexpr: "fqdn[0]"},
+
+		// dnsclient_unix.go:queryFn()
+		{kind: RecordHWPending, lineno: 651, watchexpr: "fqdn"},
+		// 2nd iter (will eval to same mem)
+		{kind: RecordHWPending, lineno: 651, watchexpr: "fqdn"},
+		// callee fqdn[0] re-uses caller mem
+
+		// ROUND 2
+		// dnsclient_unix.go:tryOneName()
+		{kind: CreateNonPending, lineno: 259, watchexpr: "name"},
+		{kind: CreateNonPending, lineno: 259, watchexpr: "name[0]"},
+
+		// message.go:NewName()
+		{kind: CreateNonPending, lineno: 1902, watchexpr: "name"},
+		{kind: CreateNonPending, lineno: 1902, watchexpr: "name[0]"},
+
+		// message.go:NewName()
+		{kind: CreateNonPending, lineno: 1907, watchexpr: "n.Data"},
 	}
+
 	files := []string{"server_out.txt", "server_err.txt", "client_out.txt", "client_err.txt"}
 	outs := make([][]byte, len(files))
 	for i, file := range files {
 		out, err := os.ReadFile(file)
 		if _, ok := err.(*os.PathError); ok {
-			t.Skip("Missing xenon log file")
+			t.Skipf("Missing xenon log file %v", file)
 		}
 		assertNoError(err, t, "open Xenon file")
 		outs[i] = out
 	}
 
-	checkOutput(t, outs[3], outs[1], outs[2], lines, watchexprs)
+	checkOutput(t, outs[3], outs[1], outs[2], expected_logs)
 }
 */
 
@@ -244,11 +278,16 @@ func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
 
 func checkOutput(t *testing.T, client_err []byte, server_err []byte, client_out []byte, expected_logs []expectedWpLog) {
 	// Check for errors during replay
+	if len(server_err) > 0 {
+		server_lines := strings.Split(strings.Trim(string(server_err), "\n"), "\n")
+		if len(server_lines) == 1 && strings.Contains(server_lines[0], "Listening for remote connections") {
+			// This is logged at least sometimes - ok
+		} else {
+			t.Fatalf("Delve server errored while client running: %s", server_err)
+		}
+	}
 	if len(client_err) > 0 {
 		t.Fatalf("Delve client errored: %s", client_err)
-	}
-	if len(server_err) > 0 {
-		t.Fatalf("Delve server errored while client running: %s", server_err)
 	}
 	checkWatchpoints(t, client_out, expected_logs)
 }
@@ -299,8 +338,8 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 			} else {
 				// RecordHWPending
 			}
-			assertEqual(t, lineno, expected_log.lineno)
-			assertEqual(t, watchexpr, expected_log.watchexpr)
+			assertEqual(t, expected_log.lineno, lineno, expected_log)
+			assertEqual(t, expected_log.watchexpr, watchexpr, expected_log)
 			expected_logs[next_wp_log].watchaddr = watchaddr
 			next_wp_log++
 		} else if _, err := fmt.Sscanf(line, addr_only_fmt, &kind, &lineno, &watchaddr); err == nil {
@@ -309,16 +348,16 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 				t.Fatalf("Client did not log expected update of memory-parameter map for %+v", expected_logs[next_wp_log-1])
 			}
 			expect_memparam = true
-			assertEqual(t, expected_logs[expected_log.recorded_wp].watchaddr, watchaddr)
-			assertEqual(t, lineno, expected_log.lineno)
+			assertEqual(t, expected_logs[expected_log.recorded_wp].watchaddr, watchaddr, expected_log)
+			assertEqual(t, expected_log.lineno, lineno, expected_log)
 			expected_logs[next_wp_log].watchaddr = watchaddr
 			next_wp_log++
 		} else if _, err := fmt.Sscanf(line, mem_param_fmt, &watchaddr, &watchexpr); err == nil {
 			if !expect_memparam {
 				t.Fatalf("Found unexpected memory-parameter map update: %v\n", line)
 			}
-			assertEqual(t, watchaddr, expected_logs[next_wp_log-1].watchaddr)
-			assertEqual(t, watchexpr, expected_logs[0].watchexpr)
+			assertEqual(t, expected_logs[next_wp_log-1].watchaddr, watchaddr, expected_log)
+			assertEqual(t, expected_logs[0].watchexpr, watchexpr, expected_log)
 			expect_memparam = false
 		}
 
@@ -328,12 +367,12 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 		}
 	}
 
-	assertEqual(t, next_wp_log, len(expected_logs))
+	assertEqual(t, len(expected_logs), next_wp_log, "not enough wp logs")
 
 	// Check no unexpected wps were created
 	n_wp_logs := strings.Count(string(stdout), string(CreateNonPending))
 	n_wp_logs += strings.Count(string(stdout), string(CreateHWPending))
 	n_wp_logs += strings.Count(string(stdout), string(RecordHWPending))
-	assertEqual(t, n_wp_logs, len(expected_logs))
+	assertEqual(t, len(expected_logs), n_wp_logs, "too many wp logs")
 
 }

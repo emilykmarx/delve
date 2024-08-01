@@ -46,8 +46,9 @@ type Breakpoint struct {
 	File         string
 	Line         int
 
-	Addr         uint64 // Address breakpoint is set for.
-	OriginalData []byte // If software breakpoint, the data we replace with breakpoint instruction.
+	Addr          uint64   // Address breakpoint is set for.
+	PreviousAddrs []uint64 // Any addrs overwritten by stack resize
+	OriginalData  []byte   // If software breakpoint, the data we replace with breakpoint instruction.
 
 	WatchExpr     string
 	WatchType     WatchType

@@ -37,7 +37,8 @@ type Hit struct {
 
 type PendingWp struct {
 	watchexprs map[string]struct{}
-	watchargs  map[int]struct{}
+	// Arg index => Expression to append to callee's copy, if any
+	watchargs map[int]string
 	// Addr => size
 	watchaddrs map[uint64]int64
 	// Values that tainted these
@@ -82,7 +83,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	}
 
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
-		fmt.Println("Runtime hit - partial stack (with PC one after hitting instr):")
+		fmt.Println("Runtime watchpoint hit - partial stack (with PC one after hitting instr):")
 		for i, frame := range stack {
 			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 				frame.File, frame.Line, frame.Function.Name(),
@@ -165,7 +166,7 @@ func (tc *TaintCheck) hittingLine() bool {
 		return false
 	}
 
-	fmt.Printf("\n\n*** Hit watchpoint for 0x%x at %v:%v (0x%x)\n", tc.hit.hit_bp.Addrs[0],
+	fmt.Printf("Location:\n %v:%v (0x%x)\n",
 		tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line, tc.hit.hit_instr.Loc.PC)
 	fmt.Println(tc.hit.hit_instr.Loc.Function.Name())
 	fmt.Println(src_line)
@@ -188,7 +189,11 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 		hit_wp_addr := tc.hit.hit_bp.Addrs[0]
 		tainting_vals, ok := tc.mem_param_map[hit_wp_addr]
 		if !ok {
-			log.Fatalf("No mem-param map entry for watchpoint 0x%x\n", hit_wp_addr)
+			if tainting_vals_ := tc.updateMovedWps(hit_wp_addr); tainting_vals_ == nil {
+				log.Fatalf("No mem-param map entry for watchpoint 0x%x\n", hit_wp_addr)
+			} else {
+				tainting_vals = *tainting_vals_
+			}
 		}
 		// TODO add test for append w/ realloc
 		// TODO does append of a tainted value hit wp? (Currently is hitting bc of string concat and/or slice already being tainted)
@@ -202,20 +207,18 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 		existing_info.tainting_vals = tainting_val
 	}
 
-	if expr != "" {
+	if argno != nil {
+		if len(existing_info.watchargs) == 0 {
+			existing_info.watchargs = make(map[int]string)
+		}
+		existing_info.watchargs[*argno] = expr
+		fmt.Printf("recordPendingWp: line %v, argno %v, info %+v, bp addr 0x%x\n", loc.Line, *argno, existing_info, bp_addr)
+	} else {
 		if len(existing_info.watchexprs) == 0 {
 			existing_info.watchexprs = make(map[string]struct{})
 		}
 		existing_info.watchexprs[expr] = struct{}{}
 		fmt.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
-	}
-
-	if argno != nil {
-		if len(existing_info.watchargs) == 0 {
-			existing_info.watchargs = make(map[int]struct{})
-		}
-		existing_info.watchargs[*argno] = struct{}{}
-		fmt.Printf("recordPendingWp: line %v, argno %v, info %+v, bp addr 0x%x\n", loc.Line, *argno, existing_info, bp_addr)
 	}
 
 	tc.pending_wps[bp_addr] = existing_info
@@ -232,9 +235,9 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	}
 
 	if ok {
-		fmt.Printf("ZZEM exit onPendingWpBpHitDone; info %v\n", info)
+		fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
 	} else {
-		fmt.Printf("ZZEM exit onPendingWpBpHitDone; no more info\n")
+		fmt.Printf("Exit onPendingWpBpHitDone; no more info\n")
 	}
 }
 
@@ -347,6 +350,7 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 
 // Watchpoint hit => record any new pending watchpoints
 func (tc *TaintCheck) onWatchpointHit() {
+	fmt.Printf("\n\n*** Hit watchpoint for 0x%x\n", tc.hit.hit_bp.Addrs[0])
 	if !tc.hittingLine() {
 		fmt.Printf("Ignoring watchpoint hit\n")
 		return
@@ -377,12 +381,12 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 		}
 	}
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	for argno := range info.watchargs {
+	for argno, overlap_expr := range info.watchargs {
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
-		watchexpr := args[argno].Name
+		watchexpr := args[argno].Name + overlap_expr
 		watchvars := tc.evalWatchexpr(watchexpr, bp_addr, &argno)
 		for _, watchvar := range watchvars {
 			tc.trySetWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)

@@ -39,7 +39,15 @@ func (tc *TaintCheck) replay() {
 		}
 	}
 
-	// Clear wp but keep bp
+	for wp, tainting_vals := range tc.round_done_wps {
+		tc.done_wps[wp] = tainting_vals
+	}
+	tc.round_done_wps = make(map[DoneWp]TaintingVals)
+
+	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
+	tc.client.Restart(false)
+
+	// Clear wp but keep bp (after restart - if target exited, seems we're unable to list bps)
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
 		log.Fatalf("Error listing breakpoints: %v\n", list_err)
@@ -50,13 +58,6 @@ func (tc *TaintCheck) replay() {
 		}
 	}
 
-	for wp, tainting_vals := range tc.round_done_wps {
-		tc.done_wps[wp] = tainting_vals
-	}
-	tc.round_done_wps = make(map[DoneWp]TaintingVals)
-
-	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
-	tc.client.Restart(false)
 }
 
 func main() {

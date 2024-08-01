@@ -24,6 +24,30 @@ func (tc *TaintCheck) updateTaintingVals(info PendingWp, bp_addr uint64, watchad
 	tc.pending_wps[bp_addr] = info
 }
 
+// If wp hits for an addr not in the mem-param map,
+// may be because that wp was moved => if so, update mem-param map entry to new addr
+// and return entry's vals
+func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) *TaintingVals {
+	// TODO: add a test for this since xenon doesn't seem to do it deterministically
+	fmt.Printf("\n\n\n\n\n ZZEM updateMovedWps! Check this worked!\n")
+	bps, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps {
+		if bp.Addrs[0] == hit_wp_addr {
+			for _, prev_addr := range bp.PreviousAddrs {
+				if tainting_vals, ok := tc.mem_param_map[prev_addr]; ok {
+					delete(tc.mem_param_map, prev_addr)
+					tc.mem_param_map[hit_wp_addr] = tainting_vals
+					return &tainting_vals
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // number of existing wps
 func (tc *TaintCheck) nWps() int {
 	bps, list_err := tc.client.ListBreakpoints(true)

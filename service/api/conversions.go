@@ -71,6 +71,7 @@ func ConvertPhysicalBreakpoints(b *Breakpoint, lbp *proc.LogicalBreakpoint, pids
 	for i, bp := range bps {
 		b.Addrs = append(b.Addrs, bp.Addr)
 		b.AddrPid = append(b.AddrPid, pids[i])
+		b.PreviousAddrs = append(b.PreviousAddrs, bp.PreviousAddrs...)
 		if b.FunctionName != bp.FunctionName && b.FunctionName != "" {
 			if !lg {
 				b.FunctionName = removeTypeParams(b.FunctionName)

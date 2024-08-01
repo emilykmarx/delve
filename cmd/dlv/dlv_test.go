@@ -61,12 +61,12 @@ func assertNoError(err error, t testing.TB, s string) {
 	}
 }
 
-func assertEqual[T comparable](t testing.TB, v1 T, v2 T) {
+func assertEqual[T comparable, T2 any](t testing.TB, expected T, actual T, msg T2) {
 	t.Helper()
-	if v1 != v2 {
+	if expected != actual {
 		_, file, line, _ := runtime.Caller(1)
 		fname := filepath.Base(file)
-		t.Fatalf("failed assertion at %s:%d: %v != %v\n", fname, line, v1, v2)
+		t.Fatalf("failed assertion at %s:%d: expected %v != actual %v (%v)\n", fname, line, expected, actual, msg)
 	}
 }
 
