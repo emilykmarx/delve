@@ -78,7 +78,7 @@ func main() {
 		pending_wps: make(map[uint64]PendingWp),
 		done_wps:    make(map[DoneWp]TaintingVals), round_done_wps: make(map[DoneWp]TaintingVals),
 		mem_param_map: make(map[uint64]TaintingVals)}
-	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line)
+	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
 
 	// This will be replaced by a config breakpoint
 	fmt.Printf("Configuration variable: %v\n", *initial_watchexpr)

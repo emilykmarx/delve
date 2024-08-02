@@ -116,6 +116,30 @@ func TestMultiRound(t *testing.T) {
 	run(t, "multiround.go", expected_logs)
 }
 
+func TestRuntimeHits(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 18, watchexpr: "name"},
+		{kind: CreateNonPending, lineno: 18, watchexpr: "name[0]"},
+		{kind: CreateNonPending, lineno: 11, watchexpr: "name_callee"},
+		// uses same mem for name[0] and name_callee[0]
+		{kind: CreateNonPending, lineno: 13, watchexpr: "n.Data[0]"},
+		{kind: CreateNonPending, lineno: 19, watchexpr: "n_caller.Data[0]"},
+	}
+
+	run(t, "runtime_hits.go", expected_logs)
+}
+
+/* Need to investigate this - per asm, doesn't seem like should be fake...
+func TestFakeArg(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateNonPending, lineno: 13, watchexpr: "a"},
+		{kind: CreateNonPending, lineno: 6, watchexpr: "addrs"},
+	}
+
+	run(t, "fake_xv.go", expected_logs)
+}
+*/
+
 // Not fully automated, but here for convenience.
 // (Need to manually run xenon, then place outfiles here)
 // Note there is concurrency, so it's technically possible this is a brittle test
@@ -281,7 +305,7 @@ func checkOutput(t *testing.T, client_err []byte, server_err []byte, client_out 
 	if len(server_err) > 0 {
 		server_lines := strings.Split(strings.Trim(string(server_err), "\n"), "\n")
 		if len(server_lines) == 1 && strings.Contains(server_lines[0], "Listening for remote connections") {
-			// This is logged at least sometimes - ok
+			// normal
 		} else {
 			t.Fatalf("Delve server errored while client running: %s", server_err)
 		}

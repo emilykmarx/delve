@@ -35,6 +35,7 @@ type Hit struct {
 	frame int
 }
 
+// If add any fields, update String()
 type PendingWp struct {
 	watchexprs map[string]struct{}
 	// Arg index => Expression to append to callee's copy, if any
@@ -134,6 +135,12 @@ func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 	// Only applies to non-runtime hit?
 	for i, instr := range fct_instr {
 		if instr.Loc.PC == pc {
+			if i == 0 {
+				fmt.Printf("Hit in call instr? Stacktrace:\n")
+				tc.printStacktrace()
+				// TODO for now, ignoring this. Maybe expected for go's ABI???
+				return false
+			}
 			tc.hit.hit_instr = &fct_instr[i-1]
 			return true
 		}
@@ -243,8 +250,12 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 
 // Eval watchexpr, return var(s) to set watch on, delete expr from pending
 func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *int) []api.Variable {
+	if watcharg != nil {
+		delete(tc.pending_wps[bp_addr].watchargs, *watcharg)
+	} else {
+		delete(tc.pending_wps[bp_addr].watchexprs, watchexpr)
+	}
 	// Slicing doesn't result in a watchable expr - we just want to watch the whole slice
-	orig_watchexpr := watchexpr
 	if strings.Contains(watchexpr, ":") {
 		watchexpr = strings.Split(watchexpr, "[")[0]
 	}
@@ -254,11 +265,6 @@ func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *
 	xv, err := tc.client.EvalWatchexpr(scope, watchexpr)
 	if err != nil {
 		log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
-	}
-	if watcharg != nil {
-		delete(tc.pending_wps[bp_addr].watchargs, *watcharg)
-	} else {
-		delete(tc.pending_wps[bp_addr].watchexprs, orig_watchexpr)
 	}
 
 	watchvars = append(watchvars, *xv)
@@ -286,11 +292,12 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	info := tc.pending_wps[bp_addr]
 
 	// 1. Check for dups
-	// Must do before CreateWatchpoint, since rr can't handle dups (#3777)
+	// Must do before CreateWatchpoint, since rr can't handle dups (#3777) - update: this is fixed
 	// TODO add test for both these dup types
 	if done_wp, ok := tc.done_wps[wp]; ok {
 		if reflect.DeepEqual(done_wp, info.tainting_vals) {
 			// Already traced this addr in a previous round and found same tainting vals => return
+			delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
 			fmt.Printf("Already traced 0x%x in previous round\n", watchaddr)
 			return
 		}
@@ -298,6 +305,9 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	if _, ok := tc.mem_param_map[watchaddr]; ok {
 		// Already currently tracing this addr => update mem-param map with any new tainting vals, return
 		tc.updateTaintingVals(info, bp_addr, watchaddr)
+		// May have already been set when hit same wp at different bp in this round
+		// (e.g. when try to set wp on first byte of a copied string - as with fqdn[0] in xenon)
+		delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
 		fmt.Printf("Already tracing 0x%x in current round\n", watchaddr)
 		return
 	}

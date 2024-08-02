@@ -60,10 +60,15 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
 	if err != nil {
 		log.Fatalf("Error getting stacktrace: %v\n", err)
 	}
-	call_file := stack[1].File
-	call_line := stack[1].Line
-	next_line := tc.lineWithStmt(nil, call_file, call_line+1)
-	return getLhs(i, call_file, call_line), next_line
+	caller_frame := tc.hit.frame + 1
+	call_file := stack[caller_frame].File
+	call_line := stack[caller_frame].Line
+	next_line := tc.lineWithStmt(nil, call_file, call_line+1, caller_frame)
+	caller_lhs := getLhs(i, call_file, call_line)
+	if caller_lhs == nil {
+		log.Fatalf("Failed to find caller lhs; call file %v, call line %v\n", call_file, call_line)
+	}
+	return caller_lhs, next_line
 }
 
 /* If expr involves memory that overlaps the watched region,
@@ -102,7 +107,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 				// (parse struct type decl, or impl EvalVariable for CompositeLit?),
 				// and multiple tainted fields
 			}
-		default:
+		case ast.Expr:
 			// TODO check for incomplete loads (see client API doc)
 			xv, err := tc.client.EvalVariable(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)), loadcfg)
 			if err != nil || xv.Addr == 0 { // Addr == 0 for e.g. x + 1, but not e.g. x[1]
@@ -206,7 +211,7 @@ func (tc *TaintCheck) propagateTaint() {
 				if tc.isTainted(typed_node.Args[1]) != nil {
 					// TODO won't necessarily be next line - could actually set at current loc,
 					// but need a special case for that
-					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1)
+					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1, tc.hit.frame)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)
 				}
 			} else if builtinFcts[fn] || fn == "runtime.KeepAlive" {
@@ -215,7 +220,7 @@ func (tc *TaintCheck) propagateTaint() {
 				for i, arg := range typed_node.Args {
 					if overlap_expr := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
 						// First line of function body (params are "fake" at declaration line)
-						pending_loc := tc.lineWithStmt(&fn, "", -1)
+						pending_loc := tc.lineWithStmt(&fn, "", -1, tc.hit.frame)
 						tc.recordPendingWp(*overlap_expr, pending_loc, &i)
 					}
 				}
@@ -228,11 +233,9 @@ func (tc *TaintCheck) propagateTaint() {
 			for i, ret := range typed_node.Results {
 				if overlap_expr := tc.isTainted(ret); overlap_expr != nil {
 					caller_lhs, caller_loc := tc.callerLhs(i)
-					if caller_lhs != nil {
-						// Line after calling line
-						watchexpr := exprToString(*caller_lhs) + *overlap_expr
-						tc.recordPendingWp(watchexpr, caller_loc, nil)
-					}
+					// Line after calling line
+					watchexpr := exprToString(*caller_lhs) + *overlap_expr
+					tc.recordPendingWp(watchexpr, caller_loc, nil)
 				}
 			}
 
@@ -240,12 +243,13 @@ func (tc *TaintCheck) propagateTaint() {
 		// but if not, var immediately went out of scope so we don't need a wp anyway
 		// TODO except for if/else, maybe others
 		// And Range: If next line is }, set on next iter
+		// Need to handle case where never enter loop (never hit bp => main never terminates)
 		case *ast.AssignStmt:
 			for _, rhs := range typed_node.Rhs {
 				// TODO properly handle multiple rhs (unsure of semantics)
 				if overlap_expr := tc.isTainted(rhs); overlap_expr != nil {
 					// Watched location is read on the rhs => taint lhs
-					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1)
+					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1, tc.hit.frame)
 					for _, lhs := range typed_node.Lhs {
 						watchexpr := exprToString(lhs) + *overlap_expr
 						tc.recordPendingWp(watchexpr, pending_loc, nil)
@@ -258,7 +262,7 @@ func (tc *TaintCheck) propagateTaint() {
 			if tc.isTainted(typed_node.X) != nil && typed_node.Value != nil {
 				// Watched location is read on the rhs =>
 				// taint value expr
-				pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1)
+				pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1, tc.hit.frame)
 				tc.recordPendingWp(exprToString(typed_node.Value), pending_loc, nil)
 			}
 		} // end switch

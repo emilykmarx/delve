@@ -28,8 +28,7 @@ func (tc *TaintCheck) updateTaintingVals(info PendingWp, bp_addr uint64, watchad
 // may be because that wp was moved => if so, update mem-param map entry to new addr
 // and return entry's vals
 func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) *TaintingVals {
-	// TODO: add a test for this since xenon doesn't seem to do it deterministically
-	fmt.Printf("\n\n\n\n\n ZZEM updateMovedWps! Check this worked!\n")
+	// TODO: add a test for this - works in xenon when it's needed, but not needed deterministically
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
 		log.Fatalf("Error listing breakpoints: %v\n", list_err)
@@ -66,8 +65,8 @@ func (tc *TaintCheck) nWps() int {
 
 // pretty-print
 func (pendingwp PendingWp) String() string {
-	return fmt.Sprintf("{watchexprs %v watchargs %v watchaddrs %x}",
-		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.watchaddrs)
+	return fmt.Sprintf("{watchexprs %v watchargs %v watchaddrs %x tainting_vals %+v}",
+		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.watchaddrs, pendingwp.tainting_vals)
 }
 
 // Get line of source (as string)
@@ -130,11 +129,11 @@ func (tc *TaintCheck) printStacktrace() {
 }
 
 // Find the next line on or after this one with a statement, so we can set a bp.
-// May want to consider doing this with PC when handle the non-linear stuff
-func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int) api.Location {
+// TODO May want to consider doing this with PC when handle the non-linear stuff
+func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int, frame int) api.Location {
 	var loc string
 	if fn != nil {
-		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, *fn, true, nil)
+		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, *fn, true, nil)
 		if err != nil {
 			log.Fatalf("Error finding location: %v\n", err)
 		}
@@ -146,7 +145,7 @@ func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int) api.Loca
 		loc = fmt.Sprintf("%v:%v", file, lineno)
 		// TODO(minor): how to pass in substitutePath rules? (2nd ret is related)
 		// Lines with instr only
-		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, loc, true, nil)
+		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, loc, true, nil)
 		if len(locs) == 1 {
 			return locs[0]
 		}

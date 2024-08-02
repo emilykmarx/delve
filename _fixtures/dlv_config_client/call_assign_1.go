@@ -18,7 +18,6 @@ func ret_tainted(tainted_param_2 int) int {
 	return tainted_param_2
 }
 
-// Expect 11 hits
 func main() {
 	var stack int // Stack is initially tainted
 	var spacer int

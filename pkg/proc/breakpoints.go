@@ -647,13 +647,13 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 		return nil, err
 	}
 	if xv.Addr == 0 || xv.Flags&VariableFakeAddress != 0 || xv.DwarfType == nil {
-		return nil, fmt.Errorf("can not watch %q; Addr 0x%x, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
+		return xv, fmt.Errorf("can not watch %q; Addr 0x%x, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
 	}
 	if xv.Unreadable != nil {
-		return nil, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
+		return xv, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
-		return nil, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
+		return xv, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
 	}
 
 	if xv.Name == "" {
@@ -662,7 +662,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 	sz := xv.DwarfType.Size()
 
 	if sz <= 0 {
-		return nil, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
+		return xv, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
 	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
 		// Watch only the addr field of string/slice - ops that only access len/cap do not propagate taint for now
 		sz = 8
@@ -672,7 +672,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 		// Watch only the first byte of array - TODO works for slicing, but not indexing into a byte past the first
 		return t.EvalWatchexpr(scope, expr+"[0]")
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
-		return nil, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
+		return xv, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
 	}
 
 	xv.Watchsz = sz
