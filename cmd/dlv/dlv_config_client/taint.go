@@ -219,6 +219,12 @@ func (tc *TaintCheck) propagateTaint() {
 			} else {
 				for i, arg := range typed_node.Args {
 					if overlap_expr := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
+						// Disambiguate function name if not already qualified
+						if !strings.Contains(fn, ".") && !strings.Contains(tc.hit.hit_instr.Loc.File, "_fixtures") {
+							tokens := strings.Split(tc.hit.hit_instr.Loc.File, "/")
+							pkg := tokens[len(tokens)-2]
+							fn = pkg + "." + fn
+						}
 						// First line of function body (params are "fake" at declaration line)
 						pending_loc := tc.lineWithStmt(&fn, "", -1, tc.hit.frame)
 						tc.recordPendingWp(*overlap_expr, pending_loc, &i)

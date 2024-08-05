@@ -13,6 +13,9 @@ import (
 // One round of replay
 func (tc *TaintCheck) replay() {
 	fmt.Printf("\n\n*** Begin replay\n")
+	if tc.nWps(true) > 0 {
+		log.Fatalf("Existing watchpoints at start of replay")
+	}
 	state := <-tc.client.Continue()
 
 	for ; !state.Exited; state = <-tc.client.Continue() {

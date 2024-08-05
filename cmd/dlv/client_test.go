@@ -31,12 +31,12 @@ func getClientBin(t *testing.T) string {
 
 func TestCallAndAssign1(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 26, watchexpr: "stack"},
-		{kind: CreateNonPending, lineno: 30, watchexpr: "spacer"},
+		{kind: CreateNonPending, lineno: 25, watchexpr: "stack"},
+		{kind: CreateNonPending, lineno: 29, watchexpr: "spacer"},
 		{kind: CreateNonPending, lineno: 10, watchexpr: "tainted_param"},
 		{kind: CreateNonPending, lineno: 16, watchexpr: "tainted_param_2"},
-		{kind: CreateNonPending, lineno: 37, watchexpr: "y"},
-		{kind: CreateNonPending, lineno: 41, watchexpr: "z"},
+		{kind: CreateNonPending, lineno: 36, watchexpr: "y"},
+		{kind: CreateNonPending, lineno: 40, watchexpr: "z"},
 	}
 	run(t, "call_assign_1.go", expected_logs)
 }
@@ -144,10 +144,8 @@ func TestFakeArg(t *testing.T) {
 // (Need to manually run xenon, then place outfiles here)
 // Note there is concurrency, so it's technically possible this is a brittle test
 // (assumes a certain ordering).
-/*
 func TestXenon(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		// LEFT OFF: Try Xenon
 		// ROUND 1
 		// dnsconfig_unix.go:dnsReadConfig()
 		{kind: CreateNonPending, lineno: 144, watchexpr: "conf.search"},
@@ -182,10 +180,10 @@ func TestXenon(t *testing.T) {
 		{kind: CreateNonPending, lineno: 1907, watchexpr: "n.Data"},
 	}
 
-	files := []string{"server_out.txt", "server_err.txt", "client_out.txt", "client_err.txt"}
+	files := []string{"client_err.txt", "server_err.txt", "client_out.txt", "server_out.txt"}
 	outs := make([][]byte, len(files))
 	for i, file := range files {
-		out, err := os.ReadFile(file)
+		out, err := os.ReadFile("xenon_out/" + file)
 		if _, ok := err.(*os.PathError); ok {
 			t.Skipf("Missing xenon log file %v", file)
 		}
@@ -193,9 +191,8 @@ func TestXenon(t *testing.T) {
 		outs[i] = out
 	}
 
-	checkOutput(t, outs[3], outs[1], outs[2], expected_logs)
+	checkOutput(t, outs[0], outs[1], outs[2], expected_logs)
 }
-*/
 
 // Return true to retry
 func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) (time.Duration, bool) {
@@ -247,6 +244,7 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 }
 
 // Expect to set watchpoints for watchexprs on corresponding lines
+// Passes first line and expr as initial ones for client
 func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
 	// Start dlv server, wait for it to finish recording
 	listenAddr := "localhost:4040"
@@ -340,8 +338,6 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 	watchexpr_fmt := "%s lineno %d watchexpr %s watchaddr 0x%x"
 	// CreateHWPending
 	addr_only_fmt := "%s lineno %d watchaddr 0x%x"
-	// LEFT OFF
-	// Finish w/ array test, then xenon
 	next_wp_log := 0         // index of the next log we expect to see
 	expect_memparam := false // whether we expect to see a memory-parameter update next
 	mem_param_fmt := "\tMemory-parameter map: 0x%x => {params:map[{param:%s flow:1}:{}]}\n"

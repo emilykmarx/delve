@@ -117,7 +117,7 @@ func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 	// Hitting instr may be same or diff line as cur instr => get prev instr's line
 	pc := state.CurrentThread.PC
 	if non_runtime_frame != nil {
-		// runtime hit
+		// runtime hit => pc is one after call instr that ended up in runtime
 		pc = non_runtime_frame.PC
 	}
 	fct_instr, err := tc.client.DisassemblePC(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, pc, api.IntelFlavour) // dst, src
@@ -313,7 +313,7 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	}
 
 	// 2. Check if have hardware watchpoints available, else store watchaddr and return
-	if tc.nWps() == 4 {
+	if tc.nWps(false) == 4 {
 		// Stays pending
 		if watchexpr != nil {
 			// Just evaluated => add new watchaddr

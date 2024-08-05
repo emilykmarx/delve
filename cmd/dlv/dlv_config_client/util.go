@@ -48,7 +48,7 @@ func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) *TaintingVals {
 }
 
 // number of existing wps
-func (tc *TaintCheck) nWps() int {
+func (tc *TaintCheck) nWps(print bool) int {
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
 		log.Fatalf("Error listing breakpoints: %v\n", list_err)
@@ -57,6 +57,9 @@ func (tc *TaintCheck) nWps() int {
 	for _, bp := range bps {
 		if bp.WatchExpr != "" {
 			n_wps += 1
+			if print {
+				fmt.Printf("Watchpoint at 0x%x\n", bp.Addrs[0])
+			}
 		}
 	}
 
@@ -141,7 +144,7 @@ func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int, frame in
 		lineno = locs[0].Line + 1
 	}
 
-	for { // TODO make loop safer
+	for i := 0; i < 100; i++ { // Likely won't need to skip more than a few lines?
 		loc = fmt.Sprintf("%v:%v", file, lineno)
 		// TODO(minor): how to pass in substitutePath rules? (2nd ret is related)
 		// Lines with instr only
@@ -158,6 +161,9 @@ func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int, frame in
 		}
 		lineno += 1
 	}
+
+	log.Fatalf("Failed to find location %v in frame %v\n", loc, frame)
+	return api.Location{}
 }
 
 func (tc *TaintCheck) setBp(addr uint64) {
