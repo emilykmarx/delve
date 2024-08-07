@@ -131,6 +131,22 @@ func (tc *TaintCheck) printStacktrace() {
 	}
 }
 
+// Whether the stack contains a print-flavored function
+func (tc *TaintCheck) hitInPrint() bool {
+	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
+	if err != nil {
+		log.Fatalf("Error getting stacktrace: %v\n", err)
+	}
+
+	for _, frame := range stack {
+		fn := frame.Function.Name()
+		if strings.Contains(strings.ToLower(fn), ("print")) {
+			return true
+		}
+	}
+	return false
+}
+
 // Find the next line on or after this one with a statement, so we can set a bp.
 // TODO May want to consider doing this with PC when handle the non-linear stuff
 func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int, frame int) api.Location {
@@ -138,7 +154,21 @@ func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int, frame in
 	if fn != nil {
 		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, *fn, true, nil)
 		if err != nil {
-			log.Fatalf("Error finding location: %v\n", err)
+			if strings.Contains(err.Error(), "ambiguous") {
+				// Ambiguous name => qualify with package name
+				tokens := strings.Split(tc.hit.hit_instr.Loc.File, "/")
+				pkg := tokens[len(tokens)-2]
+				if pkg == "dlv_config_client" { // running in test
+					pkg = "main"
+				}
+				qualified_fn := pkg + "." + *fn
+				locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, qualified_fn, true, nil)
+				if err != nil {
+					log.Fatalf("Error finding function %v in frame %v: %v\n", qualified_fn, frame, err)
+				}
+			} else {
+				log.Fatalf("Error finding function %v in frame %v: %v\n", *fn, frame, err)
+			}
 		}
 		file = locs[0].File
 		lineno = locs[0].Line + 1

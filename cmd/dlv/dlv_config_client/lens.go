@@ -86,17 +86,16 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
 		fmt.Println("Runtime watchpoint hit - partial stack (with PC one after hitting instr):")
 		for i, frame := range stack {
+			fn := frame.Function.Name()
 			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
-				frame.File, frame.Line, frame.Function.Name(),
-				frame.PC)
+				frame.File, frame.Line, fn, frame.PC)
 			fmt.Println(loc)
 
 			// TODO skip hits from sysmon thread (sw wp commit may hv a test?)
-			// What is the case when runtime.main hits again?
-			if frame.Function.Name() == "runtime.newstack" || frame.Function.Name() == "runtime.main" {
+			if fn == "runtime.newstack" {
 				return nil, false
 			}
-			if !strings.HasPrefix(frame.Function.Name(), "runtime") {
+			if !strings.HasPrefix(fn, "runtime") {
 				tc.hit.frame = i
 				return &frame, true
 			}
@@ -125,20 +124,16 @@ func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 		log.Fatalf("Error disassembling at PC 0x%x: %v\n", pc, err)
 	}
 
-	// Ignore prints for convenience
-	if strings.HasSuffix(fct_instr[0].Loc.File, "fmt/print.go") {
-		return false
-	}
-
 	// TODO this assumes hitting instr is always linearly previous,
 	// but not true for branching instr that touch memory (e.g. cmov)
 	// Only applies to non-runtime hit?
+	// Update: due to load-store reordering, need to guess (see 8/5 slides) - can use trace-packed-hit-call to test
 	for i, instr := range fct_instr {
 		if instr.Loc.PC == pc {
 			if i == 0 {
 				fmt.Printf("Hit in call instr? Stacktrace:\n")
 				tc.printStacktrace()
-				// TODO for now, ignoring this. Maybe expected for go's ABI???
+				// TODO don't ignore, once fix the above
 				return false
 			}
 			tc.hit.hit_instr = &fct_instr[i-1]
@@ -159,18 +154,18 @@ func (tc *TaintCheck) hittingLine() bool {
 	 * (remember to pass that scope to Disass) */
 
 	non_runtime_frame, handle := tc.handleRuntimeHit()
-	if !handle || !tc.prevInstr(non_runtime_frame) {
+	// Ignore prints (may be within print, or when calling print) for convenience
+	if tc.hitInPrint() || !handle || !tc.prevInstr(non_runtime_frame) {
 		return false
 	}
 
 	src_line := sourceLine(tc.client, tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line)
+	if strings.Contains(strings.ToLower(src_line), ("print")) {
+		return false
+	}
 
 	if src_line == "" {
 		log.Fatalf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
-	}
-	if strings.HasPrefix(src_line, "fmt.Print") {
-		// Don't propagate into Print, for test convenience
-		return false
 	}
 
 	fmt.Printf("Location:\n %v:%v (0x%x)\n",
