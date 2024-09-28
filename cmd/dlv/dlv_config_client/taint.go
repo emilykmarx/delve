@@ -66,7 +66,8 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
 	next_line := tc.lineWithStmt(nil, call_file, call_line+1, caller_frame)
 	caller_lhs := getLhs(i, call_file, call_line)
 	if caller_lhs == nil {
-		log.Fatalf("Failed to find caller lhs; call file %v, call line %v\n", call_file, call_line)
+		tc.printStacktrace()
+		log.Fatalf("Failed to find caller lhs; call file %v, call line %v (stacktrace above)\n", call_file, call_line)
 	}
 	return caller_lhs, next_line
 }

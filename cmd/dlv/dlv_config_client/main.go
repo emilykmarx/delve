@@ -31,6 +31,7 @@ func (tc *TaintCheck) replay() {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
 					tc.onWatchpointHit()
 				} else {
+					// Assumes the hit bp is for a pending wp (but could instead be e.g. fatalpanic)
 					tc.onPendingWpBpHit()
 				}
 			}

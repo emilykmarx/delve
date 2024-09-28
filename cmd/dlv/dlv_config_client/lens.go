@@ -365,16 +365,16 @@ func (tc *TaintCheck) onWatchpointHit() {
 
 // Breakpoint for pending watchpoint hit => try to set the watchpoint
 func (tc *TaintCheck) onPendingWpBpHit() {
+	bp_addr := tc.hit.hit_bp.Addrs[0]
+	info := tc.pending_wps[bp_addr]
+	fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
+
 	if len(tc.hit.hit_bp.Addrs) != 1 {
 		log.Fatalf("Wrong number of addrs at pending wp; addrs %v\n", tc.hit.hit_bp.Addrs)
 	}
-	bp_addr := tc.hit.hit_bp.Addrs[0]
-	info := tc.pending_wps[bp_addr]
 	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}
-
-	fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
 
 	for watchaddr, sz := range info.watchaddrs {
 		tc.trySetWatchpoint(nil, bp_addr, watchaddr, sz)

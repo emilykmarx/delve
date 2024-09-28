@@ -141,10 +141,11 @@ func TestFakeArg(t *testing.T) {
 */
 
 // Not fully automated, but here for convenience.
-// (Need to manually run xenon, then place outfiles here)
+// (Need to manually run xenon, then place outfiles in ./dlv_config_client/xenon_out/)
 // Note there is concurrency, so it's technically possible this is a brittle test
 // (assumes a certain ordering).
-func TestXenon(t *testing.T) {
+func TestXenon_single_query(t *testing.T) {
+	// Server makes a single DNS query (type A), then exits (after Ping fails)
 	expected_logs := []expectedWpLog{
 		// ROUND 1
 		// dnsconfig_unix.go:dnsReadConfig()
@@ -163,27 +164,23 @@ func TestXenon(t *testing.T) {
 
 		// dnsclient_unix.go:queryFn()
 		{kind: RecordHWPending, lineno: 651, watchexpr: "fqdn"},
-		// 2nd iter (will eval to same mem)
-		{kind: RecordHWPending, lineno: 651, watchexpr: "fqdn"},
 		// callee fqdn[0] re-uses caller mem
 
-		// ROUND 2
-		// dnsclient_unix.go:tryOneName()
-		{kind: CreateNonPending, lineno: 259, watchexpr: "name"},
-		{kind: CreateNonPending, lineno: 259, watchexpr: "name[0]"},
+		// dnsclient_unix.go:responseFn()
+		// interleaved w/ querying: Hit on 669 => set bp on 659 => hit 659
+		{kind: RecordHWPending, lineno: 659, watchexpr: "fqdn"},
+		// callee fqdn[0] re-uses caller mem
 
-		// message.go:NewName()
-		{kind: CreateNonPending, lineno: 1902, watchexpr: "name"},
-		{kind: CreateNonPending, lineno: 1902, watchexpr: "name[0]"},
+		// hit for fqdn[0] (via copy of name)
+		{kind: RecordHWPending, lineno: 1907, watchexpr: "n.Data[0]"},
 
-		// message.go:NewName()
-		{kind: CreateNonPending, lineno: 1907, watchexpr: "n.Data"},
+		// ROUND 2: Haven't done yet
 	}
 
 	files := []string{"client_err.txt", "server_err.txt", "client_out.txt", "server_out.txt"}
 	outs := make([][]byte, len(files))
 	for i, file := range files {
-		out, err := os.ReadFile("xenon_out/" + file)
+		out, err := os.ReadFile("dlv_config_client/xenon_out/" + file)
 		if _, ok := err.(*os.PathError); ok {
 			t.Skipf("Missing xenon log file %v", file)
 		}
