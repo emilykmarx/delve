@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	sys "golang.org/x/sys/unix"
+
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/gobuild"
 	"github.com/go-delve/delve/pkg/goversion"
@@ -1105,6 +1107,26 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 	return p.EvalWatchexpr(s, expr)
 }
 
+func (d *Debugger) mprotect(goid int64, watchaddr uint64) error {
+	page_addr := watchaddr &^ (uint64(os.Getpagesize()) - 1)
+	mprotect_callexpr := fmt.Sprintf("syscall.Syscall(%d, %#x, %d, %d)", sys.SYS_MPROTECT, page_addr, os.Getpagesize(), sys.PROT_NONE)
+	fmt.Printf("(d *Debugger) CreateWatchpoint; inject: %s\n", mprotect_callexpr)
+
+	_, err := d.Command(&api.DebuggerCommand{
+		Name:                 api.Call,
+		ReturnInfoLoadConfig: api.LoadConfigFromProc(&proc.LoadConfig{}),
+		Expr:                 mprotect_callexpr,
+		UnsafeCall:           false,
+		GoroutineID:          int64(goid),
+	}, nil, nil)
+
+	if err != nil {
+		fmt.Printf("mprotect returned err: %v\n", err.Error())
+	}
+
+	return err
+}
+
 // CreateWatchpoint creates a watchpoint on the specified expression.
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType) (*api.Breakpoint, error) {
@@ -1119,7 +1141,11 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	var wp_err error
 	if *expr != "" {
 		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil)
+		if d.mprotect(goid, bp.Addr) != nil {
+			return nil, err
+		}
 	} else {
+		// Lens client calls this (TODO decide what interface should be - for now, just test w/o lens client)
 		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchHardware)
 	}
 	if wp_err != nil {
