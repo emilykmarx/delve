@@ -6,6 +6,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	sys "golang.org/x/sys/unix"
 
@@ -395,6 +397,38 @@ const (
 	trapWaitDontCallExitGuard
 )
 
+type ptraceSiginfoAmd64 struct {
+	signo uint32
+	errno uint32
+	code  uint32
+	_     uint32
+	addr  uintptr
+	pad   [128]byte // should be enough?
+}
+
+const (
+	SEGV_ACCERR = 0x2
+)
+
+func handleTargetSIGSEGV(waitdbp *nativeProcess, tid int) {
+	fmt.Printf("Handling target segfault, thread ID %v\n", tid)
+
+	var err error
+	var siginfo ptraceSiginfoAmd64
+	waitdbp.execPtraceFunc(func() {
+		_, _, err = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GETSIGINFO, uintptr(tid), 0, uintptr(unsafe.Pointer(&siginfo)), 0, 0)
+	})
+	if err != syscall.Errno(0) {
+		log.Fatalf("PTRACE_GETSIGINFO returned err: %v\n", err.Error())
+	}
+
+	if siginfo.signo != uint32(sys.SIGSEGV) || siginfo.code != SEGV_ACCERR || siginfo.errno != 0 {
+		log.Fatalf("Siginfo not as expected: %+v\n", siginfo)
+	}
+
+	fmt.Printf("Faulting addr: %#x\n", siginfo.addr)
+}
+
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
 	var waitdbp *nativeProcess = nil
 	if len(procgrp.procs) == 1 {
@@ -410,14 +444,12 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			wopt = sys.WNOHANG
 		}
 		wpid, status, err := waitdbp.wait(pid, wopt)
-		if status.StopSignal() == sys.SIGSEGV {
-			fmt.Printf("ZZEM caught SEGFAULT after wait() \n")
-		}
 
 		if err != nil {
 			return nil, fmt.Errorf("wait err %s %d", err, pid)
 		}
 		if wpid == 0 {
+			fmt.Println("wpid 0")
 			if options&trapWaitNohang != 0 {
 				return nil, nil
 			}
@@ -430,11 +462,14 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			th, ok = dbp.threads[wpid]
 			if ok {
 				th.Status = (*waitStatus)(status)
+				fmt.Printf("found ID: %v\n", th.ID)
 			}
 		} else {
 			dbp = procgrp.procs[0]
 		}
+
 		if status.Exited() {
+			fmt.Println("EXITED")
 			if wpid == dbp.pid {
 				dbp.postExit()
 				if procgrp.numValid() == 0 {
@@ -449,6 +484,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			continue
 		}
 		if status.Signaled() {
+			fmt.Println("SIGNALED")
 			// Signaled means the thread was terminated due to a signal.
 			if wpid == dbp.pid {
 				dbp.postExit()
@@ -541,8 +577,14 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		}
 		if th == nil {
 			// Sometimes we get an unknown thread, ignore it?
+			fmt.Println("th NIL")
 			continue
 		}
+
+		if status.StopSignal() == sys.SIGSEGV {
+			handleTargetSIGSEGV(waitdbp, th.ThreadID())
+		}
+
 		if (halt && status.StopSignal() == sys.SIGSTOP) || (status.StopSignal() == sys.SIGTRAP) {
 			th.os.running = false
 			if status.StopSignal() == sys.SIGTRAP {
@@ -553,6 +595,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 
 		// TODO(dp) alert user about unexpected signals here.
 		if halt && !th.os.running {
+			fmt.Println("halt && !th.os.running")
 			// We are trying to stop the process, queue this signal to be delivered
 			// to the thread when we resume.
 			// Do not do this for threads that were running because we sent them a
@@ -562,6 +605,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			th.os.running = false
 			return th, nil
 		} else if err := th.resumeWithSig(int(status.StopSignal())); err != nil {
+			fmt.Println("resumeWithSig gave err")
 			if err != sys.ESRCH {
 				return nil, err
 			}
