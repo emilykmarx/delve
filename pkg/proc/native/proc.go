@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"syscall"
-
-	sys "golang.org/x/sys/unix"
 
 	"time"
 
 	"github.com/go-delve/delve/pkg/proc"
+	"github.com/go-delve/delve/pkg/proc/linutil"
+	sys "golang.org/x/sys/unix"
 )
 
 // Process represents all of the information the debugger
@@ -198,10 +197,7 @@ func (dbp *nativeProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
 			return nil
 		}
 
-		err := dbp.writeSoftwareWatchpoint(bp.Addr)
-		if err != nil {
-			return err
-		}
+		return dbp.writeSoftwareWatchpoint(dbp.memthread, bp.Addr)
 	}
 
 	// non-watchpoint
@@ -283,7 +279,7 @@ func ZZEM(procgrp *processGroup, msg string) {
 	fmt.Printf("ZZEM %v\n", msg)
 	for _, thread := range procgrp.procs[0].ThreadList() {
 		loc, _ := thread.Location()
-		if loc != nil && loc.Fn.Name == "main.main" {
+		if loc != nil && loc.Fn != nil && loc.Fn.Name == "main.main" {
 			fmt.Printf("Thread at line: %v\n", loc.Line)
 			if thread.Breakpoint() != nil {
 				fmt.Printf("Breakpoint: %v\n", thread.Breakpoint())
@@ -360,6 +356,13 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 		// I think this is unexpected
 		fmt.Printf("trapthread nil -- loop again\n")
 	} // end main for
+}
+
+// Find the software watchpoint (if any) whose memory overlaps the faulting address
+// Need to store mem region in wp
+func (dbp *nativeProcess) FindSoftwareWatchpoint() (*proc.Breakpoint, bool) {
+	fmt.Printf("ZZEM SW WP\n")
+	return nil, false
 }
 
 // FindBreakpoint finds the breakpoint for the given pc.
@@ -466,15 +469,61 @@ func (dbp *nativeProcess) postExit() {
 	dbp.os.Close()
 }
 
-func (dbp *nativeProcess) writeSoftwareWatchpoint(addr uint64) error {
-	addr = addr &^ (uint64(os.Getpagesize()) - 1)
-
+// mprotect the page containing addr
+// TODO check if page already protected, record region we actually want to watch
+// (For now, alrdy recorded as part of wp? Will need to update when support e.g. watching part of a slice)
+func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uint64) error {
 	// TODO should probably only remove read perms from existing prot mask, and restore old mask on deleting watchpoint
-	_, _, err := sys.Syscall(sys.SYS_MPROTECT, uintptr(addr), uintptr(os.Getpagesize()), uintptr(sys.PROT_NONE))
-	if err != syscall.Errno(0) {
-		fmt.Printf("ZZEM err from mprotect: %v\n", err.Error())
-		return err
+	page_addr := addr &^ (uint64(os.Getpagesize()) - 1)
+
+	fmt.Printf("writeSoftwareWatchpoint, addr %#x\n", addr)
+	// 0. Get addr of syscall instr
+	// TODO get from asm - proc.Disassemble() Syscall6
+	syscall_pc := uint64(0x4044ec)
+
+	// 1. Set registers for mprotect syscall: RIP, args, syscall code
+	prev_regs, err := thread.Registers()
+	if err != nil {
+		return fmt.Errorf("failed to get regs before mprotect: %v", err.Error())
 	}
+	regs, err := prev_regs.Copy() // Prevent prev_regs from changing
+	if err != nil {
+		return fmt.Errorf("failed to copy regs before mprotect: %v", err.Error())
+	}
+	mprotect_regs := regs.(*linutil.AMD64Registers)
+
+	mprotect_regs.Regs.Rip = syscall_pc
+	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
+	mprotect_regs.Regs.Rdi = page_addr
+	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())
+	mprotect_regs.Regs.Rdx = sys.PROT_NONE
+
+	thread.dbp.execPtraceFunc(func() { err = sys.PtraceSetRegs(thread.ID, (*sys.PtraceRegs)(mprotect_regs.Regs)) })
+	if err != nil {
+		return fmt.Errorf("failed to set regs: %v", err.Error())
+	}
+
+	// 2. Execute mprotect syscall
+	// Is this ok? Else, make a procgrp field in dbp and populate it on initialize()
+	procgrp := &processGroup{procs: []*nativeProcess{dbp}}
+	if err := procgrp.stepInstruction(thread); err != nil {
+		return fmt.Errorf("failed to execute syscall instruction for mprotect: %v", err.Error())
+	}
+
+	new_regs, err := thread.Registers()
+	if err != nil {
+		return fmt.Errorf("failed to get regs after mprotect: %v", err.Error())
+	}
+	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
+	if mprotect_ret := mprotect_ret_regs.Regs.Rax; mprotect_ret != 0 {
+		return fmt.Errorf("mprotect failed: errno -%v", mprotect_ret)
+	}
+
+	// 3. Restore registers
+	if err := thread.RestoreRegisters(prev_regs); err != nil {
+		return fmt.Errorf("failed to restore registers after mprotect: %v", err.Error())
+	}
+
 	return nil
 }
 

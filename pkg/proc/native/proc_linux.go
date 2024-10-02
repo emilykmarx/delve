@@ -410,7 +410,8 @@ const (
 	SEGV_ACCERR = 0x2
 )
 
-func handleTargetSIGSEGV(waitdbp *nativeProcess, tid int) {
+// Assuming target has just segfaulted, get the faulting address
+func faultingAddr(waitdbp *nativeProcess, tid int) uintptr {
 	fmt.Printf("Handling target segfault, thread ID %v\n", tid)
 
 	var err error
@@ -427,6 +428,7 @@ func handleTargetSIGSEGV(waitdbp *nativeProcess, tid int) {
 	}
 
 	fmt.Printf("Faulting addr: %#x\n", siginfo.addr)
+	return siginfo.addr
 }
 
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
@@ -580,9 +582,8 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			fmt.Println("th NIL")
 			continue
 		}
-
 		if status.StopSignal() == sys.SIGSEGV {
-			handleTargetSIGSEGV(waitdbp, th.ThreadID())
+			fmt.Printf("ZZEM target SIGSEGV\n")
 		}
 
 		if (halt && status.StopSignal() == sys.SIGSTOP) || (status.StopSignal() == sys.SIGTRAP) {
