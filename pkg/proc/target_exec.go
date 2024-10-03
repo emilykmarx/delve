@@ -53,6 +53,10 @@ func (grp *TargetGroup) Next() (err error) {
 // processes. It will continue until it hits a breakpoint
 // or is otherwise stopped.
 func (grp *TargetGroup) Continue() error {
+	fmt.Println("ENTER TargetGroup CONTINUE")
+	defer func() {
+		fmt.Println("EXIT TargetGroup CONTINUE")
+	}()
 	if grp.numValid() == 0 {
 		_, err := grp.targets[0].Valid()
 		return err

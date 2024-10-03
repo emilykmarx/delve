@@ -1120,8 +1120,10 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	if *expr != "" {
 		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil)
 	} else {
-		// Lens client calls this (TODO decide what interface should be.)
-		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchHardware)
+		// Lens client calls this
+		// TODO allow client to specify sw vs hw (currently prefix hack doesn't work I think, due to evalWatchexpr)
+		// consider setting WatchExpr in the process for convenience
+		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchSoftware)
 	}
 	if wp_err != nil {
 		return nil, wp_err

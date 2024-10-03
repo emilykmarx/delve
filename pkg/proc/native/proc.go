@@ -3,8 +3,11 @@ package native
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
+	"syscall"
+	"unsafe"
 
 	"time"
 
@@ -185,32 +188,32 @@ func (dbp *nativeProcess) RequestManualStop(cctx *proc.ContinueOnceContext) erro
 }
 
 func (dbp *nativeProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
-	// watchpoint
-	if bp.WatchType != 0 {
-		if bp.WatchImpl == proc.WatchHardware {
-			for _, thread := range dbp.threads {
-				err := thread.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
-				if err != nil {
-					return err
-				}
+	if bp.WatchType != 0 && bp.WatchImpl == proc.WatchHardware {
+		// Hardware watchpoint
+		for _, thread := range dbp.threads {
+			err := thread.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
+			if err != nil {
+				return err
 			}
-			return nil
 		}
-
+		return nil
+	} else if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
+		// Software watchpoint
 		return dbp.writeSoftwareWatchpoint(dbp.memthread, bp.Addr)
+	} else {
+		// Software breakpoint
+		bp.OriginalData = make([]byte, dbp.bi.Arch.BreakpointSize())
+		_, err := dbp.memthread.ReadMemory(bp.OriginalData, bp.Addr)
+		if err != nil {
+			return err
+		}
+		return dbp.writeSoftwareBreakpoint(dbp.memthread, bp.Addr)
 	}
-
-	// non-watchpoint
-	bp.OriginalData = make([]byte, dbp.bi.Arch.BreakpointSize())
-	_, err := dbp.memthread.ReadMemory(bp.OriginalData, bp.Addr)
-	if err != nil {
-		return err
-	}
-	return dbp.writeSoftwareBreakpoint(dbp.memthread, bp.Addr)
 }
 
 func (dbp *nativeProcess) EraseBreakpoint(bp *proc.Breakpoint) error {
-	if bp.WatchType != 0 {
+	if bp.WatchType != 0 && bp.WatchImpl == proc.WatchHardware {
+		// Hardware watchpoint
 		for _, thread := range dbp.threads {
 			err := thread.clearHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 			if err != nil {
@@ -218,9 +221,13 @@ func (dbp *nativeProcess) EraseBreakpoint(bp *proc.Breakpoint) error {
 			}
 		}
 		return nil
+	} else if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
+		// Software watchpoint
+		return dbp.memthread.clearSoftwareWatchpoint(bp)
+	} else {
+		// Software breakpoint
+		return dbp.memthread.clearSoftwareBreakpoint(bp)
 	}
-
-	return dbp.memthread.clearSoftwareBreakpoint(bp)
 }
 
 type processGroup struct {
@@ -281,7 +288,7 @@ func ZZEM(procgrp *processGroup, msg string) {
 		loc, _ := thread.Location()
 		if loc != nil && loc.Fn != nil && loc.Fn.Name == "main.main" {
 			fmt.Printf("Thread at line: %v\n", loc.Line)
-			if thread.Breakpoint() != nil {
+			if thread.Breakpoint() != nil && thread.Breakpoint().Breakpoint != nil {
 				fmt.Printf("Breakpoint: %v\n", thread.Breakpoint())
 			} else {
 				fmt.Printf("Nil breakpoint\n")
@@ -312,7 +319,7 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 				}
 			}
 		}
-		ZZEM(procgrp, "ContinueOnce loop iter, after clearing bps")
+		ZZEM(procgrp, "ContinueOnce loop iter, after resume")
 
 		if cctx.ResumeChan != nil {
 			close(cctx.ResumeChan)
@@ -350,7 +357,7 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 			}
 
 			loc, _ := trapthread.Location()
-			fmt.Printf("ContinueOnce return trapthread at line %v, PC %v\n", loc.Line, loc.PC)
+			fmt.Printf("ContinueOnce return trapthread at line %v, PC 0x%x\n", loc.Line, loc.PC)
 			return trapthread, proc.StopUnknown, nil
 		}
 		// I think this is unexpected
@@ -358,11 +365,60 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 	} // end main for
 }
 
-// Find the software watchpoint (if any) whose memory overlaps the faulting address
-// Need to store mem region in wp
-func (dbp *nativeProcess) FindSoftwareWatchpoint() (*proc.Breakpoint, bool) {
-	fmt.Printf("ZZEM SW WP\n")
-	return nil, false
+type ptraceSiginfoAmd64 struct {
+	signo uint32
+	errno uint32
+	code  uint32
+	_     uint32
+	addr  uintptr
+	pad   [128]byte // should be enough?
+}
+
+const (
+	SEGV_ACCERR = 0x2
+)
+
+// Assuming target hs just segfaulted, get the faulting address
+func (t *nativeThread) faultingAddr() uintptr {
+	fmt.Printf("Handling target segfault, thread ID %v\n", t.ThreadID())
+
+	var err error
+	var siginfo ptraceSiginfoAmd64
+	t.dbp.execPtraceFunc(func() {
+		_, _, err = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GETSIGINFO, uintptr(t.ThreadID()), 0, uintptr(unsafe.Pointer(&siginfo)), 0, 0)
+	})
+	if err != syscall.Errno(0) {
+		log.Fatalf("PTRACE_GETSIGINFO returned err: %v\n", err.Error())
+	}
+
+	if siginfo.signo != uint32(sys.SIGSEGV) || siginfo.code != SEGV_ACCERR || siginfo.errno != 0 {
+		log.Fatalf("Siginfo not as expected: %+v\n", siginfo)
+	}
+
+	fmt.Printf("Faulting addr: %#x\n", siginfo.addr)
+	return siginfo.addr
+}
+
+func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
+	return addr1 < addr2+sz2 && addr2 < addr1+sz1
+}
+
+// Find the software watchpoint whose memory overlaps the faulting address
+// If any - may be an access for unwatched address on same page as watched address,
+// in which case we should ignore - TODO
+func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
+	fmt.Printf("FindSoftwareWatchpoint\n")
+	for _, bp := range t.dbp.Breakpoints().M {
+		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
+			//if memOverlap(uint64(t.faultingAddr()), 1, bp.Addr, uint64(bp.WatchType.Size())) {
+			fmt.Printf("Found software watchpoint, addr %#x\n", bp.Addr)
+			return bp
+			//}
+		}
+	}
+
+	fmt.Printf("No software watchpoint found\n")
+	return nil
 }
 
 // FindBreakpoint finds the breakpoint for the given pc.
@@ -469,14 +525,15 @@ func (dbp *nativeProcess) postExit() {
 	dbp.os.Close()
 }
 
-// mprotect the page containing addr
-// TODO check if page already protected, record region we actually want to watch
-// (For now, alrdy recorded as part of wp? Will need to update when support e.g. watching part of a slice)
-func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uint64) error {
-	// TODO should probably only remove read perms from existing prot mask, and restore old mask on deleting watchpoint
-	page_addr := addr &^ (uint64(os.Getpagesize()) - 1)
+func pageAddr(addr uint64) uint64 {
+	return addr &^ (uint64(os.Getpagesize()) - 1)
+}
 
-	fmt.Printf("writeSoftwareWatchpoint, addr %#x\n", addr)
+// TODO (minor) handle pages other than R+W - i.e.:
+// only remove read perms from existing prot mask, and restore old mask on deleting watchpoint/allowing access
+// Also support (or disallow) write/read-write watches
+func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
+	fmt.Printf("enter toggleMprotect; protect %v\n", protect)
 	// 0. Get addr of syscall instr
 	// TODO get from asm - proc.Disassemble() Syscall6
 	syscall_pc := uint64(0x4044ec)
@@ -494,9 +551,13 @@ func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uin
 
 	mprotect_regs.Regs.Rip = syscall_pc
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
-	mprotect_regs.Regs.Rdi = page_addr
+	mprotect_regs.Regs.Rdi = pageAddr(addr)
 	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())
-	mprotect_regs.Regs.Rdx = sys.PROT_NONE
+	if protect {
+		mprotect_regs.Regs.Rdx = sys.PROT_NONE
+	} else {
+		mprotect_regs.Regs.Rdx = sys.PROT_READ | sys.PROT_WRITE
+	}
 
 	thread.dbp.execPtraceFunc(func() { err = sys.PtraceSetRegs(thread.ID, (*sys.PtraceRegs)(mprotect_regs.Regs)) })
 	if err != nil {
@@ -504,9 +565,14 @@ func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uin
 	}
 
 	// 2. Execute mprotect syscall
-	// Is this ok? Else, make a procgrp field in dbp and populate it on initialize()
-	procgrp := &processGroup{procs: []*nativeProcess{dbp}}
-	if err := procgrp.stepInstruction(thread); err != nil {
+	// TODO (future): See comment on TargetGroup for when group contains > 1 process -
+	// if want to support, add a `procgrp` field to dbp?
+	procgrp := &processGroup{procs: []*nativeProcess{thread.dbp}}
+	err = procgrp.singleStep(thread)
+	if err != nil {
+		if _, exited := err.(proc.ErrProcessExited); exited {
+			return err
+		}
 		return fmt.Errorf("failed to execute syscall instruction for mprotect: %v", err.Error())
 	}
 
@@ -523,8 +589,27 @@ func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uin
 	if err := thread.RestoreRegisters(prev_regs); err != nil {
 		return fmt.Errorf("failed to restore registers after mprotect: %v", err.Error())
 	}
+	fmt.Println("exit toggleMprotect, no error")
 
 	return nil
+}
+
+// mprotect the page containing addr (if haven't already)
+func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uint64) error {
+	fmt.Printf("writeSoftwareWatchpoint; addr %#x\n", addr)
+	if !thread.singleStepping {
+		// If re-writing after just stepped over a faulting instr, always write
+		for _, bp := range dbp.Breakpoints().M {
+			if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
+				if pageAddr(bp.Addr) == pageAddr(addr) {
+					fmt.Println("Page already mprotected")
+					// Already have a sw wp on the same page => no need to mprotect
+					return nil
+				}
+			}
+		}
+	}
+	return thread.toggleMprotect(addr, true)
 }
 
 func (dbp *nativeProcess) writeSoftwareBreakpoint(thread *nativeThread, addr uint64) error {

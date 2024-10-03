@@ -50,6 +50,9 @@ func (t *nativeThread) resumeWithSig(sig int) (err error) {
 	return
 }
 
+// TODO think about how to handle instr that triggers a sw bp and a sw wp
+// e.g. client stopped at bp, cleared it, set wp - and bp instr happens to access page)
+// What about if client doesn't clear it?
 func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 	sig := 0
 	for {
@@ -59,6 +62,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 			return err
 		}
 		wpid, status, err := t.dbp.waitFast(t.ID)
+		fmt.Printf("singleStep waitFast returned status %v\n", status.StopSignal())
 		if err != nil {
 			return err
 		}
@@ -73,6 +77,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 		if wpid == t.ID {
 			switch s := status.StopSignal(); s {
 			case sys.SIGTRAP:
+				// Always expected for singleStep since that's how it's implemented
 				return nil
 			case sys.SIGSTOP:
 				// delayed SIGSTOP, ignore it

@@ -2,8 +2,10 @@ package native
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/go-delve/delve/pkg/proc"
+	sys "golang.org/x/sys/unix"
 )
 
 // Thread represents a single thread in the traced process
@@ -38,30 +40,41 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 		t.singleStepping = false
 	}()
 
-	if bp := t.CurrentBreakpoint.Breakpoint; bp != nil && bp.WatchType != 0 && t.dbp.Breakpoints().M[bp.Addr] == bp {
-		err = t.clearHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			err = t.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
-		}()
-	}
-
 	pc, err := t.PC()
 	if err != nil {
 		return err
 	}
+	fmt.Printf("stepInstruction; pc at entry: %#x\n", pc)
 
-	bp, ok := t.dbp.FindBreakpoint(pc, false)
-	if ok {
-		// Clear the breakpoint so that we can continue execution.
-		err = t.clearSoftwareBreakpoint(bp)
+	if bp := t.CurrentBreakpoint.Breakpoint; bp != nil && bp.WatchType != 0 && bp.WatchImpl == proc.WatchHardware &&
+		t.dbp.Breakpoints().M[bp.Addr] == bp {
+		// Hardware watchpoint
+		err = t.clearHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 		if err != nil {
 			return err
 		}
 
-		// Restore breakpoint now that we have passed it.
+		defer func() {
+			err = t.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
+		}()
+	} else if bp := t.FindSoftwareWatchpoint(); bp != nil {
+		// Software watchpoint
+		err = t.clearSoftwareWatchpoint(bp)
+		if err != nil {
+			return err
+		}
+
+		defer func() {
+			if err := t.dbp.writeSoftwareWatchpoint(t.dbp.memthread, bp.Addr); err != nil {
+				log.Fatalf("Failed to re-mprotect page after stepping over #%x\n", bp.Addr)
+			}
+		}()
+	} else if bp, ok := t.dbp.FindBreakpoint(pc, false); ok {
+		// Software breakpoint
+		err = t.clearSoftwareBreakpoint(bp)
+		if err != nil {
+			return err
+		}
 		defer func() {
 			err = t.dbp.writeSoftwareBreakpoint(t, bp.Addr)
 		}()
@@ -108,13 +121,19 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 	var bp *proc.Breakpoint
 
 	if t.dbp.Breakpoints().HasHWBreakpoints() {
+		// Check for hardware breakpoint
 		var err error
 		bp, err = t.findHardwareBreakpoint()
 		if err != nil {
 			return err
 		}
 	}
-	if bp == nil {
+	sigsegv := (sys.WaitStatus)(*t.Status).StopSignal() == sys.SIGSEGV
+	if bp == nil && sigsegv {
+		// Software watchpoint
+		bp = t.FindSoftwareWatchpoint()
+	} else if bp == nil {
+		// Software breakpoint
 		pc, err := t.PC()
 		if err != nil {
 			return err
@@ -150,6 +169,14 @@ func (t *nativeThread) Breakpoint() *proc.BreakpointState {
 // ThreadID returns the ID of this thread.
 func (t *nativeThread) ThreadID() int {
 	return t.ID
+}
+
+func (t *nativeThread) clearSoftwareWatchpoint(bp *proc.Breakpoint) error {
+	fmt.Printf("clearSoftwareWatchpoint; addr %#x\n", bp.Addr)
+	if err := t.toggleMprotect(pageAddr(bp.Addr), false); err != nil {
+		return fmt.Errorf("could not clear software watchpoint %s", err)
+	}
+	return nil
 }
 
 // clearSoftwareBreakpoint clears the specified breakpoint.

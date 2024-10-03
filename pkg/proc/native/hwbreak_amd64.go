@@ -24,7 +24,7 @@ func (t *nativeThread) findHardwareBreakpoint() (*proc.Breakpoint, error) {
 		ok, idx := drs.GetActiveBreakpoint()
 		if ok {
 			for _, bp := range t.dbp.Breakpoints().M {
-				if bp.WatchType != 0 && bp.HWBreakIndex == idx {
+				if bp.WatchType != 0 && bp.WatchImpl == proc.WatchHardware && bp.HWBreakIndex == idx {
 					retbp = bp
 					break
 				}

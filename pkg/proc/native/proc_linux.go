@@ -6,7 +6,6 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,7 +15,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 
 	sys "golang.org/x/sys/unix"
 
@@ -353,7 +351,7 @@ func (dbp *nativeProcess) addThread(tid int, attach bool) (*nativeThread, error)
 		dbp.memthread = dbp.threads[tid]
 	}
 	for _, bp := range dbp.Breakpoints().M {
-		if bp.WatchType != 0 {
+		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchHardware {
 			err := dbp.threads[tid].writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 			if err != nil {
 				return nil, err
@@ -397,38 +395,20 @@ const (
 	trapWaitDontCallExitGuard
 )
 
-type ptraceSiginfoAmd64 struct {
-	signo uint32
-	errno uint32
-	code  uint32
-	_     uint32
-	addr  uintptr
-	pad   [128]byte // should be enough?
-}
+// Whether this thread segfaulted when accessing a watched region
+// TODO if spurious, step over it then auto-continue
+func (t *nativeThread) threadSIGSEGV() bool {
+	/*
+		if (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV &&
+			t.FindSoftwareWatchpoint() == nil {
+			fmt.Printf("Spurious segfault at %#x; ignoring\n", t.faultingAddr())
+		}
 
-const (
-	SEGV_ACCERR = 0x2
-)
-
-// Assuming target has just segfaulted, get the faulting address
-func faultingAddr(waitdbp *nativeProcess, tid int) uintptr {
-	fmt.Printf("Handling target segfault, thread ID %v\n", tid)
-
-	var err error
-	var siginfo ptraceSiginfoAmd64
-	waitdbp.execPtraceFunc(func() {
-		_, _, err = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GETSIGINFO, uintptr(tid), 0, uintptr(unsafe.Pointer(&siginfo)), 0, 0)
-	})
-	if err != syscall.Errno(0) {
-		log.Fatalf("PTRACE_GETSIGINFO returned err: %v\n", err.Error())
-	}
-
-	if siginfo.signo != uint32(sys.SIGSEGV) || siginfo.code != SEGV_ACCERR || siginfo.errno != 0 {
-		log.Fatalf("Siginfo not as expected: %+v\n", siginfo)
-	}
-
-	fmt.Printf("Faulting addr: %#x\n", siginfo.addr)
-	return siginfo.addr
+		return (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV &&
+			// not a coincidence, i.e. an access for unwatched address on same page as watched address
+			t.FindSoftwareWatchpoint() != nil
+	*/
+	return (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV
 }
 
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
@@ -451,7 +431,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			return nil, fmt.Errorf("wait err %s %d", err, pid)
 		}
 		if wpid == 0 {
-			fmt.Println("wpid 0")
 			if options&trapWaitNohang != 0 {
 				return nil, nil
 			}
@@ -464,7 +443,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			th, ok = dbp.threads[wpid]
 			if ok {
 				th.Status = (*waitStatus)(status)
-				fmt.Printf("found ID: %v\n", th.ID)
 			}
 		} else {
 			dbp = procgrp.procs[0]
@@ -582,15 +560,18 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			fmt.Println("th NIL")
 			continue
 		}
-		if status.StopSignal() == sys.SIGSEGV {
-			fmt.Printf("ZZEM target SIGSEGV\n")
-		}
 
-		if (halt && status.StopSignal() == sys.SIGSTOP) || (status.StopSignal() == sys.SIGTRAP) {
+		if (halt && status.StopSignal() == sys.SIGSTOP) ||
+			(status.StopSignal() == sys.SIGTRAP) ||
+			th.threadSIGSEGV() {
+
 			th.os.running = false
-			if status.StopSignal() == sys.SIGTRAP {
+
+			if status.StopSignal() == sys.SIGTRAP ||
+				th.threadSIGSEGV() {
 				th.os.setbp = true
 			}
+			fmt.Printf("ZZEM trapWaitInternal returning thread %v, stopsig: %v\n", th.ThreadID(), status.StopSignal())
 			return th, nil
 		}
 
@@ -738,6 +719,7 @@ func (procgrp *processGroup) resume() error {
 
 // stop stops all running threads and sets breakpoints
 func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *nativeThread) (*nativeThread, error) {
+	fmt.Printf("ZZEM enter stop; trapthread %v\n", trapthread.ThreadID())
 	if procgrp.numValid() == 0 {
 		return nil, proc.ErrProcessExited{Pid: procgrp.procs[0].pid}
 	}
@@ -752,7 +734,7 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 	}
 	trapthread.os.setbp = true
 
-	// check if any other thread simultaneously received a SIGTRAP
+	// check if any other thread simultaneously received a SIGTRAP or SIGSEGV
 	for {
 		th, err := trapWaitInternal(procgrp, -1, trapWaitNohang)
 		if err != nil {
@@ -840,7 +822,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 		return err
 	}
 
-	// set breakpoints on SIGTRAP threads
+	// set breakpoints on SIGTRAP and SIGSEGV threads
 	var err1 error
 	for _, th := range dbp.threads {
 		pc, _ := th.PC()

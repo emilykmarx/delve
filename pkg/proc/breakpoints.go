@@ -50,7 +50,8 @@ type Breakpoint struct {
 	PreviousAddrs []uint64 // Any addrs overwritten by stack resize
 	OriginalData  []byte   // If software breakpoint, the data we replace with breakpoint instruction.
 
-	WatchExpr     string
+	WatchExpr string
+	// Includes a size as well as read/write
 	WatchType     WatchType
 	WatchImpl     WatchImpl
 	HWBreakIndex  uint8 // hardware breakpoint index
@@ -207,8 +208,11 @@ func (bp *Breakpoint) VerboseDescr() []string {
 
 	r = append(r, fmt.Sprintf("OriginalData=%#x", bp.OriginalData))
 
-	if bp.WatchType != 0 {
+	if bp.WatchType != 0 && bp.WatchImpl == WatchHardware {
 		r = append(r, fmt.Sprintf("HWBreakIndex=%#x watchStackOff=%#x", bp.HWBreakIndex, bp.watchStackOff))
+	}
+	if bp.WatchType != 0 && bp.WatchImpl == WatchSoftware {
+		r = append(r, fmt.Sprintf("Software Watchpoint: watchStackOff=%#x", bp.watchStackOff))
 	}
 
 	lbp := bp.Logical
@@ -926,7 +930,7 @@ func (bpmap *BreakpointMap) HasSteppingBreakpoints() bool {
 // HasHWBreakpoints returns true if there are hardware breakpoints.
 func (bpmap *BreakpointMap) HasHWBreakpoints() bool {
 	for _, bp := range bpmap.M {
-		if bp.WatchType != 0 {
+		if bp.WatchType != 0 && bp.WatchImpl == WatchHardware {
 			return true
 		}
 	}
