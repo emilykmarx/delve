@@ -395,19 +395,8 @@ const (
 	trapWaitDontCallExitGuard
 )
 
-// Whether this thread segfaulted when accessing a watched region
-// TODO if spurious, step over it then auto-continue
-func (t *nativeThread) threadSIGSEGV() bool {
-	/*
-		if (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV &&
-			t.FindSoftwareWatchpoint() == nil {
-			fmt.Printf("Spurious segfault at %#x; ignoring\n", t.faultingAddr())
-		}
-
-		return (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV &&
-			// not a coincidence, i.e. an access for unwatched address on same page as watched address
-			t.FindSoftwareWatchpoint() != nil
-	*/
+// Whether this thread segfaulted
+func (t *nativeThread) SIGSEGV() bool {
 	return (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV
 }
 
@@ -561,14 +550,15 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			continue
 		}
 
+		// Set bp if thread segfaulted, whether spuriously or not
 		if (halt && status.StopSignal() == sys.SIGSTOP) ||
 			(status.StopSignal() == sys.SIGTRAP) ||
-			th.threadSIGSEGV() {
+			th.SIGSEGV() {
 
 			th.os.running = false
 
 			if status.StopSignal() == sys.SIGTRAP ||
-				th.threadSIGSEGV() {
+				th.SIGSEGV() {
 				th.os.setbp = true
 			}
 			fmt.Printf("ZZEM trapWaitInternal returning thread %v, stopsig: %v\n", th.ThreadID(), status.StopSignal())

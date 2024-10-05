@@ -5,7 +5,6 @@ import (
 	"log"
 
 	"github.com/go-delve/delve/pkg/proc"
-	sys "golang.org/x/sys/unix"
 )
 
 // Thread represents a single thread in the traced process
@@ -57,8 +56,8 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 		defer func() {
 			err = t.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 		}()
-	} else if bp := t.FindSoftwareWatchpoint(); bp != nil {
-		// Software watchpoint
+	} else if t.SIGSEGV() {
+		// Software watchpoint (spurious or not)
 		err = t.clearSoftwareWatchpoint(bp)
 		if err != nil {
 			return err
@@ -128,9 +127,8 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 			return err
 		}
 	}
-	sigsegv := (sys.WaitStatus)(*t.Status).StopSignal() == sys.SIGSEGV
-	if bp == nil && sigsegv {
-		// Software watchpoint
+	if bp == nil && t.SIGSEGV() {
+		// Software watchpoint (spurious or not)
 		bp = t.FindSoftwareWatchpoint()
 	} else if bp == nil {
 		// Software breakpoint

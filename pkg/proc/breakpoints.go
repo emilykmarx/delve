@@ -52,10 +52,12 @@ type Breakpoint struct {
 
 	WatchExpr string
 	// Includes a size as well as read/write
-	WatchType     WatchType
-	WatchImpl     WatchImpl
-	HWBreakIndex  uint8 // hardware breakpoint index
-	watchStackOff int64 // for watchpoints of stack variables, offset of the address from top of the stack
+	WatchType WatchType
+	WatchImpl WatchImpl
+	// If software watchpoint, whether page fault was spurious
+	SpuriousPageFault bool
+	HWBreakIndex      uint8 // hardware breakpoint index
+	watchStackOff     int64 // for watchpoints of stack variables, offset of the address from top of the stack
 
 	// Breaklets is the list of overlapping breakpoints on this physical breakpoint.
 	// There can be at most one UserBreakpoint in this list but multiple internal breakpoints are allowed.

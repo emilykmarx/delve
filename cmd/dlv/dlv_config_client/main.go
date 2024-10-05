@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
 )
 
@@ -29,7 +30,8 @@ func (tc *TaintCheck) replay() {
 				tc.hit = Hit{hit_bp: hit_bp}
 				if hit_bp.WatchExpr != "" {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
-					tc.onWatchpointHit()
+					fmt.Printf("Client: hit wp for %#x, PC %#x\n", hit_bp.Addr, thread.PC)
+					//tc.onWatchpointHit()
 				} else {
 					// Assumes the hit bp is for a pending wp (but could instead be e.g. fatalpanic)
 					tc.onPendingWpBpHit()
@@ -83,6 +85,7 @@ func main() {
 		done_wps:    make(map[DoneWp]TaintingVals), round_done_wps: make(map[DoneWp]TaintingVals),
 		mem_param_map: make(map[uint64]TaintingVals)}
 	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
+	init_loc = api.Location{PCs: []uint64{0x49b2c1}}
 
 	// This will be replaced by a config breakpoint
 	fmt.Printf("Configuration variable: %v\n", *initial_watchexpr)

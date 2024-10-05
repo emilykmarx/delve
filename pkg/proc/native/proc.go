@@ -331,6 +331,8 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 			fmt.Printf("ContinueOnce nil -- trapWait err\n")
 			return nil, proc.StopUnknown, err
 		}
+		// If spurious page fault: finish this loop iteration and continue to next
+		// (PERF: May be able to get away with directly continuing to next?)
 		trapthread, err = procgrp.stop(cctx, trapthread)
 		if err != nil {
 			fmt.Printf("ContinueOnce nil -- stop err\n")
@@ -357,6 +359,12 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 			}
 
 			loc, _ := trapthread.Location()
+			trapthread_bp := trapthread.CurrentBreakpoint.Breakpoint
+			if trapthread_bp != nil && trapthread_bp.SpuriousPageFault {
+				fmt.Printf("Spurious page fault at %#x; resuming\n", loc.PC)
+				continue
+			}
+
 			fmt.Printf("ContinueOnce return trapthread at line %v, PC 0x%x\n", loc.Line, loc.PC)
 			return trapthread, proc.StopUnknown, nil
 		}
@@ -378,10 +386,8 @@ const (
 	SEGV_ACCERR = 0x2
 )
 
-// Assuming target hs just segfaulted, get the faulting address
+// Assuming thread has just segfaulted, get the faulting address
 func (t *nativeThread) faultingAddr() uintptr {
-	fmt.Printf("Handling target segfault, thread ID %v\n", t.ThreadID())
-
 	var err error
 	var siginfo ptraceSiginfoAmd64
 	t.dbp.execPtraceFunc(func() {
@@ -403,22 +409,26 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 	return addr1 < addr2+sz2 && addr2 < addr1+sz1
 }
 
-// Find the software watchpoint whose memory overlaps the faulting address
-// If any - may be an access for unwatched address on same page as watched address,
-// in which case we should ignore - TODO
+// Assuming thread just segfaulted,
+// find the software watchpoint for the faulting address' page, if any.
+// If none (i.e. spurious segfault), return placeholder wp.
+// TODO will it be possible for faulting address to overlap multiple wp? (Depends on client...)
 func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
-	fmt.Printf("FindSoftwareWatchpoint\n")
+	faultingAddr := uint64(t.faultingAddr())
+	fmt.Printf("FindSoftwareWatchpoint; faulting addr %#x\n", faultingAddr)
+
 	for _, bp := range t.dbp.Breakpoints().M {
 		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
-			//if memOverlap(uint64(t.faultingAddr()), 1, bp.Addr, uint64(bp.WatchType.Size())) {
-			fmt.Printf("Found software watchpoint, addr %#x\n", bp.Addr)
-			return bp
-			//}
+			if memOverlap(faultingAddr, 1, bp.Addr, uint64(bp.WatchType.Size())) {
+				fmt.Printf("Found software watchpoint, addr %#x\n", bp.Addr)
+				return bp
+			}
 		}
 	}
 
-	fmt.Printf("No software watchpoint found\n")
-	return nil
+	fmt.Printf("No software watchpoint found; returning a placeholder one\n")
+	return &proc.Breakpoint{WatchType: proc.WatchWrite, WatchImpl: proc.WatchSoftware,
+		Addr: faultingAddr, SpuriousPageFault: true}
 }
 
 // FindBreakpoint finds the breakpoint for the given pc.
@@ -581,8 +591,8 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 		return fmt.Errorf("failed to get regs after mprotect: %v", err.Error())
 	}
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
-	if mprotect_ret := mprotect_ret_regs.Regs.Rax; mprotect_ret != 0 {
-		return fmt.Errorf("mprotect failed: errno -%v", mprotect_ret)
+	if mprotect_ret := int(mprotect_ret_regs.Regs.Rax) * -1; mprotect_ret != 0 {
+		return fmt.Errorf("mprotect failed: errno %v", mprotect_ret)
 	}
 
 	// 3. Restore registers
