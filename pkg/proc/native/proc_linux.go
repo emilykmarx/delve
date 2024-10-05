@@ -561,7 +561,9 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 				th.SIGSEGV() {
 				th.os.setbp = true
 			}
-			fmt.Printf("ZZEM trapWaitInternal returning thread %v, stopsig: %v\n", th.ThreadID(), status.StopSignal())
+			if th.SIGSEGV() {
+				fmt.Printf("ZZEM trapWaitInternal returning thread %v, stopsig: %v\n", th.ThreadID(), status.StopSignal())
+			}
 			return th, nil
 		}
 
@@ -709,7 +711,6 @@ func (procgrp *processGroup) resume() error {
 
 // stop stops all running threads and sets breakpoints
 func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *nativeThread) (*nativeThread, error) {
-	fmt.Printf("ZZEM enter stop; trapthread %v\n", trapthread.ThreadID())
 	if procgrp.numValid() == 0 {
 		return nil, proc.ErrProcessExited{Pid: procgrp.procs[0].pid}
 	}

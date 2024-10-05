@@ -302,14 +302,12 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 		panic("not implemented")
 	}
 	if procgrp.numValid() == 0 {
-		fmt.Printf("ContinueOnce nil -- exited\n")
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: procgrp.procs[0].pid}
 	}
 
 	for {
 		err := procgrp.resume()
 		if err != nil {
-			fmt.Printf("ContinueOnce nil -- resume err\n")
 			return nil, proc.StopUnknown, err
 		}
 		for _, dbp := range procgrp.procs {
@@ -319,7 +317,6 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 				}
 			}
 		}
-		ZZEM(procgrp, "ContinueOnce loop iter, after resume")
 
 		if cctx.ResumeChan != nil {
 			close(cctx.ResumeChan)
@@ -328,17 +325,14 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 
 		trapthread, err := trapWait(procgrp, -1)
 		if err != nil {
-			fmt.Printf("ContinueOnce nil -- trapWait err\n")
 			return nil, proc.StopUnknown, err
 		}
 		// If spurious page fault: finish this loop iteration and continue to next
 		// (PERF: May be able to get away with directly continuing to next?)
 		trapthread, err = procgrp.stop(cctx, trapthread)
 		if err != nil {
-			fmt.Printf("ContinueOnce nil -- stop err\n")
 			return nil, proc.StopUnknown, err
 		}
-		ZZEM(procgrp, "After stop")
 		if trapthread != nil {
 			dbp := procgrp.procForThread(trapthread.ID)
 			dbp.memthread = trapthread
@@ -346,13 +340,11 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 			// refresh memthread for every other process (not interesting for single-process case)
 			for _, p2 := range procgrp.procs {
 				if p2.exited || p2.detached || p2 == dbp {
-					fmt.Printf("continue\n")
 					continue
 				}
 				for _, th := range p2.threads {
 					p2.memthread = th
 					if th.SoftExc() {
-						fmt.Printf("break\n")
 						break
 					}
 				}
@@ -365,11 +357,11 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 				continue
 			}
 
-			fmt.Printf("ContinueOnce return trapthread at line %v, PC 0x%x\n", loc.Line, loc.PC)
+			if trapthread.SIGSEGV() {
+				fmt.Printf("ContinueOnce return segfault trapthread at line %v, PC 0x%x\n", loc.Line, loc.PC)
+			}
 			return trapthread, proc.StopUnknown, nil
 		}
-		// I think this is unexpected
-		fmt.Printf("trapthread nil -- loop again\n")
 	} // end main for
 }
 
