@@ -199,7 +199,7 @@ func (dbp *nativeProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
 		return nil
 	} else if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
 		// Software watchpoint
-		return dbp.writeSoftwareWatchpoint(dbp.memthread, bp.Addr)
+		return dbp.writeSoftwareWatchpoint(dbp.memthread, bp.Addr, true)
 	} else {
 		// Software breakpoint
 		bp.OriginalData = make([]byte, dbp.bi.Arch.BreakpointSize())
@@ -297,6 +297,18 @@ func ZZEM(procgrp *processGroup, msg string) {
 	}
 }
 
+// Find a thread that has non-spuriously page faulted, if any.
+func (dbp *nativeProcess) nonSpuriousTrapthread() *nativeThread {
+	for _, thread := range dbp.threads {
+		if thread.SIGSEGV() {
+			if !thread.CurrentBreakpoint.Breakpoint.SpuriousPageFault {
+				return thread
+			}
+		}
+	}
+	return nil
+}
+
 func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if len(procgrp.procs) != 1 && runtime.GOOS != "linux" && runtime.GOOS != "windows" {
 		panic("not implemented")
@@ -352,9 +364,16 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 
 			loc, _ := trapthread.Location()
 			trapthread_bp := trapthread.CurrentBreakpoint.Breakpoint
-			if trapthread_bp != nil && trapthread_bp.SpuriousPageFault {
-				fmt.Printf("Spurious page fault at %#x; resuming\n", loc.PC)
-				continue
+			if trapthread_bp.SpuriousPageFault {
+				// Sometimes multiple threads page fault, but only one non-spuriously
+				new_trapthread := dbp.nonSpuriousTrapthread()
+				if new_trapthread == nil {
+					fmt.Printf("Spurious page fault at %#x; resuming\n", loc.PC)
+					continue
+				} else {
+					trapthread = new_trapthread
+					loc, _ = trapthread.Location()
+				}
 			}
 
 			if trapthread.SIGSEGV() {
@@ -407,7 +426,7 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 // TODO will it be possible for faulting address to overlap multiple wp? (Depends on client...)
 func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 	faultingAddr := uint64(t.faultingAddr())
-	fmt.Printf("FindSoftwareWatchpoint; faulting addr %#x\n", faultingAddr)
+	fmt.Printf("FindSoftwareWatchpoint; faulting addr %#x, thread %v\n", faultingAddr, t.ThreadID())
 
 	for _, bp := range t.dbp.Breakpoints().M {
 		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
@@ -583,8 +602,8 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 		return fmt.Errorf("failed to get regs after mprotect: %v", err.Error())
 	}
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
-	if mprotect_ret := int(mprotect_ret_regs.Regs.Rax) * -1; mprotect_ret != 0 {
-		return fmt.Errorf("mprotect failed: errno %v", mprotect_ret)
+	if mprotect_ret := sys.Errno(int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
+		return fmt.Errorf("mprotect failed: errno %v", mprotect_ret.Error())
 	}
 
 	// 3. Restore registers
@@ -597,9 +616,9 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 }
 
 // mprotect the page containing addr (if haven't already)
-func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uint64) error {
+func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uint64, check_dups bool) error {
 	fmt.Printf("writeSoftwareWatchpoint; addr %#x\n", addr)
-	if !thread.singleStepping {
+	if check_dups {
 		// If re-writing after just stepped over a faulting instr, always write
 		for _, bp := range dbp.Breakpoints().M {
 			if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {

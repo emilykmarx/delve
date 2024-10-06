@@ -2,6 +2,7 @@ package native
 
 import (
 	"fmt"
+	"log"
 
 	sys "golang.org/x/sys/unix"
 
@@ -83,6 +84,11 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 				// delayed SIGSTOP, ignore it
 			case sys.SIGILL, sys.SIGBUS, sys.SIGFPE, sys.SIGSEGV, sys.SIGSTKFLT:
 				// propagate signals that can have been caused by the current instruction
+				pc, err := t.PC()
+				if err != nil {
+					log.Fatalf("Failed to get PC during singleStep\n")
+				}
+				log.Fatalf("SIGSEGV during singleStep over PC %#x\n", pc) // doesn't print in `go test`
 				sig = int(s)
 			default:
 				// delay propagation of all other signals

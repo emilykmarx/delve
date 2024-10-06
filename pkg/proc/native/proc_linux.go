@@ -6,6 +6,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -561,8 +562,12 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 				th.SIGSEGV() {
 				th.os.setbp = true
 			}
+			pc, err := th.PC()
+			if err != nil {
+				log.Fatalf("Failed to get PC of trapthread in trapWaitInternal")
+			}
 			if th.SIGSEGV() {
-				fmt.Printf("ZZEM trapWaitInternal returning thread %v, stopsig: %v\n", th.ThreadID(), status.StopSignal())
+				fmt.Printf("ZZEM trapWaitInternal returning thread %v at %#x, stopsig: %v\n", th.ThreadID(), pc, status.StopSignal())
 			}
 			return th, nil
 		}
