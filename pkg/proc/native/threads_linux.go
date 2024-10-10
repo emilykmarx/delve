@@ -3,6 +3,7 @@ package native
 import (
 	"fmt"
 	"log"
+	"os"
 
 	sys "golang.org/x/sys/unix"
 
@@ -51,9 +52,6 @@ func (t *nativeThread) resumeWithSig(sig int) (err error) {
 	return
 }
 
-// TODO think about how to handle instr that triggers a sw bp and a sw wp
-// e.g. client stopped at bp, cleared it, set wp - and bp instr happens to access page)
-// What about if client doesn't clear it?
 func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 	sig := 0
 	for {
@@ -63,7 +61,6 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 			return err
 		}
 		wpid, status, err := t.dbp.waitFast(t.ID)
-		fmt.Printf("singleStep waitFast returned status %v\n", status.StopSignal())
 		if err != nil {
 			return err
 		}
@@ -80,9 +77,17 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 			case sys.SIGTRAP:
 				// Always expected for singleStep since that's how it's implemented
 				return nil
+			case sys.SIGSEGV:
+				// TODO figure out how to handle this
+				pc, err := t.PC()
+				if err != nil {
+					fmt.Printf("SIGSEGV during singleStep; failed to get PC with %v\n", err.Error())
+				}
+				fmt.Printf("SIGSEGV during singleStep at PC %#x\n", pc)
+				os.Exit(1)
 			case sys.SIGSTOP:
 				// delayed SIGSTOP, ignore it
-			case sys.SIGILL, sys.SIGBUS, sys.SIGFPE, sys.SIGSEGV, sys.SIGSTKFLT:
+			case sys.SIGILL, sys.SIGBUS, sys.SIGFPE, sys.SIGSTKFLT:
 				// propagate signals that can have been caused by the current instruction
 				pc, err := t.PC()
 				if err != nil {
@@ -99,6 +104,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 }
 
 func (t *nativeThread) WriteMemory(addr uint64, data []byte) (written int, err error) {
+	fmt.Printf("WriteMemory, thread %v, addr %#x\n", t.ThreadID(), addr)
 	if ok, err := t.dbp.Valid(); !ok {
 		return 0, err
 	}

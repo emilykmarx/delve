@@ -221,6 +221,7 @@ func (grp *TargetGroup) Continue() error {
 				return conditionErrors(grp)
 			}
 		case curbp.Active:
+			// TODO (PERF, but probably significant): Don't return if all hits were spurious SIGSEGV
 			onNextGoroutine, err := onNextGoroutine(dbp, curthread, dbp.Breakpoints())
 			if err != nil {
 				return err
@@ -1555,7 +1556,7 @@ func (t *Target) clearHardcodedBreakpoints() {
 // breakpoint (i.e. a breakpoint instruction, like INT 3, hardcoded in the
 // program's text) and sets a fake breakpoint on them with logical id
 // hardcodedBreakpointID.
-// It checks trapthread and all threads that have SoftExc returning true.
+// It checks all threads that: have no bp set, and are trapthread or SoftExc() is true
 func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread, threads []Thread) error {
 	mem := t.Memory()
 	arch := t.BinInfo().Arch
@@ -1650,7 +1651,8 @@ func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread,
 			// We explicitly check for entry points of functions because the space
 			// between functions is usually filled with hardcoded breakpoints.
 			if (loc.Fn == nil || loc.Fn.Entry != loc.PC) && isHardcodedBreakpoint(thread, loc.PC) > 0 {
-				stepOverBreak(thread, loc.PC)
+				fmt.Printf("Hardcoded bp at pc %#x\n", loc.PC)
+				stepOverBreak(thread, loc.PC) // Not needed on AMD64
 				setHardcodedBreakpoint(thread, loc)
 			}
 		}

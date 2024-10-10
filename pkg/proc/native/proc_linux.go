@@ -6,7 +6,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
-	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -396,10 +396,18 @@ const (
 	trapWaitDontCallExitGuard
 )
 
-// Whether this thread segfaulted
-func (t *nativeThread) SIGSEGV() bool {
-	return (*sys.WaitStatus)(t.Status).StopSignal() == sys.SIGSEGV
+func (t *nativeThread) stopSignal() syscall.Signal {
+	if t.Status == nil {
+		return -1
+	}
+	return (*sys.WaitStatus)(t.Status).StopSignal()
 }
+
+var (
+	sigtrap_ct   = 0
+	sigtrap_info = map[string]uint64{}
+	sigsegv_ct   = 0
+)
 
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
 	var waitdbp *nativeProcess = nil
@@ -433,6 +441,25 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			th, ok = dbp.threads[wpid]
 			if ok {
 				th.Status = (*waitStatus)(status)
+				if th.stopSignal() == syscall.SIGTRAP {
+					pc, err := th.PC()
+					if err != nil {
+						fmt.Printf("0xbeefbeef")
+					}
+					fmt.Printf("SIGTRAP: PC %#x\t th %v\n", pc, th.ThreadID())
+					sigtrap_ct += 1
+					if pc>>uint64(12) == 0x7ffe79ba0 {
+						sigtrap_info[fmt.Sprintf("PC 0x7ffe79ba0XXX\t th %v", th.ThreadID())] += 1
+					} else {
+						sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
+					}
+					if rand.Intn(1000) == 1 {
+						//fmt.Printf("%v SIGTRAP\t %v SIGSEGV\n", sigtrap_ct, sigsegv_ct)
+						//fmt.Printf("%v\n", sigtrap_info)
+					}
+				} else if th.stopSignal() == syscall.SIGSEGV {
+					sigsegv_ct += 1
+				}
 			}
 		} else {
 			dbp = procgrp.procs[0]
@@ -547,27 +574,19 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		}
 		if th == nil {
 			// Sometimes we get an unknown thread, ignore it?
-			fmt.Println("th NIL")
 			continue
 		}
 
 		// Set bp if thread segfaulted, whether spuriously or not
 		if (halt && status.StopSignal() == sys.SIGSTOP) ||
 			(status.StopSignal() == sys.SIGTRAP) ||
-			th.SIGSEGV() {
+			(status.StopSignal() == sys.SIGSEGV) {
 
 			th.os.running = false
 
 			if status.StopSignal() == sys.SIGTRAP ||
-				th.SIGSEGV() {
+				status.StopSignal() == sys.SIGSEGV {
 				th.os.setbp = true
-			}
-			pc, err := th.PC()
-			if err != nil {
-				log.Fatalf("Failed to get PC of trapthread in trapWaitInternal")
-			}
-			if th.SIGSEGV() {
-				fmt.Printf("ZZEM trapWaitInternal returning thread %v at %#x, stopsig: %v\n", th.ThreadID(), pc, status.StopSignal())
 			}
 			return th, nil
 		}
@@ -777,6 +796,7 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 		if allstopped {
 			break
 		}
+
 		_, err := trapWaitInternal(procgrp, -1, trapWaitHalt)
 		if err != nil {
 			return nil, err
@@ -841,11 +861,17 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 			}
 		}
 
-		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && ((*sys.WaitStatus)(th.Status).StopSignal() == sys.SIGTRAP) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
+		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && (th.stopSignal() == sys.SIGTRAP) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
 			manualStop := false
 			if th.ThreadID() == trapthread.ThreadID() {
 				manualStop = cctx.GetManualStopRequested()
 			}
+
+			// For now to debug spurious sigtraps, assume no phantom hits or hardcoded bp
+			// Once figure that out, figure out what should do re: phantom stuff for SIGSEGV
+			fmt.Printf("SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
+			os.Exit(1)
+
 			if !manualStop && th.os.phantomBreakpointPC == pc {
 				// Thread received a SIGTRAP but we don't have a breakpoint for it and
 				// it wasn't sent by a manual stop request. It's either a hardcoded
@@ -875,6 +901,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 						// Will switch to a different thread for trapthread because we don't
 						// want pkg/proc to believe that this thread was stopped by a
 						// hardcoded breakpoint.
+						fmt.Printf("Phantom hit\n")
 						*switchTrapthread = true
 					}
 				}

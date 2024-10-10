@@ -28,8 +28,10 @@ func (tc *TaintCheck) replay() {
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
 				tc.hit = Hit{hit_bp: hit_bp}
+				// TODO see gdoc (Instr that would hit multiple*) - may need more logic here for multiple hits
 				if hit_bp.WatchExpr != "" {
 					// Note PC has advanced one past the breakpoint by now, for hardware breakpoints (but not software)
+					// TODO ignore if spurious, or if a go runtime thread
 					fmt.Printf("Client: hit wp for %#x, PC %#x\n", hit_bp.Addr, thread.PC)
 					//tc.onWatchpointHit()
 				} else {

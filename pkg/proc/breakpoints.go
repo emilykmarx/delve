@@ -623,6 +623,8 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 // EvalScope just used to determine stack location
 func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, watchaddr uint64, sz int64, wtype WatchType,
 	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
+	//wimpl = WatchHardware
+	wimpl = WatchSoftware
 	stackWatch := scope.g != nil && !scope.g.SystemStack && watchaddr >= scope.g.stack.lo && watchaddr < scope.g.stack.hi
 
 	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
@@ -711,6 +713,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 	return bp, err
 }
 
+// For breakpoints (addr = PC) and watchpoints (addr = addr to watch)
 func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind, wtype WatchType, wimpl WatchImpl, cond ast.Expr) (*Breakpoint, error) {
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()

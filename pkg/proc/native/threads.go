@@ -3,6 +3,7 @@ package native
 import (
 	"fmt"
 	"log"
+	"syscall"
 
 	"github.com/go-delve/delve/pkg/proc"
 )
@@ -43,7 +44,6 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("stepInstruction; pc at entry: %#x\n", pc)
 
 	if bp := t.CurrentBreakpoint.Breakpoint; bp != nil && bp.WatchType != 0 && bp.WatchImpl == proc.WatchHardware &&
 		t.dbp.Breakpoints().M[bp.Addr] == bp {
@@ -56,15 +56,16 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 		defer func() {
 			err = t.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 		}()
-	} else if t.SIGSEGV() {
+	} else if t.stopSignal() == syscall.SIGSEGV {
 		// Software watchpoint (spurious or not)
 		err = t.clearSoftwareWatchpoint(bp)
+		// PERF: If multiple threads segfaulted simultaneously, only call mprotect once for all
 		if err != nil {
 			return err
 		}
 
 		defer func() {
-			if err := t.dbp.writeSoftwareWatchpoint(t.dbp.memthread, bp.Addr, false); err != nil {
+			if err := t.dbp.writeSoftwareWatchpoint(t.dbp.memthread, bp.Addr); err != nil {
 				log.Fatalf("Failed to re-mprotect page after stepping over #%x\n", bp.Addr)
 			}
 		}()
@@ -127,7 +128,7 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 			return err
 		}
 	}
-	if bp == nil && t.SIGSEGV() {
+	if bp == nil && t.stopSignal() == syscall.SIGSEGV {
 		// Software watchpoint (spurious or not)
 		bp = t.FindSoftwareWatchpoint()
 	} else if bp == nil {
@@ -170,7 +171,6 @@ func (t *nativeThread) ThreadID() int {
 }
 
 func (t *nativeThread) clearSoftwareWatchpoint(bp *proc.Breakpoint) error {
-	fmt.Printf("clearSoftwareWatchpoint; addr %#x\n", bp.Addr)
 	if err := t.toggleMprotect(pageAddr(bp.Addr), false); err != nil {
 		return fmt.Errorf("could not clear software watchpoint %s", err)
 	}
