@@ -389,11 +389,12 @@ func (t *nativeThread) faultingAddr() uintptr {
 		_, _, err = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GETSIGINFO, uintptr(t.ThreadID()), 0, uintptr(unsafe.Pointer(&siginfo)), 0, 0)
 	})
 	if err != syscall.Errno(0) {
-		log.Fatalf("PTRACE_GETSIGINFO returned err: %v\n", err.Error())
+		log.Panicf("PTRACE_GETSIGINFO returned err: %v\n", err.Error())
 	}
 
 	if siginfo.signo != uint32(sys.SIGSEGV) || siginfo.code != SEGV_ACCERR || siginfo.errno != 0 {
-		log.Fatalf("Siginfo not as expected: %+v\n", siginfo)
+		pc, _ := t.PC()
+		fmt.Printf("Siginfo for fault at %#x not as expected: %+v\n", pc, siginfo)
 	}
 
 	return siginfo.addr
@@ -422,6 +423,7 @@ func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 }
 
 // FindBreakpoint finds the software breakpoint (not watchpoint) for the given pc.
+// Assumes bp instr is the 1B version (as it is in writeSoftwareBreakpoint())
 func (dbp *nativeProcess) FindBreakpoint(pc uint64, adjustPC bool) (*proc.Breakpoint, bool) {
 	if adjustPC {
 		// Check to see if address is past the breakpoint, (i.e. breakpoint was hit).
@@ -536,6 +538,8 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	// 0. Get addr of syscall instr
 	// TODO get from asm - proc.Disassemble() Syscall6
 	syscall_pc := uint64(0x4044ec)
+	//	syscall_pc := uint64(0x40388c)
+	prev_pc, _ := thread.PC()
 
 	// 1. Set registers for mprotect syscall: RIP, args, syscall code
 	prev_regs, err := thread.Registers()
@@ -581,12 +585,16 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	}
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
 	if mprotect_ret := sys.Errno(int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
-		return fmt.Errorf("mprotect failed: errno %v", mprotect_ret.Error())
+		return fmt.Errorf("mprotect at %#x failed: errno %v", prev_pc, mprotect_ret.Error())
 	}
 
 	// 3. Restore registers
 	if err := thread.RestoreRegisters(prev_regs); err != nil {
 		return fmt.Errorf("failed to restore registers after mprotect: %v", err.Error())
+	}
+	new_pc, _ := thread.PC()
+	if prev_pc != new_pc {
+		log.Panicf("toggleMprotect failed to restore PC - prev %#x, new %#x\n", prev_pc, new_pc)
 	}
 
 	return nil

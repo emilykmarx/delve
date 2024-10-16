@@ -3,7 +3,6 @@ package native
 import (
 	"fmt"
 	"log"
-	"os"
 
 	sys "golang.org/x/sys/unix"
 
@@ -78,22 +77,15 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 				// Always expected for singleStep since that's how it's implemented
 				return nil
 			case sys.SIGSEGV:
-				// TODO figure out how to handle this
-				pc, err := t.PC()
-				if err != nil {
-					fmt.Printf("SIGSEGV during singleStep; failed to get PC with %v\n", err.Error())
-				}
-				fmt.Printf("SIGSEGV during singleStep at PC %#x\n", pc)
-				os.Exit(1)
+				// TODO figure out how to handle this (propagating causes target to exit,
+				// ignoring causes infinite loop)
+				pc, _ := t.PC()
+				log.Panicf("SIGSEGV during singleStep at PC %#x\n", pc)
 			case sys.SIGSTOP:
 				// delayed SIGSTOP, ignore it
 			case sys.SIGILL, sys.SIGBUS, sys.SIGFPE, sys.SIGSTKFLT:
 				// propagate signals that can have been caused by the current instruction
-				pc, err := t.PC()
-				if err != nil {
-					log.Fatalf("Failed to get PC during singleStep\n")
-				}
-				log.Fatalf("SIGSEGV during singleStep over PC %#x\n", pc) // doesn't print in `go test`
+				log.Panicf("Propagating")
 				sig = int(s)
 			default:
 				// delay propagation of all other signals
@@ -104,7 +96,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 }
 
 func (t *nativeThread) WriteMemory(addr uint64, data []byte) (written int, err error) {
-	fmt.Printf("WriteMemory, thread %v, addr %#x\n", t.ThreadID(), addr)
+	//fmt.Printf("WriteMemory, thread %v, addr %#x\n", t.ThreadID(), addr)
 	if ok, err := t.dbp.Valid(); !ok {
 		return 0, err
 	}

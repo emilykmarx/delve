@@ -404,9 +404,18 @@ func (t *nativeThread) stopSignal() syscall.Signal {
 }
 
 var (
-	sigtrap_ct   = 0
-	sigtrap_info = map[string]uint64{}
-	sigsegv_ct   = 0
+	Spurious_sigtrap_ct = 0
+	Sigtrap_info        = map[string]uint64{}
+	Sigsegv_ct          = 0
+)
+
+var (
+	int_0x3_addrs = []uint64{0x469193, 0x46ae00, 0x46c657, 0x46cb89,
+		//0x46cb80, // sigaction
+		0x46d780, // badsystemstack
+		0x46c640, // exitthread
+		// abort already set
+	}
 )
 
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
@@ -441,25 +450,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			th, ok = dbp.threads[wpid]
 			if ok {
 				th.Status = (*waitStatus)(status)
-				if th.stopSignal() == syscall.SIGTRAP {
-					pc, err := th.PC()
-					if err != nil {
-						fmt.Printf("0xbeefbeef")
-					}
-					fmt.Printf("SIGTRAP: PC %#x\t th %v\n", pc, th.ThreadID())
-					sigtrap_ct += 1
-					if pc>>uint64(12) == 0x7ffe79ba0 {
-						sigtrap_info[fmt.Sprintf("PC 0x7ffe79ba0XXX\t th %v", th.ThreadID())] += 1
-					} else {
-						sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
-					}
-					if rand.Intn(1000) == 1 {
-						//fmt.Printf("%v SIGTRAP\t %v SIGSEGV\n", sigtrap_ct, sigsegv_ct)
-						//fmt.Printf("%v\n", sigtrap_info)
-					}
-				} else if th.stopSignal() == syscall.SIGSEGV {
-					sigsegv_ct += 1
-				}
 			}
 		} else {
 			dbp = procgrp.procs[0]
@@ -833,6 +823,22 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 	return trapthread, nil
 }
 
+// Check if the byte(s) preceding pc match a breakpoint instr (int 0x3, int3)
+func isHardcodedBreakpoint(dbp *nativeProcess, th *nativeThread, pc uint64) bool {
+	for _, bpinstr := range [][]byte{
+		dbp.BinInfo().Arch.BreakpointInstruction(),
+		dbp.BinInfo().Arch.AltBreakpointInstruction()} {
+		if bpinstr == nil {
+			continue
+		}
+		buf := make([]byte, len(bpinstr))
+		_, _ = th.ReadMemory(buf, pc-uint64(len(buf)))
+		if bytes.Equal(buf, bpinstr) {
+			return true
+		}
+	}
+	return false
+}
 func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativeThread, switchTrapthread *bool) error {
 	if err := linutil.ElfUpdateSharedObjects(dbp); err != nil {
 		return err
@@ -861,16 +867,53 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 			}
 		}
 
+		// Check spurious sigtrap stuff (only care if th.os.setbp, I think)
+		if th.stopSignal() == syscall.SIGTRAP && th.os.setbp {
+			//fmt.Printf("TRAP: PC %#x\t th %v\t status %v\n", pc, th.ThreadID(), *status)
+			if th.os.phantomBreakpointPC == pc {
+				//fmt.Printf("PHANTOM; trap ct %v\n", Spurious_sigtrap_ct)
+			} else if isHardcodedBreakpoint(dbp, th, pc) {
+				//fmt.Printf("HARDCODED; trap ct %v\n", Spurious_sigtrap_ct)
+			} else if th.CurrentBreakpoint.Breakpoint != nil {
+				//fmt.Printf("NON-SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
+			} else {
+				fmt.Printf("SPURIOUS SIGTRAP\n")
+				Spurious_sigtrap_ct += 1
+				Sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
+				if rand.Intn(1000) == 1 {
+					//fmt.Printf("%v SPURIOUS TRAPs\t %v SEGVs\n", Spurious_sigtrap_ct, Sigsegv_ct)
+					//fmt.Printf("%v\n", Sigtrap_info)
+				}
+			}
+		} else if th.stopSignal() == syscall.SIGSEGV && th.os.setbp {
+			//fmt.Printf("SEGV: PC %#x\t th %v\n", pc, th.ThreadID())
+			Sigsegv_ct += 1
+		}
+
 		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && (th.stopSignal() == sys.SIGTRAP) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
 			manualStop := false
 			if th.ThreadID() == trapthread.ThreadID() {
 				manualStop = cctx.GetManualStopRequested()
 			}
+			if manualStop {
+				fmt.Printf("MANUAL STOP; trap ct %v\n", Spurious_sigtrap_ct)
+			}
 
 			// For now to debug spurious sigtraps, assume no phantom hits or hardcoded bp
 			// Once figure that out, figure out what should do re: phantom stuff for SIGSEGV
-			fmt.Printf("SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
-			os.Exit(1)
+			//fmt.Printf("SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
+			/*
+				t := proc.Target{Process: dbp}
+				stack, err := proc.ThreadStacktrace(&t, th, 50)
+				if err != nil {
+					fmt.Printf("Failed to get stacktrace: %v\n", err)
+				}
+				fmt.Println("Stack of return PCs:")
+				for _, frame := range stack {
+					fmt.Printf("%#x\n", frame.Current.PC)
+				}
+				os.Exit(1)
+			*/
 
 			if !manualStop && th.os.phantomBreakpointPC == pc {
 				// Thread received a SIGTRAP but we don't have a breakpoint for it and
@@ -878,22 +921,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 				// breakpoint or a phantom breakpoint hit (a breakpoint that was hit but
 				// we have removed before we could receive its signal). Check if it is a
 				// hardcoded breakpoint, otherwise rewind the thread.
-				isHardcodedBreakpoint := false
-				pc, _ := th.PC()
-				for _, bpinstr := range [][]byte{
-					dbp.BinInfo().Arch.BreakpointInstruction(),
-					dbp.BinInfo().Arch.AltBreakpointInstruction()} {
-					if bpinstr == nil {
-						continue
-					}
-					buf := make([]byte, len(bpinstr))
-					_, _ = th.ReadMemory(buf, pc-uint64(len(buf)))
-					if bytes.Equal(buf, bpinstr) {
-						isHardcodedBreakpoint = true
-						break
-					}
-				}
-				if !isHardcodedBreakpoint {
+				if !isHardcodedBreakpoint(dbp, th, pc) {
 					// phantom breakpoint hit
 					_ = th.setPC(pc - uint64(len(dbp.BinInfo().Arch.BreakpointInstruction())))
 					th.os.setbp = false

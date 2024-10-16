@@ -53,10 +53,12 @@ func (grp *TargetGroup) Next() (err error) {
 // processes. It will continue until it hits a breakpoint
 // or is otherwise stopped.
 func (grp *TargetGroup) Continue() error {
-	fmt.Println("ENTER TargetGroup CONTINUE")
-	defer func() {
-		fmt.Println("EXIT TargetGroup CONTINUE")
-	}()
+	/*
+		fmt.Println("ENTER TargetGroup CONTINUE")
+		defer func() {
+			fmt.Println("EXIT TargetGroup CONTINUE")
+		}()
+	*/
 	if grp.numValid() == 0 {
 		_, err := grp.targets[0].Valid()
 		return err
@@ -68,6 +70,15 @@ func (grp *TargetGroup) Continue() error {
 		for _, thread := range dbp.ThreadList() {
 			thread.Common().CallReturn = false
 			thread.Common().returnValues = nil
+			/*
+				stack, _ := ThreadStacktrace(dbp, thread, 50)
+				fmt.Printf("thread %v stack:\n", thread.ThreadID())
+				for _, frame := range stack {
+					if frame.Current.Fn != nil {
+						fmt.Printf("%v\n", frame.Current.Fn.Name)
+					}
+				}
+			*/
 		}
 		dbp.Breakpoints().WatchOutOfScope = nil
 		dbp.clearHardcodedBreakpoints()
@@ -166,10 +177,12 @@ func (grp *TargetGroup) Continue() error {
 			if callErrThis != nil && callErr == nil {
 				callErr = callErrThis
 			}
-			hcbpErrThis := dbp.handleHardcodedBreakpoints(grp, trapthread, threads)
-			if hcbpErrThis != nil && hcbpErr == nil {
-				hcbpErr = hcbpErrThis
-			}
+			/*
+				hcbpErrThis := dbp.handleHardcodedBreakpoints(grp, trapthread, threads)
+				if hcbpErrThis != nil && hcbpErr == nil {
+					hcbpErr = hcbpErrThis
+				}
+			*/
 		}
 		// callErr and hcbpErr check delayed until after pickCurrentThread, which
 		// must always happen, otherwise the debugger could be left in an
