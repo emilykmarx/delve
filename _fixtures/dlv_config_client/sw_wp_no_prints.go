@@ -7,23 +7,21 @@ import (
 )
 
 var (
-	G = 1
+	x = 1
 )
 
 func f() {
 	y := 2
-	runtime.KeepAlive(G)
-	if G == 1 {
-		y = G
+	runtime.KeepAlive(x)
+	if x == 1 {
+		y = x
 	}
 	_ = y
 	fmt.Println(y)
 }
 
 func main() {
-	x := 1
-	fmt.Println(x)
-	//for i := 0; i < 100; i++ {
-	f()
-	//}
+	for i := 0; i < 100; i++ {
+		f()
+	}
 }
