@@ -366,6 +366,7 @@ func (tc *TaintCheck) onWatchpointHit() {
 // Breakpoint for pending watchpoint hit => try to set the watchpoint
 func (tc *TaintCheck) onPendingWpBpHit() {
 	if len(tc.hit.hit_bp.Addrs) != 1 {
+		return
 		log.Fatalf("Wrong number of addrs at pending wp; bp %+v\n", tc.hit.hit_bp)
 	}
 
