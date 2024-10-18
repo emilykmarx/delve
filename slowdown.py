@@ -44,10 +44,22 @@ def run(no_watchpoints):
       trap_tot_all.append(numpy.float64(tokens[1]))
       trap_trapth_all.append(numpy.float64(tokens[-1]))
 
+def plot_regression(ax, x, y, i, color):
+  slope, intercept, r, p, stderr = scipy.stats.linregress(x, y)
+  line = f'y={slope:.2f}x + {intercept:.2f}, R={r:.2f}, p={p:.2f}'
+
+  label = 'Total' if i % 2 == 0 else 'Trapthread'
+  label += f': {line}'
+  ax.plot(x, intercept + slope * x, label=label, color=color)
+
 # Plot slowdown vs signals
 def plot_slowdown(baseline_runtime):
-  fig, (ax1, ax2) = plt.subplots(1, 2)
-  fig.set_figwidth(15)
+  fig, axes = plt.subplots(2, 2)
+  ax1 = axes[0][0]
+  ax2 = axes[0][1]
+  ax3 = axes[1][0]
+  fig.set_figwidth(15, forward=True)
+  fig.set_figheight(15, forward=True)
 
   runtime_s = numpy.array(runtime_s_all)
   slowdown = runtime_s/baseline_runtime
@@ -60,25 +72,27 @@ def plot_slowdown(baseline_runtime):
     color = 'c' if i % 2 == 0 else 'm'
     ax = ax1 if i < 2 else ax2
     ax.scatter(x, slowdown, color=color)
-    ax.set(xlabel='Count')
-    slope, intercept, r, p, stderr = scipy.stats.linregress(x, slowdown)
-    line = f'y={slope:.2f}x + {intercept:.2f}, R={r:.2f}, p={p:.2f}'
-
-    label = 'Total' if i % 2 == 0 else 'Trapthread'
-    label += f': {line}'
-    ax.plot(x, intercept + slope * x, label=label, color=color)
-
-  for ax in [ax1, ax2]:
-    ax.grid(True)
-    ax.set(ylabel='Slowdown (ratio)')
-    box = ax.get_position()
-    ax.set_position([box.x0, box.y0 + box.height * 0.1,
-                 box.width, box.height * 0.9])
-    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1))
+    ax.set(xlabel='Count', ylabel='Slowdown (ratio)')
+    plot_regression(ax, x, slowdown, i, color)
 
   ax1.set_title('Segfaults')
   ax2.set_title('Spurious Traps')
 
+  l = [segv_tot, trap_tot, segv_trapth, trap_trapth]
+  for i in range(2):
+    color = 'c' if i % 2 == 0 else 'm'
+    ax3.grid(True)
+    ax3.scatter(l[2*i], l[2*i+1], color=color)
+    ax3.set(xlabel='Segfaults', ylabel='Spurious Traps')
+    ax3.set_title('Spurious Traps vs Segfaults')
+    plot_regression(ax3, l[2*i], l[2*i+1], i, color)
+
+  for ax in [ax1, ax2, ax3]:
+    ax.grid(True)
+    box = ax.get_position()
+    ax.set_position([box.x0, box.y0 + box.height * 0.1,
+                 box.width, box.height * 0.9])
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1))
   plt.show()
   fig.savefig('slowdown.png')
 
