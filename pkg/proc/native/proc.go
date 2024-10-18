@@ -537,8 +537,8 @@ func pageAddr(addr uint64) uint64 {
 func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	// 0. Get addr of syscall instr
 	// TODO get from asm - proc.Disassemble() Syscall6
-	syscall_pc := uint64(0x4044ec)
-	//	syscall_pc := uint64(0x40388c)
+	//syscall_pc := uint64(0x4044ec)
+	syscall_pc := uint64(0x40388c)
 	prev_pc, _ := thread.PC()
 
 	// 1. Set registers for mprotect syscall: RIP, args, syscall code

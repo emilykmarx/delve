@@ -220,7 +220,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 			existing_info.watchexprs = make(map[string]struct{})
 		}
 		existing_info.watchexprs[expr] = struct{}{}
-		fmt.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
+		//fmt.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
 	}
 
 	tc.pending_wps[bp_addr] = existing_info
@@ -237,9 +237,9 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	}
 
 	if ok {
-		fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
+		//fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
 	} else {
-		fmt.Printf("Exit onPendingWpBpHitDone; no more info\n")
+		//fmt.Printf("Exit onPendingWpBpHitDone; no more info\n")
 	}
 }
 
@@ -277,11 +277,13 @@ func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *
 
 // This should handle being called multiple times for same bpaddr+watchaddr
 func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr uint64, sz int64) {
-	fmt.Printf("trySetWatchpoint\n")
-	if watchexpr != nil {
-		fmt.Printf("watchexpr: %v\n", *watchexpr)
-	}
-	fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
+	/*
+		fmt.Printf("trySetWatchpoint\n")
+		if watchexpr != nil {
+			fmt.Printf("watchexpr: %v\n", *watchexpr)
+		}
+		fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
+	*/
 
 	wp := DoneWp{bp_addr: bp_addr, wp_addr: watchaddr}
 	info := tc.pending_wps[bp_addr]
@@ -334,23 +336,25 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 		log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", watchaddr, err)
 	}
 
-	if watchexpr != nil {
-		// Log for test
-		// TODO (minor): Move logic in this file to its own package, so can import it for testing
-		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
-		fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
-			tc.hit.hit_bp.Line, *watchexpr, watchaddr)
-	} else {
-		fmt.Printf("CreateHWPending lineno %d watchaddr 0x%x\n",
-			tc.hit.hit_bp.Line, watchaddr)
-	}
+	/*
+		if watchexpr != nil {
+			// Log for test
+			// TODO (minor): Move logic in this file to its own package, so can import it for testing
+			// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
+			fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
+				tc.hit.hit_bp.Line, *watchexpr, watchaddr)
+		} else {
+			fmt.Printf("CreateHWPending lineno %d watchaddr 0x%x\n",
+				tc.hit.hit_bp.Line, watchaddr)
+		}
+	*/
 	delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
 	tc.round_done_wps[wp] = info.tainting_vals
 
 	// 5. Add to mem-param map
 	tc.mem_param_map[watchaddr] = info.tainting_vals
 	// Log for testing
-	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
+	//fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
 }
 
 // Watchpoint hit => record any new pending watchpoints
@@ -373,9 +377,16 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 	bp_addr := tc.hit.hit_bp.Addrs[0]
 	info := tc.pending_wps[bp_addr]
 
-	fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
+	//fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
 	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
+	}
+
+	// Just wanted to hit and remove the breakpoint, not set watchpoint
+	if _, ok := info.watchexprs[""]; ok {
+		delete(tc.pending_wps[bp_addr].watchexprs, "")
+		tc.onPendingWpBpHitDone(bp_addr)
+		return
 	}
 
 	for watchaddr, sz := range info.watchaddrs {

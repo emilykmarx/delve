@@ -136,6 +136,16 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 	if err != nil {
 		return nil, err
 	}
+
+	if First_launch {
+		Start_time = time.Now()
+	} else {
+		runtime_s := time.Since(Start_time).Seconds()
+		fmt.Printf("RUNTIME_SEC %v\n", runtime_s)
+		fmt.Printf("SEGV_TOTAL %v\t SEGV_TRAPTHREAD %v\n", Sigsegv_total, Sigsegv_trapthread)
+		fmt.Printf("SPURIOUS_TRAP_TOTAL %v\t SPURIOUS_TRAP_TRAPTHREAD %v\n", Spurious_sigtrap_total, Spurious_sigtrap_trapthread)
+	}
+	First_launch = false
 	return tgt, nil
 }
 
@@ -404,9 +414,13 @@ func (t *nativeThread) stopSignal() syscall.Signal {
 }
 
 var (
-	Spurious_sigtrap_ct = 0
-	Sigtrap_info        = map[string]uint64{}
-	Sigsegv_ct          = 0
+	Spurious_sigtrap_total      = 0
+	Spurious_sigtrap_trapthread = 0
+	Sigtrap_info                = map[string]uint64{}
+	Sigsegv_total               = 0
+	Sigsegv_trapthread          = 0
+	First_launch                = true
+	Start_time                  = time.Now()
 )
 
 var (
@@ -456,7 +470,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		}
 
 		if status.Exited() {
-			fmt.Println("EXITED")
+			//fmt.Println("EXITED")
 			if wpid == dbp.pid {
 				dbp.postExit()
 				if procgrp.numValid() == 0 {
@@ -871,23 +885,29 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 		if th.stopSignal() == syscall.SIGTRAP && th.os.setbp {
 			//fmt.Printf("TRAP: PC %#x\t th %v\t status %v\n", pc, th.ThreadID(), *status)
 			if th.os.phantomBreakpointPC == pc {
-				//fmt.Printf("PHANTOM; trap ct %v\n", Spurious_sigtrap_ct)
+				//fmt.Printf("PHANTOM; trap ct %v\n", Spurious_sigtrap_total)
 			} else if isHardcodedBreakpoint(dbp, th, pc) {
-				//fmt.Printf("HARDCODED; trap ct %v\n", Spurious_sigtrap_ct)
+				//fmt.Printf("HARDCODED; trap ct %v\n", Spurious_sigtrap_total)
 			} else if th.CurrentBreakpoint.Breakpoint != nil {
 				//fmt.Printf("NON-SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
 			} else {
-				fmt.Printf("SPURIOUS SIGTRAP\n")
-				Spurious_sigtrap_ct += 1
+				//fmt.Printf("SPURIOUS SIGTRAP\n")
+				Spurious_sigtrap_total += 1
+				if trapthread.ThreadID() == th.ThreadID() {
+					Spurious_sigtrap_trapthread += 1
+				}
 				Sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
 				if rand.Intn(1000) == 1 {
-					//fmt.Printf("%v SPURIOUS TRAPs\t %v SEGVs\n", Spurious_sigtrap_ct, Sigsegv_ct)
+					//fmt.Printf("%v SPURIOUS TRAPs\t %v SEGVs\n", Spurious_sigtrap_total, Sigsegv_total)
 					//fmt.Printf("%v\n", Sigtrap_info)
 				}
 			}
 		} else if th.stopSignal() == syscall.SIGSEGV && th.os.setbp {
 			//fmt.Printf("SEGV: PC %#x\t th %v\n", pc, th.ThreadID())
-			Sigsegv_ct += 1
+			Sigsegv_total += 1
+			if trapthread.ThreadID() == th.ThreadID() {
+				Sigsegv_trapthread += 1
+			}
 		}
 
 		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && (th.stopSignal() == sys.SIGTRAP) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
@@ -896,7 +916,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 				manualStop = cctx.GetManualStopRequested()
 			}
 			if manualStop {
-				fmt.Printf("MANUAL STOP; trap ct %v\n", Spurious_sigtrap_ct)
+				fmt.Printf("MANUAL STOP; trap ct %v\n", Spurious_sigtrap_total)
 			}
 
 			// For now to debug spurious sigtraps, assume no phantom hits or hardcoded bp

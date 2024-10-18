@@ -1,27 +1,22 @@
 package main
 
 import (
-	"fmt"
-	"runtime"
 	_ "syscall"
 )
 
-var (
-	x = 1
-)
-
-func f() {
-	y := 2
-	runtime.KeepAlive(x)
-	if x == 1 {
-		y = x
-	}
-	_ = y
-	fmt.Println(y)
-}
+// Lots of accesses to mprotected page, but no prints
 
 func main() {
-	for i := 0; i < 100; i++ {
-		f()
+	x := 1
+	// get an instr where x is in-scope but doesn't access memory (so can set bp here)
+	for i := 0; i < 1; i++ {
+		_ = x
+	}
+	y := 2
+	for i := 0; i < 2; i++ {
+		if x == 1 {
+			y = x
+		}
+		_ = y
 	}
 }
