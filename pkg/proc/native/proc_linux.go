@@ -733,14 +733,27 @@ func exitGuard(dbp *nativeProcess, procgrp *processGroup, err error) error {
 	return err
 }
 
+type SoftwareWatchpointAtBreakpoint struct {
+	trapthread *nativeThread // thread that hit the wp/bp
+}
+
+func (e SoftwareWatchpointAtBreakpoint) Error() string {
+	return "non-spurious segfault during step over software breakpoint"
+}
+
 func (procgrp *processGroup) resume() error {
 	// all threads stopped over a breakpoint are made to step over it
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {
 			for _, thread := range dbp.threads {
+				prev_bp := thread.CurrentBreakpoint.Breakpoint
 				if thread.CurrentBreakpoint.Breakpoint != nil {
 					if err := procgrp.stepInstruction(thread); err != nil {
 						return err
+					}
+					if thread.CurrentBreakpoint.Breakpoint != prev_bp {
+						// Non-spurious segfault during step over sw bp
+						return SoftwareWatchpointAtBreakpoint{thread}
 					}
 					thread.CurrentBreakpoint.Clear()
 				}

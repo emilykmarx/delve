@@ -322,10 +322,14 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 
 	for {
 		err := procgrp.resume()
-		if err != nil {
+		if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
+			// Return the thread that was stopped at a breakpoint,
+			// which is now stopped at a software watchpoint
+			return th.trapthread, proc.StopUnknown, nil
+		} else if err != nil {
 			return nil, proc.StopUnknown, err
 		}
-		// Already cleared bp in resume
+		// Redundant? Already cleared bp in resume()
 		for _, dbp := range procgrp.procs {
 			if valid, _ := dbp.Valid(); valid {
 				for _, th := range dbp.threads {
@@ -397,7 +401,7 @@ func (t *nativeThread) faultingAddr() uintptr {
 
 	if siginfo.signo != uint32(sys.SIGSEGV) || siginfo.code != SEGV_ACCERR || siginfo.errno != 0 {
 		pc, _ := t.PC()
-		fmt.Printf("Siginfo for fault at %#x not as expected: %+v\n", pc, siginfo)
+		log.Panicf("Siginfo for fault at %#x not as expected: %+v\n", pc, siginfo)
 	}
 
 	return siginfo.addr

@@ -77,15 +77,30 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 				// Always expected for singleStep since that's how it's implemented
 				return nil
 			case sys.SIGSEGV:
-				// TODO figure out how to handle this (propagating causes target to exit,
-				// ignoring causes infinite loop)
+				// Trying to step over a software breakpoint at an instr that also faults =>
+				// Step over the faulting instr, then return to client if non-spurious.
 				pc, _ := t.PC()
-				log.Panicf("SIGSEGV during singleStep at PC %#x\n", pc)
+				sw_wp := t.FindSoftwareWatchpoint()
+				if !sw_wp.SpuriousPageFault {
+					// will return this thread to client
+					t.CurrentBreakpoint.Breakpoint = sw_wp
+				} else {
+					// ignore
+				}
+				err = t.clearSoftwareWatchpoint(sw_wp)
+				if err != nil {
+					return err
+				}
+
+				defer func() {
+					if err := t.dbp.writeSoftwareWatchpoint(t, sw_wp.Addr); err != nil {
+						log.Panicf("Failed to re-mprotect page after stepping over %#x\n", pc)
+					}
+				}()
 			case sys.SIGSTOP:
 				// delayed SIGSTOP, ignore it
 			case sys.SIGILL, sys.SIGBUS, sys.SIGFPE, sys.SIGSTKFLT:
 				// propagate signals that can have been caused by the current instruction
-				log.Panicf("Propagating")
 				sig = int(s)
 			default:
 				// delay propagation of all other signals
