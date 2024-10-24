@@ -7,6 +7,6 @@ import (
 
 func main() {
 	x := 1 // initially tainted => set sw wp (i.e. mprotect this page)
-	// should segfault from accessing the page before exiting
+	// should hit once
 	fmt.Println(x)
 }

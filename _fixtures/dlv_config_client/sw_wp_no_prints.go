@@ -7,13 +7,10 @@ import (
 // Lots of accesses to mprotected page, but no prints
 
 func main() {
-	x := 1
-	// get an instr where x is in-scope but doesn't access memory (so can set bp here)
-	for i := 0; i < 1; i++ {
-		_ = x
-	}
+	x := 1 // initially tainted
 	y := 2
-	for i := 0; i < 2; i++ {
+	// Should hit twice per loop
+	for i := 0; i < 1; i++ {
 		if x == 1 {
 			y = x
 		}

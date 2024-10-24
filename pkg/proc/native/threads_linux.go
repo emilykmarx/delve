@@ -111,7 +111,6 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 }
 
 func (t *nativeThread) WriteMemory(addr uint64, data []byte) (written int, err error) {
-	//fmt.Printf("WriteMemory, thread %v, addr %#x\n", t.ThreadID(), addr)
 	if ok, err := t.dbp.Valid(); !ok {
 		return 0, err
 	}

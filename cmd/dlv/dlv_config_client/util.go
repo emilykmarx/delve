@@ -79,6 +79,7 @@ func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 	}
 
 	t := terminal.New(client, nil)
+	// PERF faster way to do this?
 	lines, err := t.GetOutput(fmt.Sprintf("list %v:%v", file, lineno))
 	if err != nil {
 		log.Fatalf("Error getting source code for %v:%v: %v\n", file, lineno, err)

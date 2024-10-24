@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -163,6 +162,9 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 		Start_time = time.Now()
 	} else {
 		runtime_s := time.Since(Start_time).Seconds()
+		// TODO for metrics: Investigate where Launch() is called
+		// (Currently recorded runtime looks to capture some launch/detach logic).
+		// Also assert if any spurious traps, or remove spurious trap counting.
 		fmt.Printf("RUNTIME_SEC %v\n", runtime_s)
 		fmt.Printf("SEGV_TOTAL %v\t SEGV_TRAPTHREAD %v\n", Sigsegv_total, Sigsegv_trapthread)
 		fmt.Printf("SPURIOUS_TRAP_TOTAL %v\t SPURIOUS_TRAP_TRAPTHREAD %v\n", Spurious_sigtrap_total, Spurious_sigtrap_trapthread)
@@ -446,15 +448,6 @@ var (
 	Start_time                  = time.Now()
 )
 
-var (
-	int_0x3_addrs = []uint64{0x469193, 0x46ae00, 0x46c657, 0x46cb89,
-		//0x46cb80, // sigaction
-		0x46d780, // badsystemstack
-		0x46c640, // exitthread
-		// abort already set
-	}
-)
-
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
 	var waitdbp *nativeProcess = nil
 	if len(procgrp.procs) == 1 {
@@ -491,9 +484,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		} else {
 			dbp = procgrp.procs[0]
 		}
-
 		if status.Exited() {
-			//fmt.Println("EXITED")
 			if wpid == dbp.pid {
 				dbp.postExit()
 				if procgrp.numValid() == 0 {
@@ -508,7 +499,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			continue
 		}
 		if status.Signaled() {
-			fmt.Println("SIGNALED")
 			// Signaled means the thread was terminated due to a signal.
 			if wpid == dbp.pid {
 				dbp.postExit()
@@ -620,7 +610,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 
 		// TODO(dp) alert user about unexpected signals here.
 		if halt && !th.os.running {
-			fmt.Println("halt && !th.os.running")
 			// We are trying to stop the process, queue this signal to be delivered
 			// to the thread when we resume.
 			// Do not do this for threads that were running because we sent them a
@@ -630,7 +619,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			th.os.running = false
 			return th, nil
 		} else if err := th.resumeWithSig(int(status.StopSignal())); err != nil {
-			fmt.Println("resumeWithSig gave err")
 			if err != sys.ESRCH {
 				return nil, err
 			}
@@ -836,7 +824,6 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 		if allstopped {
 			break
 		}
-
 		_, err := trapWaitInternal(procgrp, -1, trapWaitHalt)
 		if err != nil {
 			return nil, err
@@ -918,28 +905,23 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 		}
 
 		// Check spurious sigtrap stuff (only care if th.os.setbp, I think)
+		// Here for paranoia - could probably remove
 		if th.stopSignal() == syscall.SIGTRAP && th.os.setbp {
-			//fmt.Printf("TRAP: PC %#x\t th %v\t status %v\n", pc, th.ThreadID(), *status)
 			if th.os.phantomBreakpointPC == pc {
-				//fmt.Printf("PHANTOM; trap ct %v\n", Spurious_sigtrap_total)
+				// phantom bp
 			} else if isHardcodedBreakpoint(dbp, th, pc) {
-				//fmt.Printf("HARDCODED; trap ct %v\n", Spurious_sigtrap_total)
+				// hardcoded bp
 			} else if th.CurrentBreakpoint.Breakpoint != nil {
-				//fmt.Printf("NON-SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
+				// regular bp
 			} else {
-				//fmt.Printf("SPURIOUS SIGTRAP\n")
+				// spurious trap
 				Spurious_sigtrap_total += 1
 				if trapthread.ThreadID() == th.ThreadID() {
 					Spurious_sigtrap_trapthread += 1
 				}
 				Sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
-				if rand.Intn(1000) == 1 {
-					//fmt.Printf("%v SPURIOUS TRAPs\t %v SEGVs\n", Spurious_sigtrap_total, Sigsegv_total)
-					//fmt.Printf("%v\n", Sigtrap_info)
-				}
 			}
 		} else if th.stopSignal() == syscall.SIGSEGV && th.os.setbp {
-			//fmt.Printf("SEGV: PC %#x\t th %v\n", pc, th.ThreadID())
 			Sigsegv_total += 1
 			if trapthread.ThreadID() == th.ThreadID() {
 				Sigsegv_trapthread += 1
@@ -951,25 +933,8 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 			if th.ThreadID() == trapthread.ThreadID() {
 				manualStop = cctx.GetManualStopRequested()
 			}
-			if manualStop {
-				fmt.Printf("MANUAL STOP; trap ct %v\n", Spurious_sigtrap_total)
-			}
 
-			// For now to debug spurious sigtraps, assume no phantom hits or hardcoded bp
-			// Once figure that out, figure out what should do re: phantom stuff for SIGSEGV
-			//fmt.Printf("SPURIOUS SIGTRAP: PC (advanced) %#x\t th %v\n", pc, th.ThreadID())
-			/*
-				t := proc.Target{Process: dbp}
-				stack, err := proc.ThreadStacktrace(&t, th, 50)
-				if err != nil {
-					fmt.Printf("Failed to get stacktrace: %v\n", err)
-				}
-				fmt.Println("Stack of return PCs:")
-				for _, frame := range stack {
-					fmt.Printf("%#x\n", frame.Current.PC)
-				}
-				os.Exit(1)
-			*/
+			// TODO think through if we need to do anything for phantom sw wp hits
 
 			if !manualStop && th.os.phantomBreakpointPC == pc {
 				// Thread received a SIGTRAP but we don't have a breakpoint for it and
@@ -985,7 +950,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 						// Will switch to a different thread for trapthread because we don't
 						// want pkg/proc to believe that this thread was stopped by a
 						// hardcoded breakpoint.
-						fmt.Printf("Phantom hit\n")
+						fmt.Printf("Phantom breakpoint hit: PC (advanced) %#x, thread %v\n", pc, th.ThreadID())
 						*switchTrapthread = true
 					}
 				}

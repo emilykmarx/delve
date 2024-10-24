@@ -285,8 +285,9 @@ func (procgrp *processGroup) add(p *nativeProcess, pid int, currentThread proc.T
 	return tgt, nil
 }
 
-func ZZEM(procgrp *processGroup, msg string) {
-	fmt.Printf("ZZEM %v\n", msg)
+// Print some info on program threads
+func ProgramThreads(procgrp *processGroup, msg string) {
+	fmt.Printf("Program threads, from %v\n", msg)
 	for _, thread := range procgrp.procs[0].ThreadList() {
 		loc, _ := thread.Location()
 		if loc != nil && loc.Fn != nil && loc.Fn.Name == "main.main" {
@@ -298,18 +299,6 @@ func ZZEM(procgrp *processGroup, msg string) {
 			}
 		}
 	}
-}
-
-// Find a thread that has non-spuriously page faulted, if any.
-func (dbp *nativeProcess) nonSpuriousTrapthread() *nativeThread {
-	for _, thread := range dbp.threads {
-		if thread.stopSignal() == syscall.SIGSEGV {
-			if !thread.CurrentBreakpoint.Breakpoint.SpuriousPageFault {
-				return thread
-			}
-		}
-	}
-	return nil
 }
 
 func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
@@ -407,6 +396,7 @@ func (t *nativeThread) faultingAddr() uintptr {
 	return siginfo.addr
 }
 
+// Memory regions 1 and 2 overlap
 func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 	return addr1 < addr2+sz2 && addr2 < addr1+sz1
 }
@@ -425,6 +415,7 @@ func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 		}
 	}
 
+	// Not active, so Continue() won't return it to client
 	return &proc.Breakpoint{WatchType: proc.WatchWrite, WatchImpl: proc.WatchSoftware,
 		Addr: faultingAddr, SpuriousPageFault: true}
 }
@@ -483,6 +474,8 @@ func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string) (*proc
 		//	  with gdb once AsyncPreempt was enabled. While implementing the port,
 		//	  few tests failed while it was enabled, but cannot be warrantied that
 		//	  disabling it fixed the issues.
+		//	- on linux/amd64 asyncpreempt causes many spurious sigtraps
+		//		when using software watchpoints.
 		DisableAsyncPreempt: runtime.GOOS == "windows" || (runtime.GOOS == "linux" && runtime.GOARCH == "arm64") ||
 			(runtime.GOOS == "linux" && runtime.GOARCH == "amd64") ||
 			(runtime.GOOS == "linux" && runtime.GOARCH == "ppc64le"),
@@ -561,6 +554,8 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	mprotect_regs.Regs.Rdi = pageAddr(addr)
 	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())
 	if protect {
+		// PERF would be better to allow writes, but doesn't seem to be supported
+		// (with PROT_WRITE or PROT_WRITE | PROT_EXEC, page access bits change, but neither reads nor writes fault)
 		mprotect_regs.Regs.Rdx = sys.PROT_NONE
 	} else {
 		mprotect_regs.Regs.Rdx = sys.PROT_READ | sys.PROT_WRITE

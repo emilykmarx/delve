@@ -53,12 +53,6 @@ func (grp *TargetGroup) Next() (err error) {
 // processes. It will continue until it hits a breakpoint
 // or is otherwise stopped.
 func (grp *TargetGroup) Continue() error {
-	/*
-		fmt.Println("ENTER TargetGroup CONTINUE")
-		defer func() {
-			fmt.Println("EXIT TargetGroup CONTINUE")
-		}()
-	*/
 	if grp.numValid() == 0 {
 		_, err := grp.targets[0].Valid()
 		return err
@@ -70,15 +64,6 @@ func (grp *TargetGroup) Continue() error {
 		for _, thread := range dbp.ThreadList() {
 			thread.Common().CallReturn = false
 			thread.Common().returnValues = nil
-			/*
-				stack, _ := ThreadStacktrace(dbp, thread, 50)
-				fmt.Printf("thread %v stack:\n", thread.ThreadID())
-				for _, frame := range stack {
-					if frame.Current.Fn != nil {
-						fmt.Printf("%v\n", frame.Current.Fn.Name)
-					}
-				}
-			*/
 		}
 		dbp.Breakpoints().WatchOutOfScope = nil
 		dbp.clearHardcodedBreakpoints()
@@ -177,12 +162,10 @@ func (grp *TargetGroup) Continue() error {
 			if callErrThis != nil && callErr == nil {
 				callErr = callErrThis
 			}
-			/*
-				hcbpErrThis := dbp.handleHardcodedBreakpoints(grp, trapthread, threads)
-				if hcbpErrThis != nil && hcbpErr == nil {
-					hcbpErr = hcbpErrThis
-				}
-			*/
+			hcbpErrThis := dbp.handleHardcodedBreakpoints(grp, trapthread, threads)
+			if hcbpErrThis != nil && hcbpErr == nil {
+				hcbpErr = hcbpErrThis
+			}
 		}
 		// callErr and hcbpErr check delayed until after pickCurrentThread, which
 		// must always happen, otherwise the debugger could be left in an
@@ -259,7 +242,8 @@ func (grp *TargetGroup) Continue() error {
 		case stopReason == StopLaunched:
 			return nil
 		default:
-			// not a manual stop, not on runtime.Breakpoint, not on a breakpoint, just repeat
+			// not a manual stop, not on runtime.Breakpoint, not on a breakpoint*, just repeat
+			// *if at a spurious page fault, will be at an inactive breakpoint
 		}
 		if callInjectionDone {
 			// a call injection was finished, don't let a breakpoint with a failed
@@ -1664,8 +1648,7 @@ func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread,
 			// We explicitly check for entry points of functions because the space
 			// between functions is usually filled with hardcoded breakpoints.
 			if (loc.Fn == nil || loc.Fn.Entry != loc.PC) && isHardcodedBreakpoint(thread, loc.PC) > 0 {
-				fmt.Printf("Hardcoded bp at pc %#x\n", loc.PC)
-				stepOverBreak(thread, loc.PC) // Not needed on AMD64
+				stepOverBreak(thread, loc.PC)
 				setHardcodedBreakpoint(thread, loc)
 			}
 		}

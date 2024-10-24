@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+'''
+Plot things related to slowdown due to watchpoints.
+'''
 
 import subprocess
 import time

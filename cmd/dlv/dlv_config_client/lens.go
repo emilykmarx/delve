@@ -52,6 +52,7 @@ type PendingWp struct {
 type TaintCheck struct {
 	hit    Hit
 	client *rpc2.RPCClient
+	thread *api.Thread
 
 	// "Pending" = waiting for var to be in scope, or for hw wp to free up
 	// Key: Bp addr where exprs go in scope
@@ -91,7 +92,8 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 				frame.File, frame.Line, fn, frame.PC)
 			fmt.Println(loc)
 
-			// TODO skip hits from sysmon thread (sw wp commit may hv a test?)
+			// TODO skip all hits from go runtime threads (sw wp commit may hv a test for sysmon?)
+			// (but not hits in go runtime from program thread)
 			if fn == "runtime.newstack" {
 				return nil, false
 			}
@@ -106,15 +108,9 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	return nil, true
 }
 
-/* Return false to ignore this hit. */
-func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
-	state, err := tc.client.GetState()
-	if err != nil {
-		log.Fatalf("Error getting state: %v\n", err)
-	}
-
-	// Hitting instr may be same or diff line as cur instr => get prev instr's line
-	pc := state.CurrentThread.PC
+/* Get instruction corresponding to hit */
+func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
+	pc := tc.thread.PC
 	if non_runtime_frame != nil {
 		// runtime hit => pc is one after call instr that ended up in runtime
 		pc = non_runtime_frame.PC
@@ -124,40 +120,26 @@ func (tc *TaintCheck) prevInstr(non_runtime_frame *api.Stackframe) bool {
 		log.Fatalf("Error disassembling at PC 0x%x: %v\n", pc, err)
 	}
 
-	// TODO this assumes hitting instr is always linearly previous,
-	// but not true for branching instr that touch memory (e.g. cmov)
-	// Only applies to non-runtime hit?
-	// Update: due to load-store reordering, need to guess (see 8/5 slides) - can use trace-packed-hit-call to test
 	for i, instr := range fct_instr {
 		if instr.Loc.PC == pc {
-			if i == 0 {
-				fmt.Printf("Hit in call instr? Stacktrace:\n")
-				tc.printStacktrace()
-				// TODO don't ignore, once fix the above
-				return false
-			}
-			tc.hit.hit_instr = &fct_instr[i-1]
-			return true
+			tc.hit.hit_instr = &fct_instr[i]
+			return
 		}
 	}
 
 	log.Fatalf("Failed to find instruction at PC 0x%x: %v\n", pc, err)
-	return false
 }
 
-/* Get instruction and source line corresponding to preceding PC, for selected goroutine.
+/* Get source line corresponding to hit.
  * Return false to ignore this hit. */
 func (tc *TaintCheck) hittingLine() bool {
-	/* TODO for now, assume goroutine that hit the bp is currently selected.
-	 * Should instead switch to that goroutine (need to read doc carefully:
-	 * https://github.com/go-delve/delve/blob/master/Documentation/api/ClientHowto.md#using-rpcservercommand)
-	 * (remember to pass that scope to Disass) */
-
 	non_runtime_frame, handle := tc.handleRuntimeHit()
 	// Ignore prints (may be within print, or when calling print) for convenience
-	if tc.hitInPrint() || !handle || !tc.prevInstr(non_runtime_frame) {
+	if tc.hitInPrint() || !handle {
 		return false
 	}
+
+	tc.hittingInstr(non_runtime_frame)
 
 	src_line := sourceLine(tc.client, tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line)
 	if strings.Contains(strings.ToLower(src_line), ("print")) {
@@ -220,7 +202,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 			existing_info.watchexprs = make(map[string]struct{})
 		}
 		existing_info.watchexprs[expr] = struct{}{}
-		//fmt.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
+		fmt.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
 	}
 
 	tc.pending_wps[bp_addr] = existing_info
@@ -237,9 +219,9 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	}
 
 	if ok {
-		//fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
+		fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
 	} else {
-		//fmt.Printf("Exit onPendingWpBpHitDone; no more info\n")
+		fmt.Printf("Exit onPendingWpBpHitDone; no more info\n")
 	}
 }
 
@@ -277,13 +259,11 @@ func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *
 
 // This should handle being called multiple times for same bpaddr+watchaddr
 func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr uint64, sz int64) {
-	/*
-		fmt.Printf("trySetWatchpoint\n")
-		if watchexpr != nil {
-			fmt.Printf("watchexpr: %v\n", *watchexpr)
-		}
-		fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
-	*/
+	fmt.Printf("trySetWatchpoint\n")
+	if watchexpr != nil {
+		fmt.Printf("watchexpr: %v\n", *watchexpr)
+	}
+	fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
 
 	wp := DoneWp{bp_addr: bp_addr, wp_addr: watchaddr}
 	info := tc.pending_wps[bp_addr]
@@ -336,32 +316,30 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 		log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", watchaddr, err)
 	}
 
-	/*
-		if watchexpr != nil {
-			// Log for test
-			// TODO (minor): Move logic in this file to its own package, so can import it for testing
-			// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
-			fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
-				tc.hit.hit_bp.Line, *watchexpr, watchaddr)
-		} else {
-			fmt.Printf("CreateHWPending lineno %d watchaddr 0x%x\n",
-				tc.hit.hit_bp.Line, watchaddr)
-		}
-	*/
+	if watchexpr != nil {
+		// Log for test
+		// TODO (minor): Move logic in this file to its own package, so can import it for testing
+		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
+		fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
+			tc.hit.hit_bp.Line, *watchexpr, watchaddr)
+	} else {
+		fmt.Printf("CreateHWPending lineno %d watchaddr 0x%x\n",
+			tc.hit.hit_bp.Line, watchaddr)
+	}
 	delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
 	tc.round_done_wps[wp] = info.tainting_vals
 
 	// 5. Add to mem-param map
 	tc.mem_param_map[watchaddr] = info.tainting_vals
 	// Log for testing
-	//fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
+	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
 }
 
 // Watchpoint hit => record any new pending watchpoints
 func (tc *TaintCheck) onWatchpointHit() {
 	fmt.Printf("\n\n*** Hit watchpoint for 0x%x\n", tc.hit.hit_bp.Addrs[0])
 	if !tc.hittingLine() {
-		fmt.Printf("Ignoring watchpoint hit\n")
+		fmt.Printf("Ignoring watchpoint hit at %#x\n", tc.thread.PC)
 		return
 	}
 	tc.propagateTaint()
@@ -370,14 +348,12 @@ func (tc *TaintCheck) onWatchpointHit() {
 // Breakpoint for pending watchpoint hit => try to set the watchpoint
 func (tc *TaintCheck) onPendingWpBpHit() {
 	if len(tc.hit.hit_bp.Addrs) != 1 {
-		return
 		log.Fatalf("Wrong number of addrs at pending wp; bp %+v\n", tc.hit.hit_bp)
 	}
 
 	bp_addr := tc.hit.hit_bp.Addrs[0]
 	info := tc.pending_wps[bp_addr]
-
-	//fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
+	fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
 	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}

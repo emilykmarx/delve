@@ -1,14 +1,11 @@
 package native
 
 import (
-	"fmt"
-
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/proc/amd64util"
 )
 
 func (t *nativeThread) writeHardwareBreakpoint(addr uint64, wtype proc.WatchType, idx uint8) error {
-	fmt.Printf("writeHardwareBreakpoint, addr %#x\n", addr)
 	return t.withDebugRegisters(func(drs *amd64util.DebugRegisters) error {
 		return drs.SetBreakpoint(idx, addr, wtype.Read(), wtype.Write(), wtype.Size())
 	})
