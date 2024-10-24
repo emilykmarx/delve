@@ -479,7 +479,9 @@ func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string) (*proc
 		//	  with gdb once AsyncPreempt was enabled. While implementing the port,
 		//	  few tests failed while it was enabled, but cannot be warrantied that
 		//	  disabling it fixed the issues.
-		DisableAsyncPreempt: runtime.GOOS == "windows" || (runtime.GOOS == "linux" && runtime.GOARCH == "arm64") || (runtime.GOOS == "linux" && runtime.GOARCH == "ppc64le"),
+		DisableAsyncPreempt: runtime.GOOS == "windows" || (runtime.GOOS == "linux" && runtime.GOARCH == "arm64") ||
+			(runtime.GOOS == "linux" && runtime.GOARCH == "amd64") ||
+			(runtime.GOOS == "linux" && runtime.GOARCH == "ppc64le"),
 
 		StopReason: stopReason,
 		CanDump:    runtime.GOOS == "linux" || runtime.GOOS == "freebsd" || (runtime.GOOS == "windows" && runtime.GOARCH == "amd64"),
