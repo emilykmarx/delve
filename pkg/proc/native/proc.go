@@ -46,6 +46,9 @@ type nativeProcess struct {
 	iscgo bool
 
 	exited, detached bool
+
+	// PC of a syscall instruction
+	syscallPC uint64
 }
 
 // newProcess returns an initialized Process struct. Before returning,
@@ -535,13 +538,8 @@ func pageAddr(addr uint64) uint64 {
 // only remove read perms from existing prot mask, and restore old mask on deleting watchpoint/allowing access
 // Also support (or disallow) write/read-write watches
 func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
-	// 0. Get addr of syscall instr
-	// TODO get from asm - proc.Disassemble() Syscall6
-	//syscall_pc := uint64(0x4044ec)
-	syscall_pc := uint64(0x40388c)
-	prev_pc, _ := thread.PC()
-
 	// 1. Set registers for mprotect syscall: RIP, args, syscall code
+	prev_pc, _ := thread.PC()
 	prev_regs, err := thread.Registers()
 	if err != nil {
 		return fmt.Errorf("failed to get regs before mprotect: %v", err.Error())
@@ -552,7 +550,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	}
 	mprotect_regs := regs.(*linutil.AMD64Registers)
 
-	mprotect_regs.Regs.Rip = syscall_pc
+	mprotect_regs.Regs.Rip = thread.dbp.syscallPC
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
 	mprotect_regs.Regs.Rdi = pageAddr(addr)
 	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())

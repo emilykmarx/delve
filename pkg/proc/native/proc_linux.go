@@ -6,6 +6,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -56,6 +57,27 @@ func (os *osProcessDetails) Close() {
 	if os.ebpf != nil {
 		os.ebpf.Close()
 	}
+}
+
+func (dbp *nativeProcess) getSyscallPC() uint64 {
+	syscall6 := "runtime/internal/syscall.Syscall6"
+	fns, err := dbp.BinInfo().FindFunction(syscall6)
+	if err != nil {
+		log.Panicf("Finding %v: %v\n", syscall6, err.Error())
+	}
+
+	instrs, err := proc.Disassemble(dbp.Memory(), nil, dbp.Breakpoints(), dbp.BinInfo(), fns[0].Entry, fns[0].End)
+	if err != nil {
+		log.Panicf("Disassembling %v: %v\n", syscall6, err.Error())
+	}
+	for _, instr := range instrs {
+		instr_text := instr.Text(proc.IntelFlavour, dbp.BinInfo())
+		if instr_text == "syscall" {
+			return instr.Loc.PC
+		}
+	}
+	log.Panicf("Failed to find syscall PC\n")
+	return 0
 }
 
 // Launch creates and begins debugging a new process. First entry in
@@ -146,6 +168,7 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 		fmt.Printf("SPURIOUS_TRAP_TOTAL %v\t SPURIOUS_TRAP_TRAPTHREAD %v\n", Spurious_sigtrap_total, Spurious_sigtrap_trapthread)
 	}
 	First_launch = false
+	dbp.syscallPC = dbp.getSyscallPC()
 	return tgt, nil
 }
 
