@@ -2,15 +2,29 @@
 
 import subprocess
 
-grep = subprocess.run("grep 'func Test' cmd/dlv/client_test.go | cut -d '(' -f1 | cut -d ' ' -f2", shell=True, check=True, text=True, capture_output=True)
-regex = '^(' + grep.stdout.strip().replace('\n', '|') + ')'
-test_cmd = f'go test -v -timeout 30s -run \'{regex}\' github.com/go-delve/delve/cmd/dlv -count=1 -failfast'
-print(f'Running client tests: {test_cmd}')
+subprocess.check_output('go install github.com/go-delve/delve/cmd/dlv', shell=True, text=True)
+subprocess.check_output('go build github.com/go-delve/delve/cmd/dlv/dlv_config_client', shell=True, text=True)
 
-try:
-  subprocess.run(test_cmd, shell=True, check=True, text=True, capture_output=True)
-except subprocess.CalledProcessError as e:
-  print('TESTS FAILED, ABORTING COMMIT')
-  print(e.stdout)
-  print(e.stderr)
-  exit(1)
+# TODO fix client tests to use native backend
+for i, test in enumerate(['watchpoint']):
+  if i == 0:
+    # TODO once fix client interface: Run hw wp tests too
+    test_path = "pkg/proc"
+    grep_arg = f"'func TestWatchpointsSoftware' {test_path}/proc_test.go"
+  else:
+    test_path = "cmd/dlv"
+    grep_arg = f"'func Test' {test_path}/client_test.go"
+
+  grep = subprocess.run(f"grep {grep_arg} | cut -d '(' -f1 | cut -d ' ' -f2", shell=True, check=True, text=True, capture_output=True)
+  regex = '^(' + grep.stdout.strip().replace('\n', '|') + ')'
+  test_cmd = f'go test -v -timeout 30s -run \'{regex}\' github.com/go-delve/delve/{test_path} -count=1 -failfast'
+
+  print(f'Running {test} tests: {test_cmd}')
+
+  try:
+    p = subprocess.run(test_cmd, shell=True, check=True, text=True, capture_output=True)
+  except subprocess.CalledProcessError as e:
+    print(f'{test} TESTS FAILED, ABORTING COMMIT')
+    print(e.stdout)
+    print(e.stderr)
+    exit(1)

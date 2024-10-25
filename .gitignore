@@ -13,3 +13,5 @@ localtests
 .vscode
 /dlv_config_client
 cmd/dlv/dlv_config_client/xenon_out
+init.txt
+LEFT_OFF.md
