@@ -202,7 +202,7 @@ func (dbp *nativeProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
 		return nil
 	} else if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
 		// Software watchpoint
-		return dbp.writeSoftwareWatchpoint(dbp.memthread, bp.Addr)
+		return dbp.writeSoftwareWatchpoint(dbp.memthread, bp)
 	} else {
 		// Software breakpoint
 		bp.OriginalData = make([]byte, dbp.bi.Arch.BreakpointSize())
@@ -599,23 +599,20 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	return nil
 }
 
-// mprotect the page containing addr (if haven't already)
-func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, addr uint64) error {
-	/* TODO fix this: memthread is stale here
-	if !thread.singleStepping {
-		// If re-writing after just stepped over a faulting instr, always write
-		for _, bp := range dbp.Breakpoints().M {
+// mprotect the page containing addr
+func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, wp *proc.Breakpoint) error {
+	if wp.New {
+		// If writing a new bp, no need to mprotect if already have a bp on existing page
+		// But if replacing a wp just cleared for single-step or stack adjust, always re-mprotect
+		for _, bp := range dbp.Breakpoints().M { // if new, not in map yet
 			if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
-				if pageAddr(bp.Addr) == pageAddr(addr) {
-					fmt.Println("Page already mprotected")
-					// Already have a sw wp on the same page => no need to mprotect
-					//return nil
+				if pageAddr(bp.Addr) == pageAddr(wp.Addr) {
+					return nil
 				}
 			}
 		}
 	}
-	*/
-	return thread.toggleMprotect(addr, true)
+	return thread.toggleMprotect(wp.Addr, true)
 }
 
 func (dbp *nativeProcess) writeSoftwareBreakpoint(thread *nativeThread, addr uint64) error {

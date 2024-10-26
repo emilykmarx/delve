@@ -59,6 +59,9 @@ type Breakpoint struct {
 	HWBreakIndex      uint8 // hardware breakpoint index
 	watchStackOff     int64 // for watchpoints of stack variables, offset of the address from top of the stack
 
+	// Whether the bp was just created (used for mprotect dup-checking)
+	New bool
+
 	// Breaklets is the list of overlapping breakpoints on this physical breakpoint.
 	// There can be at most one UserBreakpoint in this list but multiple internal breakpoints are allowed.
 	Breaklets []*Breaklet
@@ -517,7 +520,7 @@ func NewBreakpointMap() BreakpointMap {
 	}
 }
 
-// SetBreakpoint sets a breakpoint at addr, and stores it in the process wide
+// SetBreakpoint sets a breakpoint (non-watchpoint) at addr, and stores it in the process wide
 // break point table.
 func (t *Target) SetBreakpoint(logicalID int, addr uint64, kind BreakpointKind, cond ast.Expr) (*Breakpoint, error) {
 	return t.setBreakpointInternal(logicalID, addr, kind, 0, WatchHardware, cond)
@@ -803,6 +806,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 		File:         f,
 		Line:         l,
 		Addr:         addr,
+		New:          true,
 	}
 
 	err := t.proc.WriteBreakpoint(newBreakpoint)
@@ -815,6 +819,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	newBreakpoint.Breaklets = append(newBreakpoint.Breaklets, newBreaklet)
 	setLogicalBreakpoint(newBreakpoint) // defined inline above
+	newBreakpoint.New = false           // if deleted and replaced in future, don't check for dups in mprotect
 
 	bpmap.M[addr] = newBreakpoint
 

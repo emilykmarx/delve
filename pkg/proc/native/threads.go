@@ -65,7 +65,7 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 		}
 
 		defer func() {
-			if err := t.dbp.writeSoftwareWatchpoint(t, bp.Addr); err != nil {
+			if err := t.dbp.writeSoftwareWatchpoint(t, bp); err != nil {
 				log.Panicf("Failed to re-mprotect page after stepping over %#x\n", pc)
 			}
 		}()
