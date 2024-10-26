@@ -9,7 +9,6 @@ import (
 	"go/parser"
 	"go/token"
 	"reflect"
-	"strings"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
@@ -626,8 +625,6 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 // EvalScope just used to determine stack location
 func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, watchaddr uint64, sz int64, wtype WatchType,
 	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
-	// TODO fix client interface
-	wimpl = WatchSoftware
 	stackWatch := scope.g != nil && !scope.g.SystemStack && watchaddr >= scope.g.stack.lo && watchaddr < scope.g.stack.hi
 
 	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
@@ -692,14 +689,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
-func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr) (*Breakpoint, error) {
-	// TODO hack for now: specify sw wp in expr
-	var wimpl WatchImpl
-	if real_expr, sw := strings.CutPrefix(expr, "WTF-SW-WP-"); sw {
-		expr = real_expr
-		wimpl = WatchSoftware
-	}
-
+func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}

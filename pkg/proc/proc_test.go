@@ -5473,7 +5473,7 @@ func TestWatchpointsSoftwarePrint(t *testing.T) {
 		// Set wp
 		scope, err := proc.GoroutineScope(p, p.CurrentThread())
 		assertNoError(err, t, "GoroutineScope")
-		bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil)
+		bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware)
 		wp_oos_pc := getWpOOSPC(p)
 		assertNoError(err, t, "SetWatchpoint")
 		assertNoError(grp.Continue(), t, "Continue to first wp hit")
@@ -5497,7 +5497,7 @@ func TestWatchpointsSoftwareNoPrints(t *testing.T) {
 		// Set wp
 		scope, err := proc.GoroutineScope(p, p.CurrentThread())
 		assertNoError(err, t, "GoroutineScope")
-		bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil)
+		bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
 		wp_oos_pc := getWpOOSPC(p)
 		assertNoError(err, t, "SetWatchpoint")
 		assertNoError(grp.Continue(), t, "Continue to first wp hit")
@@ -5551,7 +5551,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 		assertNoError(err, t, "GoroutineScope")
 
 		// Set globalvar1, write
-		bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil)
+		bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
 		assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
 		// Hit globalvar1 at position1
@@ -5570,7 +5570,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 		assertLineNumber(p, t, 21, "Continue 2") // Position 2
 
 		// Set globalvar1, read/write
-		_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil)
+		_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl)
 		assertNoError(err, t, "SetDataBreakpoint(read-write)")
 
 		// Hit globalvar1 at 22
@@ -5586,7 +5586,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 
 		// Set globalvar1, write
 		t.Logf("setting final breakpoint")
-		_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil)
+		_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
 		assertNoError(err, t, "SetDataBreakpoint(write-only, again)")
 
 		// Hit globalvar1 at position5
@@ -5603,7 +5603,6 @@ func TestWatchpointsCounts(t *testing.T) {
 	WatchpointsCounts(t, proc.WatchHardware)
 }
 
-// TODO once fix client interface to hw/sw wps: use wimpl here
 func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 	skipOn(t, "not implemented", "freebsd")
 	skipOn(t, "not implemented", "386")
@@ -5622,7 +5621,7 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 		assertNoError(err, t, "GoroutineScope")
 
 		// Set globalvar1, write (only hits once for line 14)
-		bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil)
+		bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
 		assertNoError(err, t, "SetWatchpoint(write-only)")
 
 		// Continue until exited
@@ -5764,7 +5763,7 @@ func WatchpointsStack(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set w, write
-			_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil)
+			_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, wimpl)
 			assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
 			watchbpnum := 3
@@ -5849,7 +5848,8 @@ func TestWatchpointsStackBackwardsOutOfScope(t *testing.T) {
 		scope, err := proc.GoroutineScope(p, p.CurrentThread())
 		assertNoError(err, t, "GoroutineScope")
 
-		_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil)
+		// no sw wp support for rr
+		_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, proc.WatchHardware)
 		assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
 		assertNoError(grp.Continue(), t, "Continue 1")
@@ -7497,7 +7497,8 @@ func TestStackwatchClearBug(t *testing.T) {
 		assertNoError(err, t, "GoroutineScope")
 
 		for _, s := range []string{"vars[0]", "vars[3]", "vars[2]", "vars[1]"} {
-			_, err := p.SetWatchpoint(0, scope, s, proc.WatchWrite, nil)
+			// bug is wimpl-agnostic
+			_, err := p.SetWatchpoint(0, scope, s, proc.WatchWrite, nil, proc.WatchHardware)
 			assertNoError(err, t, "SetWatchpoint(write-only)")
 		}
 

@@ -71,6 +71,21 @@ type TracepointResult struct {
 	ReturnParams []Variable `json:"returnParams,omitempty"`
 }
 
+// WatchType is the watchpoint type
+type WatchType uint8
+
+const (
+	WatchRead WatchType = 1 << iota
+	WatchWrite
+)
+
+type WatchImpl int
+
+const (
+	WatchHardware WatchImpl = iota
+	WatchSoftware
+)
+
 // Breakpoint addresses a set of locations at which process execution may be
 // suspended.
 type Breakpoint struct {
@@ -124,6 +139,7 @@ type Breakpoint struct {
 	// WatchExpr is the expression used to create this watchpoint
 	WatchExpr string
 	WatchType WatchType
+	WatchImpl WatchImpl
 
 	VerboseDescr []string `json:"VerboseDescr,omitempty"`
 
@@ -159,14 +175,6 @@ func ValidBreakpointName(name string) error {
 
 	return nil
 }
-
-// WatchType is the watchpoint type
-type WatchType uint8
-
-const (
-	WatchRead WatchType = 1 << iota
-	WatchWrite
-)
 
 // Thread is a thread within the debugged process.
 type Thread struct {

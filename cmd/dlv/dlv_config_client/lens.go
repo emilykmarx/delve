@@ -311,7 +311,7 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// TODO (minor): fix error propagation here: if rr returns E01 (in gdbserial), logs "expected operand" here
-	_, err := tc.client.CreateWatchpointNoEval(scope, watchaddr, sz, api.WatchRead|api.WatchWrite)
+	_, err := tc.client.CreateWatchpointNoEval(scope, watchaddr, sz, api.WatchRead|api.WatchWrite, api.WatchSoftware)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", watchaddr, err)
 	}

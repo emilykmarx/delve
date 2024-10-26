@@ -8,9 +8,8 @@ subprocess.check_output('go build github.com/go-delve/delve/cmd/dlv/dlv_config_c
 # TODO fix client tests to use native backend
 for i, test in enumerate(['watchpoint']):
   if i == 0:
-    # TODO once fix client interface: Run hw wp tests too
     test_path = "pkg/proc"
-    grep_arg = f"'func TestWatchpointsSoftware' {test_path}/proc_test.go"
+    grep_arg = f"'func TestWatchpoints' {test_path}/proc_test.go"
   else:
     test_path = "cmd/dlv"
     grep_arg = f"'func Test' {test_path}/client_test.go"
@@ -23,6 +22,8 @@ for i, test in enumerate(['watchpoint']):
 
   try:
     p = subprocess.run(test_cmd, shell=True, check=True, text=True, capture_output=True)
+    print(p.stdout)
+    print(p.stderr)
   except subprocess.CalledProcessError as e:
     print(f'{test} TESTS FAILED, ABORTING COMMIT')
     print(e.stdout)

@@ -66,6 +66,7 @@ func ConvertPhysicalBreakpoints(b *Breakpoint, lbp *proc.LogicalBreakpoint, pids
 
 	b.WatchExpr = bps[0].WatchExpr
 	b.WatchType = WatchType(bps[0].WatchType)
+	b.WatchImpl = WatchImpl(bps[0].WatchImpl)
 
 	lg := false
 	for i, bp := range bps {

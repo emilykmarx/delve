@@ -1107,7 +1107,7 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 
 // CreateWatchpoint creates a watchpoint on the specified expression.
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
-	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType) (*api.Breakpoint, error) {
+	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType, wimpl api.WatchImpl) (*api.Breakpoint, error) {
 	p := d.target.Selected
 
 	s, err := proc.ConvertEvalScope(p, goid, frame, deferredCall)
@@ -1118,13 +1118,9 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	var bp *proc.Breakpoint
 	var wp_err error
 	if *expr != "" {
-		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil)
+		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
 	} else {
-		// Lens client calls this
-		// TODO allow client to specify sw vs hw (currently prefix hack doesn't work I think,
-		// due to evalWatchexpr - instead, hard-coding wimpl)
-		// consider setting WatchExpr in the process for convenience
-		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchSoftware)
+		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
 	}
 	if wp_err != nil {
 		return nil, wp_err
