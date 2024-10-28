@@ -34,8 +34,6 @@ type PendingWp struct {
 	watchexprs map[string]struct{}
 	// Arg index => Expression to append to callee's copy, if any
 	watchargs map[int]string
-	// Addr => size
-	watchaddrs map[uint64]int64
 	// Values that tainted these
 	// (With current taint policy, I think will always be same for all).
 	// On wp hit: Copy from mem_param_map[hit], so we have them even if orig wp goes OOS
@@ -197,7 +195,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 
 func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	info := tc.pending_wps[bp_addr]
-	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
+	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 {
 		// Nothing left pending at this bp addr
 		if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
 			log.Fatalf("Failed to clear bp at 0x%x: %v\n", bp_addr, err)
@@ -229,6 +227,7 @@ func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *
 
 	watchvars = append(watchvars, *xv)
 	if xv.RealType == "string" {
+		// TODO once switch to data-only wp, can remove this and call CreateWatchpoint (I think)
 		// Also watch the first character of a string - string concatenation doesn't read the address
 		xv, err := tc.client.EvalWatchexpr(scope, watchexpr+"[0]")
 		if err != nil {
@@ -241,8 +240,8 @@ func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *
 }
 
 // This should handle being called multiple times for same bpaddr+watchaddr
-func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watchaddr uint64, sz int64) {
-	fmt.Printf("trySetWatchpoint\n")
+func (tc *TaintCheck) setWatchpoint(watchexpr *string, bp_addr uint64, watchaddr uint64, sz int64) {
+	fmt.Printf("setWatchpoint\n")
 	if watchexpr != nil {
 		fmt.Printf("watchexpr: %v\n", *watchexpr)
 	}
@@ -257,51 +256,25 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 		tc.updateTaintingVals(info, bp_addr, watchaddr)
 		// May have already been set when hit same wp at different bp in this round
 		// (e.g. when try to set wp on first byte of a copied string - as with fqdn[0] in xenon)
-		delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
 		fmt.Printf("Already tracing 0x%x in current round\n", watchaddr)
 		return
 	}
 
-	// 2. Check if have hardware watchpoints available, else store watchaddr and return
-	if tc.nWps(false) == 4 {
-		// Stays pending
-		if watchexpr != nil {
-			// Just evaluated => add new watchaddr
-			if len(info.watchaddrs) == 0 {
-				info.watchaddrs = make(map[uint64]int64)
-			}
-			info.watchaddrs[watchaddr] = sz
-			tc.pending_wps[bp_addr] = info
-			// Log for test (alternative is to store watchexpr - would also allow us to pass it to delve,
-			// which would be convenient but require more storage)
-			fmt.Printf("RecordHWPending lineno %d watchexpr %s watchaddr 0x%x\n",
-				tc.hit.hit_bp.Line, *watchexpr, watchaddr)
-		}
-		return
-	}
-
-	// 3. Create watchpoint
-	// We really want a read-only wp, but rr's read-only hw wp are actually read-write
+	// 2. Create watchpoint
+	// We really want a read-only wp, but not supported
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	// TODO (minor): fix error propagation here: if rr returns E01 (in gdbserial), logs "expected operand" here
 	_, err := tc.client.CreateWatchpointNoEval(scope, watchaddr, sz, api.WatchRead|api.WatchWrite, api.WatchSoftware)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", watchaddr, err)
 	}
 
-	if watchexpr != nil {
-		// Log for test
-		// TODO (minor): Move logic in this file to its own package, so can import it for testing
-		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
-		fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
-			tc.hit.hit_bp.Line, *watchexpr, watchaddr)
-	} else {
-		fmt.Printf("CreateHWPending lineno %d watchaddr 0x%x\n",
-			tc.hit.hit_bp.Line, watchaddr)
-	}
-	delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
+	// Log for test
+	// TODO (minor): Move logic in this file to its own package, so can import it for testing
+	// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
+	fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
+		tc.hit.hit_bp.Line, *watchexpr, watchaddr)
 
-	// 5. Add to mem-param map
+	// 3. Add to mem-param map
 	tc.mem_param_map[watchaddr] = info.tainting_vals
 	// Log for testing
 	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
@@ -326,7 +299,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 	bp_addr := tc.hit.hit_bp.Addrs[0]
 	info := tc.pending_wps[bp_addr]
 	fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
-	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
+	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}
 
@@ -337,13 +310,10 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 		return
 	}
 
-	for watchaddr, sz := range info.watchaddrs {
-		tc.trySetWatchpoint(nil, bp_addr, watchaddr, sz)
-	}
 	for watchexpr := range info.watchexprs {
 		watchvars := tc.evalWatchexpr(watchexpr, bp_addr, nil)
 		for _, watchvar := range watchvars {
-			tc.trySetWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)
+			tc.setWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)
 		}
 	}
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
@@ -355,7 +325,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 		watchexpr := args[argno].Name + overlap_expr
 		watchvars := tc.evalWatchexpr(watchexpr, bp_addr, &argno)
 		for _, watchvar := range watchvars {
-			tc.trySetWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)
+			tc.setWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)
 		}
 	}
 

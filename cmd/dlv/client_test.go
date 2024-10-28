@@ -104,21 +104,18 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	run(t, "funclit_goroutine.go", expected_logs)
 }
 
-/* TODO update for sw wp
 func TestMultiRound(t *testing.T) {
 	expected_logs := []expectedWpLog{
 		{kind: CreateNonPending, lineno: 11, watchexpr: "vars[0]"},
-		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
-		{kind: RecordHWPending, lineno: 18, watchexpr: "vars[i]"},
-		{kind: CreateHWPending, lineno: 18, watchexpr: "vars[i]", recorded_wp: 4},
-		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
 	}
 
 	run(t, "multiround.go", expected_logs)
 }
-*/
 
 func TestRuntimeHits(t *testing.T) {
 	expected_logs := []expectedWpLog{
@@ -294,8 +291,6 @@ type WpLogType string
 
 const (
 	CreateNonPending WpLogType = "CreateNonPending"
-	CreateHWPending  WpLogType = "CreateHWPending"
-	RecordHWPending  WpLogType = "RecordHWPending"
 )
 
 // A log message about a watchpoint
@@ -303,17 +298,13 @@ type expectedWpLog struct {
 	kind      WpLogType
 	lineno    int
 	watchexpr string
-	// for CreateHWPending, index of corresponding recorded wp (address should match)
-	recorded_wp int
 	// to be filled in
-	watchaddr uint64
+	watchaddr uint64 // Can remove?
 }
 
 func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog) {
-	// CreateNonPending or RecordHWPending
+	// CreateNonPending
 	watchexpr_fmt := "%s lineno %d watchexpr %s watchaddr 0x%x"
-	// CreateHWPending
-	addr_only_fmt := "%s lineno %d watchaddr 0x%x"
 	next_wp_log := 0         // index of the next log we expect to see
 	expect_memparam := false // whether we expect to see a memory-parameter update next
 	mem_param_fmt := "\tMemory-parameter map: 0x%x => {params:map[{param:%s flow:1}:{}]}\n"
@@ -324,28 +315,14 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 		var kind string
 		expected_log := expected_logs[next_wp_log]
 
-		// Check for creating/recording wps and updating mem-param map, in expected order
+		// Check for creating wps and updating mem-param map, in expected order
 		if _, err := fmt.Sscanf(line, watchexpr_fmt, &kind, &lineno, &watchexpr, &watchaddr); err == nil {
 			if expect_memparam {
 				t.Fatalf("Client did not log expected update of memory-parameter map for %+v", expected_logs[next_wp_log-1])
 			}
-			if kind == string(CreateNonPending) {
-				expect_memparam = true
-			} else {
-				// RecordHWPending
-			}
+			expect_memparam = true
 			assertEqual(t, expected_log.lineno, lineno, expected_log)
 			assertEqual(t, expected_log.watchexpr, watchexpr, expected_log)
-			expected_logs[next_wp_log].watchaddr = watchaddr
-			next_wp_log++
-		} else if _, err := fmt.Sscanf(line, addr_only_fmt, &kind, &lineno, &watchaddr); err == nil {
-			// CreateHWPending => addr should match recorded
-			if expect_memparam {
-				t.Fatalf("Client did not log expected update of memory-parameter map for %+v", expected_logs[next_wp_log-1])
-			}
-			expect_memparam = true
-			assertEqual(t, expected_logs[expected_log.recorded_wp].watchaddr, watchaddr, expected_log)
-			assertEqual(t, expected_log.lineno, lineno, expected_log)
 			expected_logs[next_wp_log].watchaddr = watchaddr
 			next_wp_log++
 		} else if _, err := fmt.Sscanf(line, mem_param_fmt, &watchaddr, &watchexpr); err == nil {
@@ -367,8 +344,6 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 
 	// Check no unexpected wps were created
 	n_wp_logs := strings.Count(string(stdout), string(CreateNonPending))
-	n_wp_logs += strings.Count(string(stdout), string(CreateHWPending))
-	n_wp_logs += strings.Count(string(stdout), string(RecordHWPending))
 	assertEqual(t, len(expected_logs), n_wp_logs, "too many wp logs")
 
 }

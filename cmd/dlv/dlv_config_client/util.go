@@ -47,29 +47,10 @@ func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) *TaintingVals {
 	return nil
 }
 
-// number of existing wps
-func (tc *TaintCheck) nWps(print bool) int {
-	bps, list_err := tc.client.ListBreakpoints(true)
-	if list_err != nil {
-		log.Fatalf("Error listing breakpoints: %v\n", list_err)
-	}
-	n_wps := 0
-	for _, bp := range bps {
-		if bp.WatchExpr != "" {
-			n_wps += 1
-			if print {
-				fmt.Printf("Watchpoint at 0x%x\n", bp.Addrs[0])
-			}
-		}
-	}
-
-	return n_wps
-}
-
 // pretty-print
 func (pendingwp PendingWp) String() string {
-	return fmt.Sprintf("{watchexprs %v watchargs %v watchaddrs %x tainting_vals %+v}",
-		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.watchaddrs, pendingwp.tainting_vals)
+	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v}",
+		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals)
 }
 
 // Get line of source (as string)
