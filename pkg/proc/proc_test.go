@@ -5455,7 +5455,8 @@ func assertWpOOS(t *testing.T, p *proc.Target, grp *proc.TargetGroup, wp_oos_pc 
 	assertNoError(grp.Continue(), t, "Continue to wp OOS")
 	curbp := p.CurrentThread().Breakpoint().Breakpoint
 	if curbp.Addr != wp_oos_pc {
-		t.Fatalf("Not at WatchOutOfScopeBreakpoint; cur bp %+v, expected WP OOS %#x\n", curbp, wp_oos_pc)
+		loc, _ := p.CurrentThread().Location()
+		t.Fatalf("Not at WatchOutOfScopeBreakpoint; cur bp %+v (%v:%v), expected WP OOS %#x\n", curbp, loc.File, loc.Line, wp_oos_pc)
 	}
 	err := grp.Continue()
 	assertExited(p, t, err)
@@ -5463,59 +5464,65 @@ func assertWpOOS(t *testing.T, p *proc.Target, grp *proc.TargetGroup, wp_oos_pc 
 
 // Note: each test builds its target to /tmp and auto-deletes it.
 // Pass build flags via withTestProcessArgs().
+
+// Tests instruction that hits sw bp and (spuriously) segfaults
+// TODO add test for non-spurious equivalent (tested manually)
 func TestWatchpointsSoftwarePrint(t *testing.T) {
-	withTestProcess("dlv_config_client/sw_wp_print", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
-		// Get to bp
-		setFileBreakpoint(p, t, fixture.Source, 11)
-		assertNoError(grp.Continue(), t, "Continue to bp")
-		assertLineNumber(p, t, 11, "Continue to bp")
+	withTestProcessArgs("dlv_config_client/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
+		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
+			// Get to bp
+			setFileBreakpoint(p, t, fixture.Source, 11)
+			assertNoError(grp.Continue(), t, "Continue to bp")
+			assertLineNumber(p, t, 11, "Continue to bp")
 
-		// Set wp
-		scope, err := proc.GoroutineScope(p, p.CurrentThread())
-		assertNoError(err, t, "GoroutineScope")
-		bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware)
-		wp_oos_pc := getWpOOSPC(p)
-		assertNoError(err, t, "SetWatchpoint")
-		assertNoError(grp.Continue(), t, "Continue to first wp hit")
+			// Set wp
+			scope, err := proc.GoroutineScope(p, p.CurrentThread())
+			assertNoError(err, t, "GoroutineScope")
+			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware)
+			wp_oos_pc := getWpOOSPC(p)
+			assertNoError(err, t, "SetWatchpoint")
+			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
-		// wp hit
-		assertLineNumber(p, t, 11, "Continue to first wp hit")
-		if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
-			t.Fatal("breakpoint not set")
-		}
+			// wp hit
+			assertLineNumber(p, t, 11, "Continue to first wp hit")
+			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
+				t.Fatal("breakpoint not set")
+			}
 
-		assertWpOOS(t, p, grp, wp_oos_pc)
-	})
+			assertWpOOS(t, p, grp, wp_oos_pc)
+		})
 }
+
 func TestWatchpointsSoftwareNoPrints(t *testing.T) {
-	withTestProcess("dlv_config_client/sw_wp_no_prints", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
-		// Get to bp
-		setFileBreakpoint(p, t, fixture.Source, 11)
-		assertNoError(grp.Continue(), t, "Continue to bp")
-		assertLineNumber(p, t, 11, "Continue to bp")
+	withTestProcessArgs("dlv_config_client/sw_wp_no_prints", t, ".", []string{}, protest.AllNonOptimized,
+		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
+			// Get to bp
+			setFileBreakpoint(p, t, fixture.Source, 11)
+			assertNoError(grp.Continue(), t, "Continue to bp")
+			assertLineNumber(p, t, 11, "Continue to bp")
 
-		// Set wp
-		scope, err := proc.GoroutineScope(p, p.CurrentThread())
-		assertNoError(err, t, "GoroutineScope")
-		bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
-		wp_oos_pc := getWpOOSPC(p)
-		assertNoError(err, t, "SetWatchpoint")
-		assertNoError(grp.Continue(), t, "Continue to first wp hit")
+			// Set wp
+			scope, err := proc.GoroutineScope(p, p.CurrentThread())
+			assertNoError(err, t, "GoroutineScope")
+			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
+			wp_oos_pc := getWpOOSPC(p)
+			assertNoError(err, t, "SetWatchpoint")
+			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
-		// First wp hit
-		assertLineNumber(p, t, 14, "Continue to first wp hit")
-		if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
-			t.Fatal("breakpoint not set")
-		}
+			// First wp hit
+			assertLineNumber(p, t, 14, "Continue to first wp hit")
+			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
+				t.Fatal("breakpoint not set")
+			}
 
-		assertNoError(grp.Continue(), t, "Continue to second wp hit")
+			assertNoError(grp.Continue(), t, "Continue to second wp hit")
 
-		// Second wp hit
-		assertLineNumber(p, t, 15, "Continue to second wp hit")
+			// Second wp hit
+			assertLineNumber(p, t, 15, "Continue to second wp hit")
 
-		// Wp out of scope
-		assertWpOOS(t, p, grp, wp_oos_pc)
-	})
+			// Wp out of scope
+			assertWpOOS(t, p, grp, wp_oos_pc)
+		})
 }
 
 func TestWatchpointsSoftwareBasic(t *testing.T) {
@@ -5526,6 +5533,7 @@ func TestWatchpointsBasic(t *testing.T) {
 	WatchpointsBasic(t, proc.WatchHardware)
 }
 
+// Tests clear when no other sw wp exist on same page
 func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 	skipOn(t, "not implemented", "freebsd")
 	skipOn(t, "not implemented", "386")
@@ -5540,59 +5548,60 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 	}
 	position5 := []int{40, 41}
 
-	withTestProcess("databpeasy", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
-		setFunctionBreakpoint(p, t, "main.main")
-		setFileBreakpoint(p, t, fixture.Source, 21) // Position 2 breakpoint
-		setFileBreakpoint(p, t, fixture.Source, 27) // Position 4 breakpoint
-		assertNoError(grp.Continue(), t, "Continue 0")
-		assertLineNumber(p, t, 13, "Continue 0") // Position 0
+	withTestProcessArgs("databpeasy", t, ".", []string{}, protest.AllNonOptimized,
+		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
+			setFunctionBreakpoint(p, t, "main.main")
+			setFileBreakpoint(p, t, fixture.Source, 21) // Position 2 breakpoint
+			setFileBreakpoint(p, t, fixture.Source, 27) // Position 4 breakpoint
+			assertNoError(grp.Continue(), t, "Continue 0")
+			assertLineNumber(p, t, 13, "Continue 0") // Position 0
 
-		scope, err := proc.GoroutineScope(p, p.CurrentThread())
-		assertNoError(err, t, "GoroutineScope")
+			scope, err := proc.GoroutineScope(p, p.CurrentThread())
+			assertNoError(err, t, "GoroutineScope")
 
-		// Set globalvar1, write
-		bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
-		assertNoError(err, t, "SetDataBreakpoint(write-only)")
+			// Set globalvar1, write
+			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
+			assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
-		// Hit globalvar1 at position1
-		assertNoError(grp.Continue(), t, "Continue 1")
-		assertLineNumberIn(p, t, position1, "Continue 1") // Position 1
+			// Hit globalvar1 at position1
+			assertNoError(grp.Continue(), t, "Continue 1")
+			assertLineNumberIn(p, t, position1, "Continue 1") // Position 1
 
-		if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
-			t.Fatal("breakpoint not set")
-		}
+			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
+				t.Fatal("breakpoint not set")
+			}
 
-		// Clear globalvar1
-		assertNoError(p.ClearBreakpoint(bp.Addr), t, "ClearBreakpoint")
+			// Clear globalvar1
+			assertNoError(p.ClearBreakpoint(bp.Addr), t, "ClearBreakpoint")
 
-		// Continue to bp at 21
-		assertNoError(grp.Continue(), t, "Continue 2")
-		assertLineNumber(p, t, 21, "Continue 2") // Position 2
+			// Continue to bp at 21
+			assertNoError(grp.Continue(), t, "Continue 2")
+			assertLineNumber(p, t, 21, "Continue 2") // Position 2
 
-		// Set globalvar1, read/write
-		_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl)
-		assertNoError(err, t, "SetDataBreakpoint(read-write)")
+			// Set globalvar1, read/write
+			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl)
+			assertNoError(err, t, "SetDataBreakpoint(read-write)")
 
-		// Hit globalvar1 at 22
-		assertNoError(grp.Continue(), t, "Continue 3")
-		assertLineNumber(p, t, 22, "Continue 3") // Position 3
+			// Hit globalvar1 at 22
+			assertNoError(grp.Continue(), t, "Continue 3")
+			assertLineNumber(p, t, 22, "Continue 3") // Position 3
 
-		// Clear globalvar1
-		assertNoError(p.ClearBreakpoint(bp.Addr), t, "ClearBreakpoint")
+			// Clear globalvar1
+			assertNoError(p.ClearBreakpoint(bp.Addr), t, "ClearBreakpoint")
 
-		// Continue to bp at 27
-		assertNoError(grp.Continue(), t, "Continue 4")
-		assertLineNumber(p, t, 27, "Continue 4") // Position 4
+			// Continue to bp at 27
+			assertNoError(grp.Continue(), t, "Continue 4")
+			assertLineNumber(p, t, 27, "Continue 4") // Position 4
 
-		// Set globalvar1, write
-		t.Logf("setting final breakpoint")
-		_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
-		assertNoError(err, t, "SetDataBreakpoint(write-only, again)")
+			// Set globalvar1, write
+			t.Logf("setting final breakpoint")
+			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
+			assertNoError(err, t, "SetDataBreakpoint(write-only, again)")
 
-		// Hit globalvar1 at position5
-		assertNoError(grp.Continue(), t, "Continue 5")
-		assertLineNumberIn(p, t, position5, "Continue 5") // Position 5
-	})
+			// Hit globalvar1 at position5
+			assertNoError(grp.Continue(), t, "Continue 5")
+			assertLineNumberIn(p, t, position5, "Continue 5") // Position 5
+		})
 }
 
 func TestWatchpointsSoftwareCounts(t *testing.T) {
@@ -5613,43 +5622,44 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 	}
 	protest.AllowRecording(t)
 
-	withTestProcess("databpcountstest", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
-		setFunctionBreakpoint(p, t, "main.main")
-		assertNoError(grp.Continue(), t, "Continue 0")
+	withTestProcessArgs("databpcountstest", t, ".", []string{}, protest.AllNonOptimized,
+		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
+			setFunctionBreakpoint(p, t, "main.main")
+			assertNoError(grp.Continue(), t, "Continue 0")
 
-		scope, err := proc.GoroutineScope(p, p.CurrentThread())
-		assertNoError(err, t, "GoroutineScope")
+			scope, err := proc.GoroutineScope(p, p.CurrentThread())
+			assertNoError(err, t, "GoroutineScope")
 
-		// Set globalvar1, write (only hits once for line 14)
-		bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
-		assertNoError(err, t, "SetWatchpoint(write-only)")
+			// Set globalvar1, write (only hits once for line 14)
+			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
+			assertNoError(err, t, "SetWatchpoint(write-only)")
 
-		// Continue until exited
-		for {
-			if err := grp.Continue(); err != nil {
-				if errors.As(err, &proc.ErrProcessExited{}) {
-					break
+			// Continue until exited
+			for {
+				if err := grp.Continue(); err != nil {
+					if errors.As(err, &proc.ErrProcessExited{}) {
+						break
+					}
+					assertNoError(err, t, "Continue()")
 				}
-				assertNoError(err, t, "Continue()")
 			}
-		}
 
-		// Check hit counts: 2 goroutines, each hits 100 times
-		t.Logf("TotalHitCount: %d", bp.Logical.TotalHitCount)
-		if bp.Logical.TotalHitCount != 200 {
-			t.Fatalf("Wrong TotalHitCount for the breakpoint (%d)", bp.Logical.TotalHitCount)
-		}
-
-		if len(bp.Logical.HitCount) != 2 {
-			t.Fatalf("Wrong number of goroutines for breakpoint (%d)", len(bp.Logical.HitCount))
-		}
-
-		for _, v := range bp.Logical.HitCount {
-			if v != 100 {
-				t.Fatalf("Wrong HitCount for breakpoint (%v)", bp.Logical.HitCount)
+			// Check hit counts: 2 goroutines, each hits 100 times
+			t.Logf("TotalHitCount: %d", bp.Logical.TotalHitCount)
+			if bp.Logical.TotalHitCount != 200 {
+				t.Fatalf("Wrong TotalHitCount for the breakpoint (%d)", bp.Logical.TotalHitCount)
 			}
-		}
-	})
+
+			if len(bp.Logical.HitCount) != 2 {
+				t.Fatalf("Wrong number of goroutines for breakpoint (%d)", len(bp.Logical.HitCount))
+			}
+
+			for _, v := range bp.Logical.HitCount {
+				if v != 100 {
+					t.Fatalf("Wrong HitCount for breakpoint (%v)", bp.Logical.HitCount)
+				}
+			}
+		})
 }
 
 func TestManualStopWhileStopped(t *testing.T) {

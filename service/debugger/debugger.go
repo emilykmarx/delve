@@ -984,7 +984,7 @@ func parseHitCondition(hitCond string) (token.Token, int, error) {
 	return opTok, val, nil
 }
 
-// ClearBreakpoint clears a breakpoint.
+// ClearBreakpoint clears a breakpoint (or watchpoint).
 func (d *Debugger) ClearBreakpoint(requestedBp *api.Breakpoint) (*api.Breakpoint, error) {
 	d.targetMutex.Lock()
 	defer d.targetMutex.Unlock()

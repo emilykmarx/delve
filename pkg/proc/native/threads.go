@@ -58,6 +58,8 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 		}()
 	} else if t.stopSignal() == syscall.SIGSEGV {
 		// Software watchpoint (spurious or not)
+		// turn on toggling for duration of stepInstruction
+		bp.AlwaysToggleMprotect = true
 		err = t.clearSoftwareWatchpoint(bp)
 		// PERF: If multiple threads segfaulted simultaneously, only call mprotect once for all
 		if err != nil {
@@ -68,6 +70,7 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			if err := t.dbp.writeSoftwareWatchpoint(t, bp); err != nil {
 				log.Panicf("Failed to re-mprotect page after stepping over %#x\n", pc)
 			}
+			bp.AlwaysToggleMprotect = false
 		}()
 	} else if bp, ok := t.dbp.FindBreakpoint(pc, false); ok {
 		// Software breakpoint
@@ -170,7 +173,13 @@ func (t *nativeThread) ThreadID() int {
 	return t.ID
 }
 
+// Un-mprotect the wp's page, if needed
 func (t *nativeThread) clearSoftwareWatchpoint(bp *proc.Breakpoint) error {
+	if !bp.AlwaysToggleMprotect {
+		if t.dbp.buddySoftwareWatchpoint(bp) {
+			return nil
+		}
+	}
 	if err := t.toggleMprotect(pageAddr(bp.Addr), false); err != nil {
 		return fmt.Errorf("could not clear software watchpoint %s", err)
 	}

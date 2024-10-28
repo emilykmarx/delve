@@ -87,6 +87,8 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 				} else {
 					// ignore
 				}
+				// turn on toggling for duration of singleStep
+				sw_wp.AlwaysToggleMprotect = true
 				err = t.clearSoftwareWatchpoint(sw_wp)
 				if err != nil {
 					return err
@@ -96,6 +98,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 					if err := t.dbp.writeSoftwareWatchpoint(t, sw_wp); err != nil {
 						log.Panicf("Failed to re-mprotect page after stepping over %#x\n", pc)
 					}
+					sw_wp.AlwaysToggleMprotect = false
 				}()
 			case sys.SIGSTOP:
 				// delayed SIGSTOP, ignore it

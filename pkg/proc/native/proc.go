@@ -599,17 +599,23 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	return nil
 }
 
-// mprotect the page containing addr
-func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, wp *proc.Breakpoint) error {
-	if wp.New {
-		// If writing a new bp, no need to mprotect if already have a bp on existing page
-		// But if replacing a wp just cleared for single-step or stack adjust, always re-mprotect
-		for _, bp := range dbp.Breakpoints().M { // if new, not in map yet
-			if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
-				if pageAddr(bp.Addr) == pageAddr(wp.Addr) {
-					return nil
-				}
+// Whether another software watchpoint exists on the same page as wp
+func (dbp *nativeProcess) buddySoftwareWatchpoint(wp *proc.Breakpoint) bool {
+	for _, bp := range dbp.Breakpoints().M {
+		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware && bp.Addr != wp.Addr {
+			if pageAddr(bp.Addr) == pageAddr(wp.Addr) {
+				return true
 			}
+		}
+	}
+	return false
+}
+
+// mprotect the page containing addr, if needed
+func (dbp *nativeProcess) writeSoftwareWatchpoint(thread *nativeThread, wp *proc.Breakpoint) error {
+	if !wp.AlwaysToggleMprotect {
+		if dbp.buddySoftwareWatchpoint(wp) {
+			return nil
 		}
 	}
 	return thread.toggleMprotect(wp.Addr, true)

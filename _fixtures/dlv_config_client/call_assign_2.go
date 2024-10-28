@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	_ "syscall"
 )
 
 func ret_tainted(tainted_param_2 int) int {

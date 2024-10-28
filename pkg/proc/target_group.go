@@ -338,7 +338,7 @@ func enableBreakpointOnTarget(p *Target, lbp *LogicalBreakpoint) error {
 	return err
 }
 
-// DisableBreakpoint disables a logical breakpoint.
+// DisableBreakpoint disables a logical breakpoint (or watchpoint).
 func (grp *TargetGroup) DisableBreakpoint(lbp *LogicalBreakpoint) error {
 	var errs []error
 	n := 0

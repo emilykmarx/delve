@@ -29,23 +29,24 @@ func getClientBin(t *testing.T) string {
 	return clientbin
 }
 
+// Tests clear when another sw wp still exists on same page
 func TestCallAndAssign1(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 25, watchexpr: "stack"},
-		{kind: CreateNonPending, lineno: 29, watchexpr: "spacer"},
-		{kind: CreateNonPending, lineno: 10, watchexpr: "tainted_param"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "tainted_param_2"},
-		{kind: CreateNonPending, lineno: 36, watchexpr: "y"},
-		{kind: CreateNonPending, lineno: 40, watchexpr: "z"},
+		{kind: CreateNonPending, lineno: 26, watchexpr: "stack"},
+		{kind: CreateNonPending, lineno: 30, watchexpr: "spacer"},
+		{kind: CreateNonPending, lineno: 11, watchexpr: "tainted_param"},
+		{kind: CreateNonPending, lineno: 17, watchexpr: "tainted_param_2"},
+		{kind: CreateNonPending, lineno: 37, watchexpr: "y"},
+		{kind: CreateNonPending, lineno: 41, watchexpr: "z"},
 	}
 	run(t, "call_assign_1.go", expected_logs)
 }
 
 func TestCallAndAssign2(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 18, watchexpr: "stack"},
-		{kind: CreateNonPending, lineno: 9, watchexpr: "tainted_param_2"},
-		{kind: CreateNonPending, lineno: 21, watchexpr: "a"},
+		{kind: CreateNonPending, lineno: 19, watchexpr: "stack"},
+		{kind: CreateNonPending, lineno: 10, watchexpr: "tainted_param_2"},
+		{kind: CreateNonPending, lineno: 22, watchexpr: "a"},
 	}
 	run(t, "call_assign_2.go", expected_logs)
 }
@@ -191,42 +192,17 @@ func TestXenon_single_query(t *testing.T) {
 	checkOutput(t, outs[0], outs[1], outs[2], expected_logs)
 }
 
-// Return true to retry
-func waitForReplay(t *testing.T, stdout *saveOutput, stderr *saveOutput) (time.Duration, bool) {
-	start := time.Now()
-	// Wait for output so can check error
-	for ; len(stdout.savedOutput) == 0; time.Sleep(time.Second) {
+func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
+	// Wait for server to start
+	for ; len(stdout.savedOutput) == 0; time.Sleep(300 * time.Millisecond) {
 	}
 	if !strings.HasPrefix(string(stdout.savedOutput), "API server listening at:") {
 		t.Fatalf("Delve server failed to start listening")
 	}
 
-	for {
-		if len(stderr.savedOutput) > 0 {
-			if strings.Contains(string(stderr.savedOutput), "check_working_counters()") {
-				// perf counters in use => try again (should resolve shortly)
-				return 0, true
-			} else {
-				t.Fatalf("Delve server errored while starting up")
-			}
-		}
-
-		err := exec.Command("bash", "-c", "ps aux | grep 'rr replay' | grep -v grep").Run()
-		if err != nil {
-			if exiterr, ok := err.(*exec.ExitError); ok {
-				if exiterr.ExitCode() == 1 {
-					// No replay yet
-					time.Sleep(time.Second)
-				} else {
-					t.Fatalf("Error in grep for replay: %v\n", err)
-				}
-			} else {
-				t.Fatalf("Error in grep for replay: %v\n", err)
-			}
-		} else {
-			// Found replay
-			return time.Since(start), false
-		}
+	// Check for error
+	if len(stderr.savedOutput) > 0 {
+		t.Fatalf("Delve server errored while starting up")
 	}
 }
 
@@ -243,7 +219,7 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 // Expect to set watchpoints for watchexprs on corresponding lines
 // Passes first line and expr as initial ones for client
 func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
-	// Start dlv server, wait for it to finish recording
+	// Start dlv server
 	listenAddr := "localhost:4040"
 	fixturePath := filepath.Join(protest.FindFixturesDir(), "dlv_config_client", testfile)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -263,21 +239,18 @@ func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
 
 	var server_out saveOutput
 	var server_err saveOutput
-	var record_time time.Duration
 
-	for retry := true; retry; {
-		server := exec.CommandContext(ctx, getDlvBin(t), "debug", "--headless", "--backend=rr",
-			"--api-version=2", "--accept-multiclient", "--listen", listenAddr, fixturePath)
-		server_out = saveOutput{}
-		server_err = saveOutput{}
-		server.Stdout = &server_out
-		server.Stderr = &server_err
-		assertNoError(server.Start(), t, "start headless instance")
-		record_time, retry = waitForReplay(t, &server_out, &server_err)
-	}
+	server := exec.CommandContext(ctx, getDlvBin(t), "debug", "--headless",
+		"--api-version=2", "--accept-multiclient", "--listen", listenAddr, fixturePath)
+	server_out = saveOutput{}
+	server_err = saveOutput{}
+	server.Stdout = &server_out
+	server.Stderr = &server_err
+	assertNoError(server.Start(), t, "start headless instance")
+	waitForServer(t, &server_out, &server_err)
 
-	// Run dlv client until exit or timeout (assume replay time <= 3x record time)
-	client_timeout := 3 * record_time
+	// Run dlv client until exit or timeout
+	client_timeout := 10 * time.Second
 	t.Logf("Starting client with timeout %v\n", client_timeout)
 	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()

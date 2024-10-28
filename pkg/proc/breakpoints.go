@@ -58,8 +58,12 @@ type Breakpoint struct {
 	HWBreakIndex      uint8 // hardware breakpoint index
 	watchStackOff     int64 // for watchpoints of stack variables, offset of the address from top of the stack
 
-	// Whether the bp was just created (used for mprotect dup-checking)
-	New bool
+	// Whether to toggle mprotect when writing/clearing
+	// When writing/clearing software watchpoints, need to consider the context when deciding whether to toggle mprotect:
+	// Client request/OOS/stack adjust => check for buddies before toggling mprotect (required for clear, ideal for write)
+	// (For stack adjust, note new wp may be on different page)
+	// Single-step => must toggle mprotect regardless of buddies
+	AlwaysToggleMprotect bool
 
 	// Breaklets is the list of overlapping breakpoints on this physical breakpoint.
 	// There can be at most one UserBreakpoint in this list but multiple internal breakpoints are allowed.
@@ -796,7 +800,6 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 		File:         f,
 		Line:         l,
 		Addr:         addr,
-		New:          true,
 	}
 
 	err := t.proc.WriteBreakpoint(newBreakpoint)
@@ -809,7 +812,6 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	newBreakpoint.Breaklets = append(newBreakpoint.Breaklets, newBreaklet)
 	setLogicalBreakpoint(newBreakpoint) // defined inline above
-	newBreakpoint.New = false           // if deleted and replaced in future, don't check for dups in mprotect
 
 	bpmap.M[addr] = newBreakpoint
 
@@ -827,7 +829,7 @@ func (bp *Breakpoint) canOverlap(kind BreakpointKind) bool {
 	return true
 }
 
-// ClearBreakpoint clears the breakpoint at addr.
+// ClearBreakpoint clears the breakpoint (or watchpoint) at addr.
 func (t *Target) ClearBreakpoint(addr uint64) error {
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()
@@ -892,7 +894,7 @@ func (t *Target) ClearSteppingBreakpoints() error {
 }
 
 // finishClearBreakpoint clears nil breaklets from the breaklet list of bp
-// and if it is empty erases the breakpoint.
+// and if it is empty erases the breakpoint (or watchpoint).
 // Returns true if the breakpoint was deleted
 func (t *Target) finishClearBreakpoint(bp *Breakpoint) (bool, error) {
 	oldBreaklets := bp.Breaklets
