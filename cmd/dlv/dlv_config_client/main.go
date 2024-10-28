@@ -10,12 +10,8 @@ import (
 
 // PERF: Avoid re-parsing files
 
-// One round of replay
-func (tc *TaintCheck) replay() {
-	fmt.Printf("\n\n*** Begin replay\n")
-	if tc.nWps(true) > 0 {
-		log.Fatalf("Existing watchpoints at start of replay")
-	}
+// Run the target until exit
+func (tc *TaintCheck) run() {
 	state := <-tc.client.Continue()
 
 	for ; !state.Exited; state = <-tc.client.Continue() {
@@ -44,25 +40,7 @@ func (tc *TaintCheck) replay() {
 		}
 	}
 
-	for wp, tainting_vals := range tc.round_done_wps {
-		tc.done_wps[wp] = tainting_vals
-	}
-	tc.round_done_wps = make(map[DoneWp]TaintingVals)
-
 	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
-	tc.client.Restart(false)
-
-	// Clear wp but keep bp (after restart - if target exited, seems we're unable to list bps)
-	bps, list_err := tc.client.ListBreakpoints(true)
-	if list_err != nil {
-		log.Fatalf("Error listing breakpoints: %v\n", list_err)
-	}
-	for _, bp := range bps {
-		if bp.WatchExpr != "" {
-			tc.client.ClearBreakpoint(bp.ID)
-		}
-	}
-
 }
 
 func main() {
@@ -80,8 +58,7 @@ func main() {
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
 
 	tc := TaintCheck{client: client,
-		pending_wps: make(map[uint64]PendingWp),
-		done_wps:    make(map[DoneWp]TaintingVals), round_done_wps: make(map[DoneWp]TaintingVals),
+		pending_wps:   make(map[uint64]PendingWp),
 		mem_param_map: make(map[uint64]TaintingVals)}
 	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
 
@@ -89,9 +66,7 @@ func main() {
 	fmt.Printf("Configuration variable: %v\n", *initial_watchexpr)
 	tc.recordPendingWp(*initial_watchexpr, init_loc, nil)
 
-	for len(tc.pending_wps) > 0 {
-		tc.replay()
-	}
+	tc.run()
 
 	fmt.Println("Detaching delve config client") // Also kills server, despite function doc (even on unmodified dlv)
 	client.Detach(false)

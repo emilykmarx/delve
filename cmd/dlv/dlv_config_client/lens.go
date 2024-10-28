@@ -21,12 +21,6 @@ type TaintingVals struct {
 	params map[TaintingParam]struct{}
 }
 
-// PC disambiguates if memory is reused for a different variable
-type DoneWp struct {
-	bp_addr uint64
-	wp_addr uint64
-}
-
 // Things that should be reset for each hit
 type Hit struct {
 	hit_bp    *api.Breakpoint
@@ -59,15 +53,8 @@ type TaintCheck struct {
 	// Value: Before hit corresp bp in any round, expr info. After, watch addr
 	pending_wps map[uint64]PendingWp
 
-	// Have already been set in an earlier round
-	// Tainting vals disambiguates if we find new ones in later round
-	done_wps map[DoneWp]TaintingVals
-
-	// Set in this round (separate from done_wps to allow re-setting wp in a round)
-	round_done_wps map[DoneWp]TaintingVals
-
 	// Memory address => config/behavior values that taint it
-	// Unlike done_wps, don't need PC - if memory is reused,
+	// Don't need PC to disambiguate - if memory is reused,
 	// old entry will have gone OOS and been removed
 	mem_param_map map[uint64]TaintingVals
 }
@@ -209,7 +196,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 }
 
 func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
-	info, ok := tc.pending_wps[bp_addr]
+	info := tc.pending_wps[bp_addr]
 	if len(info.watchexprs) == 0 && len(info.watchargs) == 0 && len(info.watchaddrs) == 0 {
 		// Nothing left pending at this bp addr
 		if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
@@ -218,11 +205,7 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 		delete(tc.pending_wps, bp_addr)
 	}
 
-	if ok {
-		fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
-	} else {
-		fmt.Printf("Exit onPendingWpBpHitDone; no more info\n")
-	}
+	fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
 }
 
 // Eval watchexpr, return var(s) to set watch on, delete expr from pending
@@ -265,20 +248,10 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 	}
 	fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
 
-	wp := DoneWp{bp_addr: bp_addr, wp_addr: watchaddr}
 	info := tc.pending_wps[bp_addr]
 
 	// 1. Check for dups
-	// Must do before CreateWatchpoint, since rr can't handle dups (#3777) - update: this is fixed
-	// TODO add test for both these dup types
-	if done_wp, ok := tc.done_wps[wp]; ok {
-		if reflect.DeepEqual(done_wp, info.tainting_vals) {
-			// Already traced this addr in a previous round and found same tainting vals => return
-			delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
-			fmt.Printf("Already traced 0x%x in previous round\n", watchaddr)
-			return
-		}
-	}
+	// TODO check have a test for this
 	if _, ok := tc.mem_param_map[watchaddr]; ok {
 		// Already currently tracing this addr => update mem-param map with any new tainting vals, return
 		tc.updateTaintingVals(info, bp_addr, watchaddr)
@@ -327,7 +300,6 @@ func (tc *TaintCheck) trySetWatchpoint(watchexpr *string, bp_addr uint64, watcha
 			tc.hit.hit_bp.Line, watchaddr)
 	}
 	delete(tc.pending_wps[bp_addr].watchaddrs, watchaddr)
-	tc.round_done_wps[wp] = info.tainting_vals
 
 	// 5. Add to mem-param map
 	tc.mem_param_map[watchaddr] = info.tainting_vals

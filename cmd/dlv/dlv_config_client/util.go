@@ -119,6 +119,28 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 	return addr1 < addr2+sz2 && addr2 < addr1+sz1
 }
 
+func (tc *TaintCheck) printBps() {
+	bps, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps {
+		if bp.WatchExpr != "" {
+			fmt.Printf("Watchpoint at %x\n", bp.Addr)
+		} else {
+			fmt.Printf("Breakpoint at %x\n", bp.Addr)
+		}
+	}
+
+}
+
+func printThreads(state *api.DebuggerState) {
+	fmt.Println("Threads:")
+	for _, th := range state.Threads {
+		fmt.Printf("%v at %v\n", th.ID, th.Function.Name_)
+	}
+}
+
 func (tc *TaintCheck) printStacktrace() {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	if err != nil {
