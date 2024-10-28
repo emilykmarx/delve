@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	_ "syscall"
+)
 
 type Conf struct {
 	search []string

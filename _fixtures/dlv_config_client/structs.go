@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"runtime"
+	_ "syscall"
 )
 
 // When a struct is copied, propagate taint of members

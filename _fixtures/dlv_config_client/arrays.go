@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	_ "syscall"
+)
 
 func main() {
 	arr := [2]int{0, 1} // initially tainted

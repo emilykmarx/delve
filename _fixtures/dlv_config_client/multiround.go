@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	_ "syscall"
+)
 
 func main() {
 	// vars[0] initially tainted, bp_addr = range stmt

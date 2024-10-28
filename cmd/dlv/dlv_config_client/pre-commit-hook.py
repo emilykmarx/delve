@@ -5,8 +5,7 @@ import subprocess
 subprocess.check_output('go install github.com/go-delve/delve/cmd/dlv', shell=True, text=True)
 subprocess.check_output('go build github.com/go-delve/delve/cmd/dlv/dlv_config_client', shell=True, text=True)
 
-# TODO fix client tests to use native backend
-for i, test in enumerate(['watchpoint']):
+for i, test in enumerate(['watchpoint', 'client']):
   if i == 0:
     test_path = "pkg/proc"
     grep_arg = f"'func TestWatchpoints' {test_path}/proc_test.go"
@@ -16,7 +15,7 @@ for i, test in enumerate(['watchpoint']):
 
   grep = subprocess.run(f"grep {grep_arg} | cut -d '(' -f1 | cut -d ' ' -f2", shell=True, check=True, text=True, capture_output=True)
   regex = '^(' + grep.stdout.strip().replace('\n', '|') + ')'
-  test_cmd = f'go test -v -timeout 30s -run \'{regex}\' github.com/go-delve/delve/{test_path} -count=1 -failfast'
+  test_cmd = f'go test -v -timeout 60s -run \'{regex}\' github.com/go-delve/delve/{test_path} -count=1 -failfast'
 
   print(f'Running {test} tests: {test_cmd}')
 

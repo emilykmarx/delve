@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	_ "syscall"
+)
 
 type Name struct {
 	Data   [255]byte

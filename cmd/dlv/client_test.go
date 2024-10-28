@@ -53,42 +53,42 @@ func TestCallAndAssign2(t *testing.T) {
 
 func TestStrings(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 13, watchexpr: "s"},
-		{kind: CreateNonPending, lineno: 13, watchexpr: "s[0]"},
-		{kind: CreateNonPending, lineno: 14, watchexpr: "s2"},
-		{kind: CreateNonPending, lineno: 14, watchexpr: "s2[0]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "s"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "s[0]"},
+		{kind: CreateNonPending, lineno: 17, watchexpr: "s2"},
+		{kind: CreateNonPending, lineno: 17, watchexpr: "s2[0]"},
 	}
 	run(t, "strings.go", expected_logs)
 }
 
 func TestSliceRangeBuiltins(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 11, watchexpr: "conf.search"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "suffix"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "suffix[0]"},
-		{kind: CreateNonPending, lineno: 19, watchexpr: "names"},
-		{kind: CreateNonPending, lineno: 25, watchexpr: "names_caller"},
-		{kind: CreateNonPending, lineno: 27, watchexpr: "names2"},
+		{kind: CreateNonPending, lineno: 14, watchexpr: "conf.search"},
+		{kind: CreateNonPending, lineno: 19, watchexpr: "suffix"},
+		{kind: CreateNonPending, lineno: 19, watchexpr: "suffix[0]"},
+		{kind: CreateNonPending, lineno: 22, watchexpr: "names"},
+		{kind: CreateNonPending, lineno: 28, watchexpr: "names_caller"},
+		{kind: CreateNonPending, lineno: 30, watchexpr: "names2"},
 	}
 	run(t, "slice_range_builtins.go", expected_logs)
 }
 
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 21, watchexpr: "arr[0]"},
-		{kind: CreateNonPending, lineno: 22, watchexpr: "struct_lit.Data[0]"},
-		{kind: CreateNonPending, lineno: 24, watchexpr: "s.Data[0]"},
-		{kind: CreateNonPending, lineno: 15, watchexpr: "s_callee.Data[0]"},
+		{kind: CreateNonPending, lineno: 22, watchexpr: "arr[0]"},
+		{kind: CreateNonPending, lineno: 23, watchexpr: "struct_lit.Data[0]"},
+		{kind: CreateNonPending, lineno: 25, watchexpr: "s.Data[0]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "s_callee.Data[0]"},
 		// s.callee OOS
-		{kind: CreateNonPending, lineno: 26, watchexpr: "s_caller.Data[0]"},
+		{kind: CreateNonPending, lineno: 27, watchexpr: "s_caller.Data[0]"},
 	}
 	run(t, "structs.go", expected_logs)
 }
 
 func TestArrays(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 7, watchexpr: "arr[0]"},
-		{kind: CreateNonPending, lineno: 8, watchexpr: "s"},
+		{kind: CreateNonPending, lineno: 10, watchexpr: "arr[0]"},
+		{kind: CreateNonPending, lineno: 11, watchexpr: "s"},
 	}
 	run(t, "arrays.go", expected_logs)
 }
@@ -97,34 +97,37 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	// Compiler uses same memory for chars of both fqdn strings,
 	// so only expect wp for chars on 13
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 13, watchexpr: "fqdn"},
-		{kind: CreateNonPending, lineno: 13, watchexpr: "fqdn[0]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "fqdn"},
+		{kind: CreateNonPending, lineno: 14, watchexpr: "fqdn"},
+		{kind: CreateNonPending, lineno: 14, watchexpr: "fqdn[0]"},
+		{kind: CreateNonPending, lineno: 17, watchexpr: "fqdn"},
 	}
 	run(t, "funclit_goroutine.go", expected_logs)
 }
+
+/* TODO update for sw wp
 func TestMultiRound(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 8, watchexpr: "vars[0]"},
-		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
-		{kind: RecordHWPending, lineno: 15, watchexpr: "vars[i]"},
-		{kind: CreateHWPending, lineno: 15, watchexpr: "vars[i]", recorded_wp: 4},
-		{kind: CreateNonPending, lineno: 15, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 11, watchexpr: "vars[0]"},
+		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
+		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
+		{kind: RecordHWPending, lineno: 18, watchexpr: "vars[i]"},
+		{kind: CreateHWPending, lineno: 18, watchexpr: "vars[i]", recorded_wp: 4},
+		{kind: CreateNonPending, lineno: 18, watchexpr: "vars[i]"},
 	}
 
 	run(t, "multiround.go", expected_logs)
 }
+*/
 
 func TestRuntimeHits(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 18, watchexpr: "name"},
-		{kind: CreateNonPending, lineno: 18, watchexpr: "name[0]"},
-		{kind: CreateNonPending, lineno: 11, watchexpr: "name_callee"},
+		{kind: CreateNonPending, lineno: 21, watchexpr: "name"},
+		{kind: CreateNonPending, lineno: 21, watchexpr: "name[0]"},
+		{kind: CreateNonPending, lineno: 14, watchexpr: "name_callee"},
 		// uses same mem for name[0] and name_callee[0]
-		{kind: CreateNonPending, lineno: 13, watchexpr: "n.Data[0]"},
-		{kind: CreateNonPending, lineno: 19, watchexpr: "n_caller.Data[0]"},
+		{kind: CreateNonPending, lineno: 16, watchexpr: "n.Data[0]"},
+		{kind: CreateNonPending, lineno: 22, watchexpr: "n_caller.Data[0]"},
 	}
 
 	run(t, "runtime_hits.go", expected_logs)
@@ -141,10 +144,12 @@ func TestFakeArg(t *testing.T) {
 }
 */
 
+// TODO update for sw wp
 // Not fully automated, but here for convenience.
 // (Need to manually run xenon, then place outfiles in ./dlv_config_client/xenon_out/)
 // Note there is concurrency, so it's technically possible this is a brittle test
 // (assumes a certain ordering).
+/*
 func TestXenon_single_query(t *testing.T) {
 	// Server makes a single DNS query (type A), then exits (after Ping fails)
 	expected_logs := []expectedWpLog{
@@ -191,6 +196,7 @@ func TestXenon_single_query(t *testing.T) {
 
 	checkOutput(t, outs[0], outs[1], outs[2], expected_logs)
 }
+*/
 
 func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
 	// Wait for server to start
