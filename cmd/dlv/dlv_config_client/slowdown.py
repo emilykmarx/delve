@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 '''
 Plot things related to slowdown due to watchpoints.
+Update the server and client commands to match the desired target.
 '''
 
 import subprocess
@@ -19,7 +20,7 @@ trap_trapth_all = []
 
 def run(no_watchpoints):
   server_cmd = 'dlv exec --headless --api-version=2 --accept-multiclient --listen=:4040 ./sw_wp_no_prints'
-  client_cmd = './dlv_config_client -initial_bp_file=./_fixtures/dlv_config_client/sw_wp_no_prints.go -initial_bp_line=12'
+  client_cmd = 'dlv_config_client -initial_bp_file=./_fixtures/dlv_config_client/sw_wp_no_prints.go -initial_bp_line=12'
   if not no_watchpoints:
     client_cmd += ' -initial_watchexpr=x'
 
