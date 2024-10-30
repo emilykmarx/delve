@@ -860,22 +860,6 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 	return trapthread, nil
 }
 
-// Check if the byte(s) preceding pc match a breakpoint instr (int 0x3, int3)
-func isHardcodedBreakpoint(dbp *nativeProcess, th *nativeThread, pc uint64) bool {
-	for _, bpinstr := range [][]byte{
-		dbp.BinInfo().Arch.BreakpointInstruction(),
-		dbp.BinInfo().Arch.AltBreakpointInstruction()} {
-		if bpinstr == nil {
-			continue
-		}
-		buf := make([]byte, len(bpinstr))
-		_, _ = th.ReadMemory(buf, pc-uint64(len(buf)))
-		if bytes.Equal(buf, bpinstr) {
-			return true
-		}
-	}
-	return false
-}
 func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativeThread, switchTrapthread *bool) error {
 	if err := linutil.ElfUpdateSharedObjects(dbp); err != nil {
 		return err
@@ -909,7 +893,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 		if th.stopSignal() == syscall.SIGTRAP && th.os.setbp {
 			if th.os.phantomBreakpointPC == pc {
 				// phantom bp
-			} else if isHardcodedBreakpoint(dbp, th, pc) {
+			} else if bpsize := proc.IsHardcodedBreakpoint(dbp, pc); bpsize > 0 {
 				// hardcoded bp
 			} else if th.CurrentBreakpoint.Breakpoint != nil {
 				// regular bp
@@ -928,28 +912,30 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 			}
 		}
 
-		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && (th.stopSignal() == sys.SIGTRAP) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
+		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
 			manualStop := false
 			if th.ThreadID() == trapthread.ThreadID() {
 				manualStop = cctx.GetManualStopRequested()
 			}
 
-			// TODO think through if we need to do anything for phantom sw wp hits
-
 			if !manualStop && th.os.phantomBreakpointPC == pc {
-				// Thread received a SIGTRAP but we don't have a breakpoint for it and
+				// Thread received a SIGTRAP or SIGSEGV but we don't have a breakpoint for it and
 				// it wasn't sent by a manual stop request. It's either a hardcoded
 				// breakpoint or a phantom breakpoint hit (a breakpoint that was hit but
 				// we have removed before we could receive its signal). Check if it is a
-				// hardcoded breakpoint, otherwise rewind the thread.
-				if !isHardcodedBreakpoint(dbp, th, pc) {
+				// hardcoded breakpoint, otherwise rewind the thread if was SIGTRAP.
+				if bpsize := proc.IsHardcodedBreakpoint(dbp, pc); bpsize == 0 {
 					// phantom breakpoint hit
-					_ = th.setPC(pc - uint64(len(dbp.BinInfo().Arch.BreakpointInstruction())))
+					if th.stopSignal() == sys.SIGTRAP {
+						_ = th.setPC(pc - uint64(len(dbp.BinInfo().Arch.BreakpointInstruction())))
+					}
 					th.os.setbp = false
 					if trapthread.ThreadID() == th.ThreadID() {
 						// Will switch to a different thread for trapthread because we don't
 						// want pkg/proc to believe that this thread was stopped by a
 						// hardcoded breakpoint.
+						// (Unsure if software watchpoints can have phantom hits, but doesn't hurt to
+						// switch trapthread, and don't want pkg/proc to check for hardcoded bp)
 						fmt.Printf("Phantom breakpoint hit: PC (advanced) %#x, thread %v\n", pc, th.ThreadID())
 						*switchTrapthread = true
 					}

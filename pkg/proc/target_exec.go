@@ -1549,33 +1549,36 @@ func (t *Target) clearHardcodedBreakpoints() {
 	}
 }
 
+// Check if the byte(s) preceding pc match a breakpoint instr (int 0x3, int3)
+func IsHardcodedBreakpoint(dbp ProcessInternal, pc uint64) uint64 {
+	mem := dbp.Memory()
+	for _, bpinstr := range [][]byte{
+		dbp.BinInfo().Arch.BreakpointInstruction(),
+		dbp.BinInfo().Arch.AltBreakpointInstruction()} {
+		if bpinstr == nil {
+			continue
+		}
+		buf := make([]byte, len(bpinstr))
+		pc2 := pc
+		if dbp.BinInfo().Arch.BreakInstrMovesPC() {
+			pc2 -= uint64(len(bpinstr))
+		}
+		_, _ = mem.ReadMemory(buf, pc2)
+		if bytes.Equal(buf, bpinstr) {
+			return uint64(len(bpinstr))
+		}
+	}
+	return 0
+}
+
 // handleHardcodedBreakpoints looks for threads stopped at a hardcoded
 // breakpoint (i.e. a breakpoint instruction, like INT 3, hardcoded in the
 // program's text) and sets a fake breakpoint on them with logical id
 // hardcodedBreakpointID.
 // It checks all threads that: have no bp set, and are trapthread or SoftExc() is true
 func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread, threads []Thread) error {
-	mem := t.Memory()
 	arch := t.BinInfo().Arch
 	recorded, _ := t.recman.Recorded()
-
-	isHardcodedBreakpoint := func(thread Thread, pc uint64) uint64 {
-		for _, bpinstr := range [][]byte{arch.BreakpointInstruction(), arch.AltBreakpointInstruction()} {
-			if bpinstr == nil {
-				continue
-			}
-			buf := make([]byte, len(bpinstr))
-			pc2 := pc
-			if arch.BreakInstrMovesPC() {
-				pc2 -= uint64(len(bpinstr))
-			}
-			_, _ = mem.ReadMemory(buf, pc2)
-			if bytes.Equal(buf, bpinstr) {
-				return uint64(len(bpinstr))
-			}
-		}
-		return 0
-	}
 
 	stepOverBreak := func(thread Thread, pc uint64) {
 		if arch.BreakInstrMovesPC() {
@@ -1584,7 +1587,7 @@ func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread,
 		if recorded {
 			return
 		}
-		if bpsize := isHardcodedBreakpoint(thread, pc); bpsize > 0 {
+		if bpsize := IsHardcodedBreakpoint(t.proc, pc); bpsize > 0 {
 			setPC(thread, pc+bpsize)
 		}
 	}
@@ -1647,7 +1650,7 @@ func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread,
 			// preceding instruction is a hardcoded breakpoint.
 			// We explicitly check for entry points of functions because the space
 			// between functions is usually filled with hardcoded breakpoints.
-			if (loc.Fn == nil || loc.Fn.Entry != loc.PC) && isHardcodedBreakpoint(thread, loc.PC) > 0 {
+			if (loc.Fn == nil || loc.Fn.Entry != loc.PC) && IsHardcodedBreakpoint(t.proc, loc.PC) > 0 {
 				stepOverBreak(thread, loc.PC)
 				setHardcodedBreakpoint(thread, loc)
 			}
