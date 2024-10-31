@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"reflect"
+	"strings"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
@@ -627,16 +628,15 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 
 // Set watchpoint whose addr and size is already known
 // EvalScope just used to determine stack location
-func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, watchaddr uint64, sz int64, wtype WatchType,
+func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr string, watchaddr uint64, sz int64, wtype WatchType,
 	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
 	stackWatch := scope.g != nil && !scope.g.SystemStack && watchaddr >= scope.g.stack.lo && watchaddr < scope.g.stack.hi
 
 	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
 	if err != nil {
-		fmt.Printf("ZZEM failed to setBreakpointInternal\n")
 		return bp, err
 	}
-	bp.WatchExpr = "NoEval" // We could use the expr used to record the pending wp, but not needed
+	bp.WatchExpr = expr
 
 	if stackWatch {
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
@@ -648,8 +648,29 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, watchaddr 
 	return bp, nil
 }
 
-// Eval expr, check the result for watchability
+type SliceOfSlices struct{}
+
+func (s *SliceOfSlices) Error() string {
+	return "slice of slices"
+}
+
+type SliceOfStrings struct {
+	// The slice
+	Slicexv *Variable
+}
+
+func (s SliceOfStrings) Error() string {
+	return "slice of strings"
+}
+
+// Eval expr, check the result for watchability.
+// Set xv.Addr and xv.Watchsz to the watched region.
 func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error) {
+	// To eval slice, must remove [x:y] syntax
+	if strings.Contains(expr, ":") {
+		expr = strings.Split(expr, "[")[0]
+	}
+
 	n, err := parser.ParseExpr(expr)
 	if err != nil {
 		return nil, err
@@ -671,20 +692,30 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 	if xv.Name == "" {
 		xv.Name = expr
 	}
+	// TODO (minor): Below assumes software impl (i.e. can watch sz > 8)
 	sz := xv.DwarfType.Size()
 
 	if sz <= 0 {
 		return xv, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
 	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
-		// Watch only the addr field of string/slice - ops that only access len/cap do not propagate taint for now
-		sz = 8
-	} else if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
-		sz = 8
+		// watch chars
+		xv.Addr = xv.Base
+		sz = xv.Len
 	} else if _, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
-		// Watch only the first byte of array - TODO works for slicing, but not indexing into a byte past the first
-		return t.EvalWatchexpr(scope, expr+"[0]")
+		sz = xv.Len
+		fmt.Printf("EvalWatchexpr: array of len %v, addr %x\n", sz, xv.Addr)
+	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
+		// watch backing array
+		xv.Addr = xv.Base
+		sz = xv.Len
+		fmt.Printf("EvalWatchexpr: slice of len %v, addr %x\n", sz, xv.Addr)
+		// If slice elements are a reference type (string or slice), watch the elements' underlying data (chars or backing array)
+		if _, ok := slice.ElemType.(*godwarf.StringType); ok {
+			fmt.Println("STR TYPE")
+			return xv, SliceOfStrings{Slicexv: xv}
+		}
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
-		return xv, fmt.Errorf("can not watch variable of type %s, sz %v: too large", xv.DwarfType.String(), sz)
+		return xv, fmt.Errorf("can not watch variable of type %s, sz %v: type not supported", xv.DwarfType.String(), sz)
 	}
 
 	xv.Watchsz = sz
@@ -694,16 +725,21 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
 func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
+	fmt.Printf("SetWp: %v\n", expr)
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
 
 	xv, err := t.EvalWatchexpr(scope, expr)
-	if err != nil {
+	if _, ok := err.(SliceOfStrings); ok {
+		// Debugger will call SetWatchpoint for each string
+		fmt.Println("Bp SetWp return SoS")
+		return nil, SliceOfStrings{Slicexv: xv}
+	} else if err != nil {
 		return nil, err
 	}
 
-	bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
+	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
 	if err != nil {
 		return bp, err
 	}

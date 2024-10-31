@@ -584,7 +584,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	}
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
 	if mprotect_ret := sys.Errno(int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
-		return fmt.Errorf("mprotect at %#x failed: errno %v", prev_pc, mprotect_ret.Error())
+		return fmt.Errorf("mprotect for page addr %#x failed: errno %v", pageAddr(addr), mprotect_ret.Error())
 	}
 
 	// 3. Restore registers

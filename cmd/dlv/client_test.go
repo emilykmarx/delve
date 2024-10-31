@@ -13,8 +13,6 @@ import (
 	protest "github.com/go-delve/delve/pkg/proc/test"
 )
 
-// TODO add tests for runtime hits
-
 // Build client
 func getClientBin(t *testing.T) string {
 	clientbin := filepath.Join(t.TempDir(), "client.exe")
@@ -32,86 +30,75 @@ func getClientBin(t *testing.T) string {
 // Tests clear when another sw wp still exists on same page
 func TestCallAndAssign1(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 26, watchexpr: "stack"},
-		{kind: CreateNonPending, lineno: 30, watchexpr: "spacer"},
-		{kind: CreateNonPending, lineno: 11, watchexpr: "tainted_param"},
-		{kind: CreateNonPending, lineno: 17, watchexpr: "tainted_param_2"},
-		{kind: CreateNonPending, lineno: 37, watchexpr: "y"},
-		{kind: CreateNonPending, lineno: 41, watchexpr: "z"},
+		{kind: CreateWatchpoint, lineno: 26, watchexpr: "stack"},
+		{kind: CreateWatchpoint, lineno: 30, watchexpr: "spacer"},
+		{kind: CreateWatchpoint, lineno: 11, watchexpr: "tainted_param"},
+		{kind: CreateWatchpoint, lineno: 17, watchexpr: "tainted_param_2"},
+		{kind: CreateWatchpoint, lineno: 37, watchexpr: "y"},
+		{kind: CreateWatchpoint, lineno: 41, watchexpr: "z"},
 	}
 	run(t, "call_assign_1.go", expected_logs)
 }
 
 func TestCallAndAssign2(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 19, watchexpr: "stack"},
-		{kind: CreateNonPending, lineno: 10, watchexpr: "tainted_param_2"},
-		{kind: CreateNonPending, lineno: 22, watchexpr: "a"},
+		{kind: CreateWatchpoint, lineno: 19, watchexpr: "stack"},
+		{kind: CreateWatchpoint, lineno: 10, watchexpr: "tainted_param_2"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "a"},
 	}
 	run(t, "call_assign_2.go", expected_logs)
 }
 
 func TestStrings(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 16, watchexpr: "s"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "s[0]"},
-		{kind: CreateNonPending, lineno: 17, watchexpr: "s2"},
-		{kind: CreateNonPending, lineno: 17, watchexpr: "s2[0]"},
+		{kind: CreateWatchpoint, lineno: 15, watchexpr: "s"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s2"},
+		{kind: CreateWatchpoint, lineno: 19, watchexpr: "i"},
 	}
 	run(t, "strings.go", expected_logs)
 }
 
-func TestSliceRangeBuiltins(t *testing.T) {
+func TestArraysRangeBuiltins(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 14, watchexpr: "conf.search"},
-		{kind: CreateNonPending, lineno: 19, watchexpr: "suffix"},
-		{kind: CreateNonPending, lineno: 19, watchexpr: "suffix[0]"},
-		{kind: CreateNonPending, lineno: 22, watchexpr: "names"},
-		{kind: CreateNonPending, lineno: 28, watchexpr: "names_caller"},
-		{kind: CreateNonPending, lineno: 30, watchexpr: "names2"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "conf.search"},
+		{kind: CreateWatchpoint, lineno: 19, watchexpr: "suffix"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "names"},
+		{kind: CreateWatchpoint, lineno: 30, watchexpr: "names2[:]"},
 	}
-	run(t, "slice_range_builtins.go", expected_logs)
+	run(t, "arrays_range_builtins.go", expected_logs)
 }
 
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 22, watchexpr: "arr[0]"},
-		{kind: CreateNonPending, lineno: 23, watchexpr: "struct_lit.Data[0]"},
-		{kind: CreateNonPending, lineno: 25, watchexpr: "s.Data[0]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "s_callee.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "arr[0]"},
+		{kind: CreateWatchpoint, lineno: 23, watchexpr: "struct_lit.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 25, watchexpr: "s.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s_callee.Data[0]"},
 		// s.callee OOS
-		{kind: CreateNonPending, lineno: 27, watchexpr: "s_caller.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 27, watchexpr: "s_caller.Data[0]"},
 	}
 	run(t, "structs.go", expected_logs)
-}
-
-func TestArrays(t *testing.T) {
-	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 10, watchexpr: "arr[0]"},
-		{kind: CreateNonPending, lineno: 11, watchexpr: "s"},
-	}
-	run(t, "arrays.go", expected_logs)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
 	// Compiler uses same memory for chars of both fqdn strings,
 	// so only expect wp for chars on 13
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 14, watchexpr: "fqdn"},
-		{kind: CreateNonPending, lineno: 14, watchexpr: "fqdn[0]"},
-		{kind: CreateNonPending, lineno: 17, watchexpr: "fqdn"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "fqdn"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "fqdn[0]"},
+		{kind: CreateWatchpoint, lineno: 17, watchexpr: "fqdn"},
 	}
 	run(t, "funclit_goroutine.go", expected_logs)
 }
 
 func TestMultiRound(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 11, watchexpr: "vars[0]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
-		{kind: CreateNonPending, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateWatchpoint, lineno: 11, watchexpr: "vars[0]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "vars[i]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "vars[i]"},
 	}
 
 	run(t, "multiround.go", expected_logs)
@@ -119,12 +106,12 @@ func TestMultiRound(t *testing.T) {
 
 func TestRuntimeHits(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 21, watchexpr: "name"},
-		{kind: CreateNonPending, lineno: 21, watchexpr: "name[0]"},
-		{kind: CreateNonPending, lineno: 14, watchexpr: "name_callee"},
+		{kind: CreateWatchpoint, lineno: 21, watchexpr: "name"},
+		{kind: CreateWatchpoint, lineno: 21, watchexpr: "name[0]"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "name_callee"},
 		// uses same mem for name[0] and name_callee[0]
-		{kind: CreateNonPending, lineno: 16, watchexpr: "n.Data[0]"},
-		{kind: CreateNonPending, lineno: 22, watchexpr: "n_caller.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "n.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "n_caller.Data[0]"},
 	}
 
 	run(t, "runtime_hits.go", expected_logs)
@@ -133,8 +120,8 @@ func TestRuntimeHits(t *testing.T) {
 /* Need to investigate this - per asm, doesn't seem like should be fake...
 func TestFakeArg(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateNonPending, lineno: 13, watchexpr: "a"},
-		{kind: CreateNonPending, lineno: 6, watchexpr: "addrs"},
+		{kind: CreateWatchpoint, lineno: 13, watchexpr: "a"},
+		{kind: CreateWatchpoint, lineno: 6, watchexpr: "addrs"},
 	}
 
 	run(t, "fake_xv.go", expected_logs)
@@ -152,18 +139,18 @@ func TestXenon_single_query(t *testing.T) {
 	expected_logs := []expectedWpLog{
 		// ROUND 1
 		// dnsconfig_unix.go:dnsReadConfig()
-		{kind: CreateNonPending, lineno: 144, watchexpr: "conf.search"},
+		{kind: CreateWatchpoint, lineno: 144, watchexpr: "conf.search"},
 
 		// dnsclient_unix.go:nameList()
-		{kind: CreateNonPending, lineno: 510, watchexpr: "suffix"},
-		{kind: CreateNonPending, lineno: 510, watchexpr: "suffix[0]"},
-		{kind: CreateNonPending, lineno: 515, watchexpr: "names"},
+		{kind: CreateWatchpoint, lineno: 510, watchexpr: "suffix"},
+		{kind: CreateWatchpoint, lineno: 510, watchexpr: "suffix[0]"},
+		{kind: CreateWatchpoint, lineno: 515, watchexpr: "names"},
 
 		// OOS: suffix, names
 
 		// dnsclient_unix.go:goLookupIPCNAMEOrder()
-		{kind: CreateNonPending, lineno: 664, watchexpr: "fqdn"},
-		{kind: CreateNonPending, lineno: 664, watchexpr: "fqdn[0]"},
+		{kind: CreateWatchpoint, lineno: 664, watchexpr: "fqdn"},
+		{kind: CreateWatchpoint, lineno: 664, watchexpr: "fqdn[0]"},
 
 		// dnsclient_unix.go:queryFn()
 		{kind: RecordHWPending, lineno: 651, watchexpr: "fqdn"},
@@ -290,7 +277,7 @@ func checkOutput(t *testing.T, client_err []byte, server_err []byte, client_out 
 type WpLogType string
 
 const (
-	CreateNonPending WpLogType = "CreateNonPending"
+	CreateWatchpoint WpLogType = "CreateWatchpoint"
 )
 
 // A log message about a watchpoint
@@ -299,11 +286,10 @@ type expectedWpLog struct {
 	lineno    int
 	watchexpr string
 	// to be filled in
-	watchaddr uint64 // Can remove?
+	watchaddr uint64
 }
 
 func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog) {
-	// CreateNonPending
 	watchexpr_fmt := "%s lineno %d watchexpr %s watchaddr 0x%x"
 	next_wp_log := 0         // index of the next log we expect to see
 	expect_memparam := false // whether we expect to see a memory-parameter update next
@@ -317,6 +303,7 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 
 		// Check for creating wps and updating mem-param map, in expected order
 		if _, err := fmt.Sscanf(line, watchexpr_fmt, &kind, &lineno, &watchexpr, &watchaddr); err == nil {
+			// CreateWatchpoint
 			if expect_memparam {
 				t.Fatalf("Client did not log expected update of memory-parameter map for %+v", expected_logs[next_wp_log-1])
 			}
@@ -326,6 +313,7 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 			expected_logs[next_wp_log].watchaddr = watchaddr
 			next_wp_log++
 		} else if _, err := fmt.Sscanf(line, mem_param_fmt, &watchaddr, &watchexpr); err == nil {
+			// Memory-param map
 			if !expect_memparam {
 				t.Fatalf("Found unexpected memory-parameter map update: %v\n", line)
 			}
@@ -343,7 +331,7 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 	assertEqual(t, len(expected_logs), next_wp_log, "not enough wp logs")
 
 	// Check no unexpected wps were created
-	n_wp_logs := strings.Count(string(stdout), string(CreateNonPending))
+	n_wp_logs := strings.Count(string(stdout), string(CreateWatchpoint))
 	assertEqual(t, len(expected_logs), n_wp_logs, "too many wp logs")
 
 }

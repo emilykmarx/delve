@@ -162,7 +162,7 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 		Start_time = time.Now()
 	} else {
 		runtime_s := time.Since(Start_time).Seconds()
-		// TODO for metrics: Investigate where Launch() is called
+		// TODO for metrics: Investigate where Launch() is called - ah, from (d *Debugger) Launch()
 		// (Currently recorded runtime looks to capture some launch/detach logic).
 		// Also assert if any spurious traps, or remove spurious trap counting.
 		fmt.Printf("RUNTIME_SEC %v\n", runtime_s)

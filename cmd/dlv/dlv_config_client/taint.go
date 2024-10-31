@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -8,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/service/api"
 )
 
@@ -78,7 +80,6 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
  * (e.g. .field for struct, "" for int)
  * Requires expr to be in scope. */
 func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
-	loadcfg := api.LoadConfig{FollowPointers: true, MaxStructFields: -1}
 	var overlap_expr *string
 	found_overlap := ""
 	composite_lit := false
@@ -109,22 +110,16 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 				// and multiple tainted fields
 			}
 		case ast.Expr:
+			fmt.Printf("eval var %v\n", exprToString(node.(ast.Expr)))
 			// TODO check for incomplete loads (see client API doc)
-			xv, err := tc.client.EvalVariable(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)), loadcfg)
+			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)))
 			if err != nil || xv.Addr == 0 { // Addr == 0 for e.g. x + 1, but not e.g. x[1]
 				// Try evaluating any children
 			} else {
 				for _, watch_addr := range tc.hit.hit_bp.Addrs {
-					// TODO get these sizes (once support tainted composite types in delve) - bp UserData?
-					// For now, overapproximate
-					watch_size := uint64(8)
-					xv_size := uint64(8)
-
-					// TODO the first-byte wp should go out of scope with string (currently doesn't bc on heap)
-					if xv.RealType == "string" && memOverlap(xv.Base, 1, watch_addr, watch_size) {
-						// For strings, wp may hit for first byte only, not for pointer
-						overlap_expr = &found_overlap
-					}
+					watch_size := uint64((proc.WatchType)(tc.hit.hit_bp.WatchType).Size())
+					xv_size := uint64(xv.Watchsz)
+					fmt.Printf("check overlap; watch_size %v, xv_size %v\n", watch_size, xv_size)
 
 					if memOverlap(xv.Addr, xv_size, watch_addr, watch_size) {
 						if composite_lit {

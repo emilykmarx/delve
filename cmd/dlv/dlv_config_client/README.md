@@ -29,13 +29,13 @@ See the [client tests](../client_test.go) for examples, and [taint.go](taint.go)
 * Function calls
 * Assignment
 * Range
+* Index (string, array, slice)
+* Select (struct)
 
 Data-flow propagation only.
 
 ### Watchpoints
-(Where `s` is a variable of the given type)
-* String => Set on s and s[0]
-* Slice => If has [x:y] syntax, remove that. If that expression is now an array, handle as array. Else set on s
-* Array => Set on s[0]
-* Struct member
+* String: Watch characters (which are typically heap-allocated, so these watchpoints never go out of scope)
+* Slice: Watch backing array (or if elements are slices/strings, their backing arrays)
+* Array
 * Any other type with size <= 8 bytes

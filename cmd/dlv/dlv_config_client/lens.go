@@ -70,7 +70,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	}
 
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
-		fmt.Println("Runtime watchpoint hit - partial stack (with PC one after hitting instr):")
+		fmt.Println("Runtime watchpoint hit - partial stack (including first non-runtime frame, whose PC is one after call instr)")
 		for i, frame := range stack {
 			fn := frame.Function.Name()
 			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
@@ -80,6 +80,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 			// TODO skip all hits from go runtime threads (sw wp commit may hv a test for sysmon?)
 			// (but not hits in go runtime from program thread)
 			if fn == "runtime.newstack" {
+				fmt.Println("newstack")
 				return nil, false
 			}
 			if !strings.HasPrefix(fn, "runtime") {
@@ -97,7 +98,6 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
 	pc := tc.thread.PC
 	if non_runtime_frame != nil {
-		// runtime hit => pc is one after call instr that ended up in runtime
 		pc = non_runtime_frame.PC
 	}
 	fct_instr, err := tc.client.DisassemblePC(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, pc, api.IntelFlavour) // dst, src
@@ -107,7 +107,12 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
 
 	for i, instr := range fct_instr {
 		if instr.Loc.PC == pc {
-			tc.hit.hit_instr = &fct_instr[i]
+			if non_runtime_frame != nil {
+				// For runtime hit, pc is one *after* the call instr that ended up in runtime => get previous instr
+				tc.hit.hit_instr = &fct_instr[i-1]
+			} else {
+				tc.hit.hit_instr = &fct_instr[i]
+			}
 			return
 		}
 	}
@@ -127,9 +132,6 @@ func (tc *TaintCheck) hittingLine() bool {
 	tc.hittingInstr(non_runtime_frame)
 
 	src_line := sourceLine(tc.client, tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line)
-	if strings.Contains(strings.ToLower(src_line), ("print")) {
-		return false
-	}
 
 	if src_line == "" {
 		log.Fatalf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
@@ -206,78 +208,77 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	fmt.Printf("Exit onPendingWpBpHitDone; info %v\n", info)
 }
 
-// Eval watchexpr, return var(s) to set watch on, delete expr from pending
-func (tc *TaintCheck) evalWatchexpr(watchexpr string, bp_addr uint64, watcharg *int) []api.Variable {
-	if watcharg != nil {
-		delete(tc.pending_wps[bp_addr].watchargs, *watcharg)
-	} else {
-		delete(tc.pending_wps[bp_addr].watchexprs, watchexpr)
-	}
-	// Slicing doesn't result in a watchable expr - we just want to watch the whole slice
-	if strings.Contains(watchexpr, ":") {
-		watchexpr = strings.Split(watchexpr, "[")[0]
-	}
-
-	watchvars := []api.Variable{}
-	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	xv, err := tc.client.EvalWatchexpr(scope, watchexpr)
-	if err != nil {
-		log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
-	}
-
-	watchvars = append(watchvars, *xv)
-	if xv.RealType == "string" {
-		// TODO once switch to data-only wp, can remove this and call CreateWatchpoint (I think)
-		// Also watch the first character of a string - string concatenation doesn't read the address
-		xv, err := tc.client.EvalWatchexpr(scope, watchexpr+"[0]")
-		if err != nil {
-			log.Fatalf("Failed to eval first byte of string %v: err %v, xv %+v\n", watchexpr, err, xv)
-		}
-		watchvars = append(watchvars, *xv)
-	}
-
-	return watchvars
-}
-
-// This should handle being called multiple times for same bpaddr+watchaddr
-func (tc *TaintCheck) setWatchpoint(watchexpr *string, bp_addr uint64, watchaddr uint64, sz int64) {
-	fmt.Printf("setWatchpoint\n")
-	if watchexpr != nil {
-		fmt.Printf("watchexpr: %v\n", *watchexpr)
-	}
-	fmt.Printf("watchaddr: %x, sz %v\n", watchaddr, sz)
+// Set watchpoint given a variable - TODO fix comment
+func (tc *TaintCheck) setWatchpointXv(watchexpr string, xv *api.Variable, bp_addr uint64, create bool) {
+	fmt.Printf("setWatchpoint on %v (%#x, sz %v)\n", xv.Name, xv.Addr, xv.Watchsz)
 
 	info := tc.pending_wps[bp_addr]
 
-	// 1. Check for dups
+	// 2. Check for dups
 	// TODO check have a test for this
-	if _, ok := tc.mem_param_map[watchaddr]; ok {
+	if _, ok := tc.mem_param_map[xv.Addr]; ok {
 		// Already currently tracing this addr => update mem-param map with any new tainting vals, return
-		tc.updateTaintingVals(info, bp_addr, watchaddr)
+		tc.updateTaintingVals(info, bp_addr, xv.Addr)
 		// May have already been set when hit same wp at different bp in this round
 		// (e.g. when try to set wp on first byte of a copied string - as with fqdn[0] in xenon)
-		fmt.Printf("Already tracing 0x%x in current round\n", watchaddr)
+		fmt.Printf("Already tracing 0x%x in current round\n", xv.Addr)
 		return
 	}
 
-	// 2. Create watchpoint
+	// 3. Create watchpoint (if not dup)
 	// We really want a read-only wp, but not supported
-	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	_, err := tc.client.CreateWatchpointNoEval(scope, watchaddr, sz, api.WatchRead|api.WatchWrite, api.WatchSoftware)
-	if err != nil {
-		log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", watchaddr, err)
+	if create {
+		scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
+		_, err := tc.client.CreateWatchpointNoEval(scope, watchexpr, xv.Addr, xv.Watchsz, api.WatchRead|api.WatchWrite, api.WatchSoftware)
+		if err != nil {
+			log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", xv.Addr, err)
+		}
 	}
 
-	// Log for test
+	// Log for testing
 	// TODO (minor): Move logic in this file to its own package, so can import it for testing
 	// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
-	fmt.Printf("CreateNonPending lineno %d watchexpr %s watchaddr 0x%x\n",
-		tc.hit.hit_bp.Line, *watchexpr, watchaddr)
+	fmt.Printf("CreateWatchpoint lineno %d watchexpr %s watchaddr 0x%x\n",
+		tc.hit.hit_bp.Line, watchexpr, xv.Addr)
 
-	// 3. Add to mem-param map
-	tc.mem_param_map[watchaddr] = info.tainting_vals
+	// 4. Add to mem-param map
+	tc.mem_param_map[xv.Addr] = info.tainting_vals
 	// Log for testing
-	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, info.tainting_vals)
+	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", xv.Addr, info.tainting_vals)
+}
+
+// Set any watchpoint(s) corresponding to watchexpr
+func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
+	// Eval watchexpr to get address for dup check
+	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
+	xv, err := tc.client.EvalWatchexpr(scope, watchexpr)
+	if err.Error() == "slice of strings" {
+		// LEFT OFF: awk how things are passed from debugger to client --
+		// err isn't proc.SliceOfStrings bc doesn't have sliceXv, and
+		// if err != nil, server passes nil xv
+		//if slice, ok := err.(proc.SliceOfStrings); ok {
+		fmt.Println("client: SOS")
+		log.Printf("err: %+v\n", err)
+		log.Printf("xv: %+v\n", xv)
+		// Watch each string's characters
+		for i := 0; i < int(slice.Slicexv.Len); i++ {
+			string_elem := fmt.Sprintf("%v[%v]", watchexpr, i)
+			string_xv, err := tc.client.EvalWatchexpr(scope, string_elem)
+			if err != nil {
+				log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
+			}
+			tc.setWatchpointXv(watchexpr, string_xv, bp_addr, false)
+		}
+		// Server handles creating wp on each string
+		_, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware)
+		if err != nil {
+			log.Fatalf("Failed to set watchpoint at 0x%x: %v\n", xv.Addr, err)
+		}
+	} else if err != nil {
+		log.Fatalf("Failed to eval new watchexpr %v: err %v, xv %+v\n", watchexpr, err, xv)
+	} else {
+		tc.setWatchpointXv(watchexpr, xv, bp_addr, true)
+	}
 }
 
 // Watchpoint hit => record any new pending watchpoints
@@ -311,22 +312,18 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 	}
 
 	for watchexpr := range info.watchexprs {
-		watchvars := tc.evalWatchexpr(watchexpr, bp_addr, nil)
-		for _, watchvar := range watchvars {
-			tc.setWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)
-		}
+		delete(tc.pending_wps[bp_addr].watchexprs, watchexpr)
+		tc.setWatchpoint(watchexpr, bp_addr)
 	}
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	for argno, overlap_expr := range info.watchargs {
+		delete(tc.pending_wps[bp_addr].watchargs, argno)
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
 		watchexpr := args[argno].Name + overlap_expr
-		watchvars := tc.evalWatchexpr(watchexpr, bp_addr, &argno)
-		for _, watchvar := range watchvars {
-			tc.setWatchpoint(&watchvar.Name, bp_addr, watchvar.Addr, watchvar.Watchsz)
-		}
+		tc.setWatchpoint(watchexpr, bp_addr)
 	}
 
 	// cleanup

@@ -1106,6 +1106,7 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 }
 
 // CreateWatchpoint creates a watchpoint on the specified expression.
+// If multiple watchpoints were set (for slice of slices/strings), return Breakpoint for last one only
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType, wimpl api.WatchImpl) (*api.Breakpoint, error) {
 	p := d.target.Selected
@@ -1116,19 +1117,33 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	}
 	d.breakpointIDCounter++
 	var bp *proc.Breakpoint
+	var api_bp *api.Breakpoint
 	var wp_err error
-	if *expr != "" {
+	if *watchaddr == 0 {
 		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
 	} else {
-		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
+		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *expr, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
 	}
-	if wp_err != nil {
+	if slice, ok := wp_err.(proc.SliceOfStrings); ok {
+		fmt.Println("debugger: SOS")
+		// Watch each string's characters
+		for i := 0; i < int(slice.Slicexv.Len); i++ {
+			string_elem := fmt.Sprintf("%v[%v]", *expr, i)
+			fake := uint64(0)
+			api_bp, err = d.CreateWatchpoint(goid, frame, deferredCall, &string_elem, &fake, nil, wtype, wimpl)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else if wp_err != nil {
 		return nil, wp_err
+	} else {
+		if expr != nil && d.findBreakpointByName(*expr) == nil {
+			bp.Logical.Name = *expr
+		}
+		return d.convertBreakpoint(bp.Logical), nil
 	}
-	if expr != nil && d.findBreakpointByName(*expr) == nil {
-		bp.Logical.Name = *expr
-	}
-	return d.convertBreakpoint(bp.Logical), nil
+	return api_bp, nil
 }
 
 // Threads returns the threads of the target process.
