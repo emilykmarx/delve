@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -110,16 +109,16 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 				// and multiple tainted fields
 			}
 		case ast.Expr:
-			fmt.Printf("eval var %v\n", exprToString(node.(ast.Expr)))
 			// TODO check for incomplete loads (see client API doc)
-			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)))
-			if err != nil || xv.Addr == 0 { // Addr == 0 for e.g. x + 1, but not e.g. x[1]
+			// If type not supported, still check overlap (e.g. struct)
+			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set
+			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)), true)
+			if err != nil {
 				// Try evaluating any children
 			} else {
 				for _, watch_addr := range tc.hit.hit_bp.Addrs {
 					watch_size := uint64((proc.WatchType)(tc.hit.hit_bp.WatchType).Size())
 					xv_size := uint64(xv.Watchsz)
-					fmt.Printf("check overlap; watch_size %v, xv_size %v\n", watch_size, xv_size)
 
 					if memOverlap(xv.Addr, xv_size, watch_addr, watch_size) {
 						if composite_lit {
@@ -129,8 +128,11 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 								found_overlap = "." + tainted_field
 							}
 						} else if xv.Kind == reflect.Struct {
+							// Take the first field that overlaps (TODO support multiple tainted fields)
 							for _, field := range xv.Children {
-								if memOverlap(field.Addr, xv_size, watch_addr, watch_size) {
+								field_name := exprToString((node.(ast.Expr))) + "." + field.Name
+								xv, err = tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, field_name, true)
+								if err == nil && memOverlap(xv.Addr, uint64(xv.Watchsz), watch_addr, watch_size) {
 									found_overlap = "." + field.Name
 								}
 							}

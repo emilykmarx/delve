@@ -11,9 +11,9 @@ type Name struct {
 }
 
 func NewName_(name_callee string) (Name, error) {
-	n := Name{Length: uint8(len(name_callee))} // propagate to name_callee
-	copy(n.Data[:], name_callee)               // propagate to n.Data[0]
-	return n, nil                              // runtime hit => propagate to n_caller.Data[0]
+	n := Name{Length: uint8(len(name_callee))}
+	copy(n.Data[:], name_callee) // propagate to n.Data
+	return n, nil                // runtime hit => propagate to n_caller.Data
 }
 
 func main() {

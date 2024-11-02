@@ -2052,11 +2052,13 @@ func watchpoint(t *Term, ctx callContext, args string) error {
 	default:
 		return fmt.Errorf("wrong argument %q to watch", v[1])
 	}
-	bp, err := t.client.CreateWatchpoint(ctx.Scope, v[nargs], wtype, wimpl)
+	bps, err := t.client.CreateWatchpoint(ctx.Scope, v[nargs], wtype, wimpl)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(t.stdout, "%s set at %s\n", formatBreakpointName(bp, true), t.formatBreakpointLocation(bp))
+	for _, bp := range bps {
+		fmt.Fprintf(t.stdout, "%s set at %s\n", formatBreakpointName(bp, true), t.formatBreakpointLocation(bp))
+	}
 	return nil
 }
 

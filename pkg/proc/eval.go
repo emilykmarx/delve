@@ -220,7 +220,7 @@ func (scope *EvalScope) ChanGoroutines(expr string, start, count int) ([]int64, 
 	if err != nil {
 		return nil, err
 	}
-	v, err := scope.evalAST(t)
+	v, err := scope.evalAST(t, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1229,14 +1229,19 @@ func (stack *evalStack) pushIdent(scope *EvalScope, name string) (found bool) {
 	return true
 }
 
-func (scope *EvalScope) evalAST(t ast.Expr) (*Variable, error) {
+// load: Whether to load value of Variable (to get e.g. Children)
+func (scope *EvalScope) evalAST(t ast.Expr, load bool) (*Variable, error) {
 	ops, err := evalop.CompileAST(scopeToEvalLookup{scope}, t)
 	if err != nil {
 		return nil, err
 	}
 	stack := &evalStack{}
 	stack.eval(scope, ops)
-	return stack.result(nil)
+	cfg := &loadFullValue
+	if !load {
+		cfg = nil
+	}
+	return stack.result(cfg)
 }
 
 func exprToString(t ast.Expr) string {

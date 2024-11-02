@@ -517,9 +517,10 @@ func (s *RPCServer) ListFunctionArgs(arg ListFunctionArgsIn, out *ListFunctionAr
 }
 
 type EvalIn struct {
-	Scope api.EvalScope
-	Expr  string
-	Cfg   *api.LoadConfig
+	Scope             api.EvalScope
+	Expr              string
+	Cfg               *api.LoadConfig
+	IgnoreUnsupported bool
 }
 
 type EvalOut struct {
@@ -527,7 +528,7 @@ type EvalOut struct {
 }
 
 func (s *RPCServer) EvalWatchexpr(arg EvalIn, out *EvalOut) error {
-	v, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr)
+	v, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.IgnoreUnsupported)
 	if err != nil {
 		return err
 	}
@@ -1073,13 +1074,13 @@ type CreateWatchpointIn struct {
 }
 
 type CreateWatchpointOut struct {
-	*api.Breakpoint
+	Watchpoints []*api.Breakpoint
 }
 
 func (s *RPCServer) CreateWatchpoint(arg CreateWatchpointIn, out *CreateWatchpointOut) error {
 	var err error
-	out.Breakpoint, err = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall,
-		&arg.Expr, &arg.Addr, &arg.Size, arg.Type, arg.Impl)
+	out.Watchpoints, err = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall,
+		arg.Expr, arg.Type, arg.Impl)
 	return err
 }
 

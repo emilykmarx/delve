@@ -1093,7 +1093,7 @@ func (d *Debugger) findBreakpointByName(name string) *api.Breakpoint {
 	return nil
 }
 
-func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string) (*proc.Variable, error) {
+func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string, ignoreUnsupported bool) (*proc.Variable, error) {
 	d.targetMutex.Lock()
 	defer d.targetMutex.Unlock()
 	p := d.target.Selected
@@ -1102,48 +1102,52 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 	if err != nil {
 		return nil, err
 	}
-	return p.EvalWatchexpr(s, expr)
+	return p.EvalWatchexpr(s, expr, ignoreUnsupported)
 }
 
-// CreateWatchpoint creates a watchpoint on the specified expression.
-// If multiple watchpoints were set (for slice of slices/strings), return Breakpoint for last one only
+// CreateWatchpoint creates watchpoint[s] for the specified expression.
+// (May create multiple, e.g. for an array of strings).
+// Returns all relevant watchpoints, even if some existed,
+// unless some other error occurs along the way.
+// If already existed, don't return error (this is for ConfLens - may
+// break some existing delve tests)
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
-	expr *string, watchaddr *uint64, sz *int64, wtype api.WatchType, wimpl api.WatchImpl) (*api.Breakpoint, error) {
+	expr string, wtype api.WatchType, wimpl api.WatchImpl) ([]*api.Breakpoint, error) {
 	p := d.target.Selected
+	watchpoints := []*api.Breakpoint{}
 
 	s, err := proc.ConvertEvalScope(p, goid, frame, deferredCall)
 	if err != nil {
 		return nil, err
 	}
 	d.breakpointIDCounter++
-	var bp *proc.Breakpoint
-	var api_bp *api.Breakpoint
-	var wp_err error
-	if *watchaddr == 0 {
-		bp, wp_err = p.SetWatchpoint(d.breakpointIDCounter, s, *expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
-	} else {
-		bp, wp_err = p.SetWatchpointNoEval(d.breakpointIDCounter, s, *expr, *watchaddr, *sz, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
-	}
-	if slice, ok := wp_err.(proc.SliceOfStrings); ok {
-		fmt.Println("debugger: SOS")
+	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
+	if slice, ok := err.(proc.SliceOfStrings); ok {
 		// Watch each string's characters
 		for i := 0; i < int(slice.Slicexv.Len); i++ {
-			string_elem := fmt.Sprintf("%v[%v]", *expr, i)
-			fake := uint64(0)
-			api_bp, err = d.CreateWatchpoint(goid, frame, deferredCall, &string_elem, &fake, nil, wtype, wimpl)
-			if err != nil {
+			string_elem := fmt.Sprintf("%v[%v]", expr, i)
+			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl)
+			if _, ok := err.(proc.BreakpointExistsError); ok {
+				// If one already existed, add it to the list and continue to the others
+			} else if err != nil {
 				return nil, err
 			}
+			if len(bps) != 1 {
+				return nil, fmt.Errorf("recursive call to Debugger CreateWatchpoint() returned multiple watchpoints")
+			}
+			watchpoints = append(watchpoints, bps[0])
 		}
-	} else if wp_err != nil {
-		return nil, wp_err
+	} else if _, ok := err.(proc.BreakpointExistsError); ok {
+		watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))
+	} else if err != nil {
+		return nil, err
 	} else {
-		if expr != nil && d.findBreakpointByName(*expr) == nil {
-			bp.Logical.Name = *expr
+		if d.findBreakpointByName(expr) == nil {
+			bp.Logical.Name = expr
 		}
-		return d.convertBreakpoint(bp.Logical), nil
+		watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))
 	}
-	return api_bp, nil
+	return watchpoints, nil // ignore ExistsError, else will overwrite watchpoints to nil when returning to client
 }
 
 // Threads returns the threads of the target process.

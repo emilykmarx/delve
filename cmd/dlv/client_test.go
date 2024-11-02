@@ -37,7 +37,7 @@ func TestCallAndAssign1(t *testing.T) {
 		{kind: CreateWatchpoint, lineno: 37, watchexpr: "y"},
 		{kind: CreateWatchpoint, lineno: 41, watchexpr: "z"},
 	}
-	run(t, "call_assign_1.go", expected_logs)
+	run(t, "call_assign_1.go", expected_logs, nil)
 }
 
 func TestCallAndAssign2(t *testing.T) {
@@ -46,7 +46,7 @@ func TestCallAndAssign2(t *testing.T) {
 		{kind: CreateWatchpoint, lineno: 10, watchexpr: "tainted_param_2"},
 		{kind: CreateWatchpoint, lineno: 22, watchexpr: "a"},
 	}
-	run(t, "call_assign_2.go", expected_logs)
+	run(t, "call_assign_2.go", expected_logs, nil)
 }
 
 func TestStrings(t *testing.T) {
@@ -55,29 +55,32 @@ func TestStrings(t *testing.T) {
 		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s2"},
 		{kind: CreateWatchpoint, lineno: 19, watchexpr: "i"},
 	}
-	run(t, "strings.go", expected_logs)
+	run(t, "strings.go", expected_logs, nil)
 }
 
-func TestArraysRangeBuiltins(t *testing.T) {
+func TestSliceRangeBuiltins(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 14, watchexpr: "conf.search"},
-		{kind: CreateWatchpoint, lineno: 19, watchexpr: "suffix"},
-		{kind: CreateWatchpoint, lineno: 22, watchexpr: "names"},
-		{kind: CreateWatchpoint, lineno: 30, watchexpr: "names2[:]"},
+		// Slice of strings => set on each string
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "conf.search[0]"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "conf.search[1]"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "names[0]"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "names[1]"},
 	}
-	run(t, "arrays_range_builtins.go", expected_logs)
+	// Client sets initial watch on conf.search => server sets wp on both strings
+	initial_watchexpr := "conf.search"
+	run(t, "slice_range_builtins.go", expected_logs, &initial_watchexpr)
 }
 
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 22, watchexpr: "arr[0]"},
-		{kind: CreateWatchpoint, lineno: 23, watchexpr: "struct_lit.Data[0]"},
-		{kind: CreateWatchpoint, lineno: 25, watchexpr: "s.Data[0]"},
-		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s_callee.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "arr"},
+		{kind: CreateWatchpoint, lineno: 23, watchexpr: "struct_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 25, watchexpr: "s.Data"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s_callee.Data"},
 		// s.callee OOS
-		{kind: CreateWatchpoint, lineno: 27, watchexpr: "s_caller.Data[0]"},
+		{kind: CreateWatchpoint, lineno: 27, watchexpr: "s_caller.Data"},
 	}
-	run(t, "structs.go", expected_logs)
+	run(t, "structs.go", expected_logs, nil)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
@@ -85,10 +88,8 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	// so only expect wp for chars on 13
 	expected_logs := []expectedWpLog{
 		{kind: CreateWatchpoint, lineno: 14, watchexpr: "fqdn"},
-		{kind: CreateWatchpoint, lineno: 14, watchexpr: "fqdn[0]"},
-		{kind: CreateWatchpoint, lineno: 17, watchexpr: "fqdn"},
 	}
-	run(t, "funclit_goroutine.go", expected_logs)
+	run(t, "funclit_goroutine.go", expected_logs, nil)
 }
 
 func TestMultiRound(t *testing.T) {
@@ -101,20 +102,18 @@ func TestMultiRound(t *testing.T) {
 		{kind: CreateWatchpoint, lineno: 16, watchexpr: "vars[i]"},
 	}
 
-	run(t, "multiround.go", expected_logs)
+	run(t, "multiround.go", expected_logs, nil)
 }
 
 func TestRuntimeHits(t *testing.T) {
 	expected_logs := []expectedWpLog{
 		{kind: CreateWatchpoint, lineno: 21, watchexpr: "name"},
-		{kind: CreateWatchpoint, lineno: 21, watchexpr: "name[0]"},
-		{kind: CreateWatchpoint, lineno: 14, watchexpr: "name_callee"},
-		// uses same mem for name[0] and name_callee[0]
-		{kind: CreateWatchpoint, lineno: 16, watchexpr: "n.Data[0]"},
-		{kind: CreateWatchpoint, lineno: 22, watchexpr: "n_caller.Data[0]"},
+		// uses same backing array for name and name_callee, but n.Data and n_caller.Data each have their own
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "n.Data[:]"},
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "n_caller.Data"},
 	}
 
-	run(t, "runtime_hits.go", expected_logs)
+	run(t, "runtime_hits.go", expected_logs, nil)
 }
 
 /* Need to investigate this - per asm, doesn't seem like should be fake...
@@ -207,8 +206,9 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 }
 
 // Expect to set watchpoints for watchexprs on corresponding lines
-// Passes first line and expr as initial ones for client
-func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
+// Client's initial watchexpr is one in the first expected_log,
+// unless initial_watchexpr is passed
+func run(t *testing.T, testfile string, expected_logs []expectedWpLog, initial_watchexpr *string) {
 	// Start dlv server
 	listenAddr := "localhost:4040"
 	fixturePath := filepath.Join(protest.FindFixturesDir(), "dlv_config_client", testfile)
@@ -244,9 +244,13 @@ func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
 	t.Logf("Starting client with timeout %v\n", client_timeout)
 	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()
+	init_watchexpr := expected_logs[0].watchexpr
+	if initial_watchexpr != nil {
+		init_watchexpr = *initial_watchexpr
+	}
 	client := exec.CommandContext(ctx, getClientBin(t),
 		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", expected_logs[0].lineno),
-		"-initial_watchexpr="+expected_logs[0].watchexpr)
+		"-initial_watchexpr="+init_watchexpr)
 
 	var client_out saveOutput
 	var client_err saveOutput
@@ -255,10 +259,11 @@ func run(t *testing.T, testfile string, expected_logs []expectedWpLog) {
 
 	assertNoError(client.Run(), t, "run client")
 
-	checkOutput(t, client_err.savedOutput, server_err.savedOutput, client_out.savedOutput, expected_logs)
+	checkOutput(t, client_err.savedOutput, server_err.savedOutput)
+	checkWatchpoints(t, client_out.savedOutput, expected_logs, init_watchexpr)
 }
 
-func checkOutput(t *testing.T, client_err []byte, server_err []byte, client_out []byte, expected_logs []expectedWpLog) {
+func checkOutput(t *testing.T, client_err []byte, server_err []byte) {
 	// Check for errors during replay
 	if len(server_err) > 0 {
 		server_lines := strings.Split(strings.Trim(string(server_err), "\n"), "\n")
@@ -271,7 +276,6 @@ func checkOutput(t *testing.T, client_err []byte, server_err []byte, client_out 
 	if len(client_err) > 0 {
 		t.Fatalf("Delve client errored: %s", client_err)
 	}
-	checkWatchpoints(t, client_out, expected_logs)
 }
 
 type WpLogType string
@@ -289,11 +293,11 @@ type expectedWpLog struct {
 	watchaddr uint64
 }
 
-func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog) {
+func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog, initial_watchexpr string) {
 	watchexpr_fmt := "%s lineno %d watchexpr %s watchaddr 0x%x"
 	next_wp_log := 0         // index of the next log we expect to see
 	expect_memparam := false // whether we expect to see a memory-parameter update next
-	mem_param_fmt := "\tMemory-parameter map: 0x%x => {params:map[{param:%s flow:1}:{}]}\n"
+	mem_param_fmt := "\tMemory-parameter map: 0x%x => {items:map[{param:%s flow:1}:{}]}\n"
 	for _, line := range strings.Split(string(stdout), "\n") {
 		var lineno int
 		var watchexpr string
@@ -318,7 +322,7 @@ func checkWatchpoints(t *testing.T, stdout []byte, expected_logs []expectedWpLog
 				t.Fatalf("Found unexpected memory-parameter map update: %v\n", line)
 			}
 			assertEqual(t, expected_logs[next_wp_log-1].watchaddr, watchaddr, expected_log)
-			assertEqual(t, expected_logs[0].watchexpr, watchexpr, expected_log)
+			assertEqual(t, initial_watchexpr, watchexpr, expected_log) // all are tainted by initial_watchexpr
 			expect_memparam = false
 		}
 

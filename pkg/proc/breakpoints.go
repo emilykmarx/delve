@@ -481,7 +481,7 @@ func evalBreakpointCondition(tgt *Target, thread Thread, cond ast.Expr) (bool, e
 			return true, err
 		}
 	}
-	v, err := scope.evalAST(cond)
+	v, err := scope.evalAST(cond, false)
 	if err != nil {
 		return true, fmt.Errorf("error evaluating expression: %v", err)
 	}
@@ -665,7 +665,9 @@ func (s SliceOfStrings) Error() string {
 
 // Eval expr, check the result for watchability.
 // Set xv.Addr and xv.Watchsz to the watched region.
-func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error) {
+// If ignoreUnsupported, don't return error if type isn't supported
+// (for client - if err != nil, xv returned to client is nil even if it's not here)
+func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool) (*Variable, error) {
 	// To eval slice, must remove [x:y] syntax
 	if strings.Contains(expr, ":") {
 		expr = strings.Split(expr, "[")[0]
@@ -675,7 +677,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 	if err != nil {
 		return nil, err
 	}
-	xv, err := scope.evalAST(n)
+	xv, err := scope.evalAST(n, true) // need load for e.g. Children
 	if err != nil {
 		return nil, err
 	}
@@ -702,20 +704,25 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 		xv.Addr = xv.Base
 		sz = xv.Len
 	} else if _, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
+		// TODO array of strings/slices - same deal as slice of strings
 		sz = xv.Len
-		fmt.Printf("EvalWatchexpr: array of len %v, addr %x\n", sz, xv.Addr)
 	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		// watch backing array
 		xv.Addr = xv.Base
 		sz = xv.Len
-		fmt.Printf("EvalWatchexpr: slice of len %v, addr %x\n", sz, xv.Addr)
 		// If slice elements are a reference type (string or slice), watch the elements' underlying data (chars or backing array)
+		// TODO slice of slices
 		if _, ok := slice.ElemType.(*godwarf.StringType); ok {
-			fmt.Println("STR TYPE")
 			return xv, SliceOfStrings{Slicexv: xv}
 		}
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
-		return xv, fmt.Errorf("can not watch variable of type %s, sz %v: type not supported", xv.DwarfType.String(), sz)
+		// Client uses this to eval variables for overlap => still set Watchsz
+		xv.Watchsz = sz
+		err := fmt.Errorf("can not watch variable of type %s, sz %v: type not supported", xv.DwarfType.String(), sz)
+		if ignoreUnsupported {
+			err = nil
+		}
+		return xv, err
 	}
 
 	xv.Watchsz = sz
@@ -725,15 +732,13 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string) (*Variable, error)
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
 func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
-	fmt.Printf("SetWp: %v\n", expr)
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
 
-	xv, err := t.EvalWatchexpr(scope, expr)
+	xv, err := t.EvalWatchexpr(scope, expr, false)
 	if _, ok := err.(SliceOfStrings); ok {
 		// Debugger will call SetWatchpoint for each string
-		fmt.Println("Bp SetWp return SoS")
 		return nil, SliceOfStrings{Slicexv: xv}
 	} else if err != nil {
 		return nil, err
@@ -1036,7 +1041,7 @@ func (rbpi *returnBreakpointInfo) Collect(t *Target, thread Thread) []*Variable 
 	if err != nil {
 		return returnInfoError("could not get scope", err, thread.ProcessMemory())
 	}
-	v, err := scope.evalAST(rbpi.retFrameCond)
+	v, err := scope.evalAST(rbpi.retFrameCond, false)
 	if err != nil || v.Unreadable != nil || v.Kind != reflect.Bool {
 		// This condition was evaluated as part of the breakpoint condition
 		// evaluation, if the errors happen they will be reported as part of the

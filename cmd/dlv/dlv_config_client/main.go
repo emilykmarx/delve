@@ -60,6 +60,7 @@ func main() {
 	tc := TaintCheck{client: client,
 		pending_wps:   make(map[uint64]PendingWp),
 		mem_param_map: make(map[uint64]TaintingVals)}
+
 	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
 
 	// This will be replaced by a config breakpoint

@@ -6,17 +6,17 @@ import (
 )
 
 type Conf struct {
-	search []string
+	search []string // slice
 }
 
 func struct_slice_append() []string {
 	conf := &Conf{search: []string{"hi", "hello"}} // conf.search is initially tainted
 	names := make([]string, 0, len(conf.search))
-	// 1st iter: hit for conf.search x 2 => propagate to suffix
-	// 2nd iter: hit for suffix => nowhere to propagate
-	for _, suffix := range conf.search {
-		// runtime hit (of suffix[0]) => propagate to names (once exit range)
-		names = append(names, "localhost"+suffix)
+	// Suffix reuses conf.search's backing arrays
+	for i, suffix := range conf.search {
+		fmt.Printf("iter %v\n", i)
+		// runtime hits (of suffix backing array) => propagate to names (once exit range)
+		names = append(names, "localhost"+suffix) // slice w/ a new backing array
 	}
 
 	fmt.Println()
@@ -24,8 +24,8 @@ func struct_slice_append() []string {
 }
 
 func main() {
-	names_caller := struct_slice_append() // propagate to caller copy of names
-	names2 := make([]string, len(names_caller))
-	copy(names2[:], names_caller) // propagate to names2
+	names_caller := struct_slice_append()       // reuses names backing array
+	names2 := make([]string, len(names_caller)) // reuses names backing array
+	copy(names2[:], names_caller)               // runtime hit => ignore
 	fmt.Println()
 }

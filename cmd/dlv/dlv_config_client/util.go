@@ -14,14 +14,17 @@ import (
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
+	"github.com/hashicorp/go-set/v2"
 )
 
-// Add pending wp's tainted vals to existing ones
-func (tc *TaintCheck) updateTaintingVals(info PendingWp, bp_addr uint64, watchaddr uint64) {
-	for new_val := range info.tainting_vals.params {
-		tc.mem_param_map[watchaddr].params[new_val] = struct{}{}
-	}
-	tc.pending_wps[bp_addr] = info
+// Add taint in pendingWp state to any existing entry in m-p map
+// If new entry, insert it
+func (tc *TaintCheck) updateTaintingVals(bp_addr uint64, watchaddr uint64) {
+	added_taint := tc.pending_wps[bp_addr].tainting_vals.params
+	existing_taint := tc.mem_param_map[watchaddr].params
+	new_taint := added_taint.Union(&existing_taint)
+	tc.mem_param_map[watchaddr] = TaintingVals{params: *set.From(new_taint.Slice())}
+	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr].params)
 }
 
 // If wp hits for an addr not in the mem-param map,
