@@ -648,19 +648,15 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	return bp, nil
 }
 
-type SliceOfSlices struct{}
-
-func (s *SliceOfSlices) Error() string {
-	return "slice of slices"
+// A type whose elements are reference types
+// (e.g. slice of strings)
+type ElemsAreReferences struct {
+	// The variable containing the elements
+	Xv *Variable
 }
 
-type SliceOfStrings struct {
-	// The slice
-	Slicexv *Variable
-}
-
-func (s SliceOfStrings) Error() string {
-	return "slice of strings"
+func (s ElemsAreReferences) Error() string {
+	return "elements are reference types"
 }
 
 // Eval expr, check the result for watchability.
@@ -703,17 +699,27 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		// watch chars
 		xv.Addr = xv.Base
 		sz = xv.Len
-	} else if _, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
-		// TODO array of strings/slices - same deal as slice of strings
+	} else if array, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
 		sz = xv.Len
+		// If array elements are a reference type (string or slice),
+		// watch the elements' underlying data (chars or backing array)
+		if _, ok := array.Type.(*godwarf.StringType); ok {
+			return xv, ElemsAreReferences{Xv: xv}
+		}
+		if _, ok := array.Type.(*godwarf.SliceType); ok {
+			return xv, ElemsAreReferences{Xv: xv}
+		}
 	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		// watch backing array
 		xv.Addr = xv.Base
 		sz = xv.Len
-		// If slice elements are a reference type (string or slice), watch the elements' underlying data (chars or backing array)
-		// TODO slice of slices
+		// If slice elements are a reference type (string or slice),
+		// watch the elements' underlying data (chars or backing array)
 		if _, ok := slice.ElemType.(*godwarf.StringType); ok {
-			return xv, SliceOfStrings{Slicexv: xv}
+			return xv, ElemsAreReferences{Xv: xv}
+		}
+		if _, ok := slice.ElemType.(*godwarf.SliceType); ok {
+			return xv, ElemsAreReferences{Xv: xv}
 		}
 	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
 		// Client uses this to eval variables for overlap => still set Watchsz
@@ -737,9 +743,9 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 	}
 
 	xv, err := t.EvalWatchexpr(scope, expr, false)
-	if _, ok := err.(SliceOfStrings); ok {
-		// Debugger will call SetWatchpoint for each string
-		return nil, SliceOfStrings{Slicexv: xv}
+	if _, ok := err.(ElemsAreReferences); ok {
+		// Debugger will call SetWatchpoint for each element
+		return nil, ElemsAreReferences{Xv: xv}
 	} else if err != nil {
 		return nil, err
 	}

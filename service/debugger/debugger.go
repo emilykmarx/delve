@@ -1122,9 +1122,9 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	}
 	d.breakpointIDCounter++
 	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
-	if slice, ok := err.(proc.SliceOfStrings); ok {
-		// Watch each string's characters
-		for i := 0; i < int(slice.Slicexv.Len); i++ {
+	if slice, ok := err.(proc.ElemsAreReferences); ok {
+		// Make recursive call for each element
+		for i := 0; i < int(slice.Xv.Len); i++ {
 			string_elem := fmt.Sprintf("%v[%v]", expr, i)
 			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl)
 			if _, ok := err.(proc.BreakpointExistsError); ok {
@@ -1132,10 +1132,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 			} else if err != nil {
 				return nil, err
 			}
-			if len(bps) != 1 {
-				return nil, fmt.Errorf("recursive call to Debugger CreateWatchpoint() returned multiple watchpoints")
-			}
-			watchpoints = append(watchpoints, bps[0])
+			watchpoints = append(watchpoints, bps...)
 		}
 	} else if _, ok := err.(proc.BreakpointExistsError); ok {
 		watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))

@@ -71,6 +71,42 @@ func TestSliceRangeBuiltins(t *testing.T) {
 	run(t, "slice_range_builtins.go", expected_logs, &initial_watchexpr)
 }
 
+// Slice of slices, array of slices/strings (slice of strings is in TestSliceRangeBuiltins)
+// Note that this test checks the watchexpr, so it's important how the server chooses to set it -
+// does so when (t *Target) SetWatchpoint calls SetWatchpointNoEval instead of telling the
+// Debugger to recurse (i.e. get to a string or slice/array of non-references)
+func TestReferenceElems(t *testing.T) {
+	dir := "reference_elems/"
+
+	// Array of strings => set on each string
+	expected_logs := []expectedWpLog{
+		{kind: CreateWatchpoint, lineno: 10, watchexpr: "arr_strs[0]"},
+		{kind: CreateWatchpoint, lineno: 10, watchexpr: "arr_strs[1]"},
+	}
+	initial_watchexpr := "arr_strs"
+	run(t, dir+"arr_strs.go", expected_logs, &initial_watchexpr)
+
+	// Array of slices => set on each slice's strings
+	expected_logs = []expectedWpLog{
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "arr_slices[0][0]"},
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "arr_slices[0][1]"},
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "arr_slices[1][0]"},
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "arr_slices[1][1]"},
+	}
+	initial_watchexpr = "arr_slices"
+	run(t, dir+"arr_slices.go", expected_logs, &initial_watchexpr)
+
+	// Slice of slices => set on each inner slice's strings
+	expected_logs = []expectedWpLog{
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "slice_slices[0][0]"},
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "slice_slices[0][1]"},
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "slice_slices[1][0]"},
+		{kind: CreateWatchpoint, lineno: 12, watchexpr: "slice_slices[1][1]"},
+	}
+	initial_watchexpr = "slice_slices"
+	run(t, dir+"slice_slices.go", expected_logs, &initial_watchexpr)
+}
+
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
 		{kind: CreateWatchpoint, lineno: 22, watchexpr: "arr"},
