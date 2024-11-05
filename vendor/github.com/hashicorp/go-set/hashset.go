@@ -17,63 +17,37 @@ type Hash interface {
 	~string | ~int | ~uint | ~int64 | ~uint64 | ~int32 | ~uint32 | ~int16 | ~uint16 | ~int8 | ~uint8
 }
 
-// Hasher represents a type that implements a Hash() method. Types that wish to
-// cache a hash value with an internal field should implement Hash accordingly.
-type Hasher[H Hash] interface {
+// HashFunc is a generic type constraint for any type that implements a Hash()
+// method with a Hash return type.
+type HashFunc[H Hash] interface {
 	Hash() H
 }
 
-// HasherFunc creates a closure around the T.Hash function so that the type can
-// be used as the HashFunc for a HashSet.
-func HasherFunc[T Hasher[H], H Hash]() HashFunc[T, H] {
-	return func(t T) H {
-		return t.Hash()
-	}
-}
-
-// HashFunc represents a function that that produces a hash value when applied
-// to a given T. Typically this will be implemented as T.Hash but by separating
-// HashFunc a HashSet can be made to make use of any hash implementation.
-type HashFunc[T any, H Hash] func(T) H
-
 // HashSet is a generic implementation of the mathematical data structure, oriented
 // around the use of a HashFunc to make hash values from other types.
-type HashSet[T any, H Hash] struct {
-	fn    HashFunc[T, H]
+type HashSet[T HashFunc[H], H Hash] struct {
 	items map[H]T
 }
 
-// NewHashSet creates a HashSet with underlying capacity of size and will compute
-// hash values from the T.Hash method.
-func NewHashSet[T Hasher[H], H Hash](size int) *HashSet[T, H] {
-	return NewHashSetFunc[T, H](size, HasherFunc[T, H]())
-}
-
-// NewHashSetFunc creates a HashSet with underlying capacity of size and uses
-// the given hashing function to compute hashes on elements.
+// NewHashSet creates a HashSet with underlying capacity of size.
 //
 // A HashSet will automatically grow or shrink its capacity as items are added
 // or removed.
-func NewHashSetFunc[T any, H Hash](size int, fn HashFunc[T, H]) *HashSet[T, H] {
+//
+// T must implement HashFunc[H], where H is of Hash type. This allows custom types
+// that include non-comparable fields to provide their own hash algorithm.
+func NewHashSet[T HashFunc[H], H Hash](size int) *HashSet[T, H] {
 	return &HashSet[T, H]{
-		fn:    fn,
 		items: make(map[H]T, max(0, size)),
 	}
 }
 
-// HashSetFrom creates a new HashSet containing each element in items.
+// HashSetFrom creates a new HashSet containing each item in items.
 //
 // T must implement HashFunc[H], where H is of type Hash. This allows custom types
 // that include non-comparable fields to provide their own hash algorithm.
-func HashSetFrom[T Hasher[H], H Hash](items []T) *HashSet[T, H] {
+func HashSetFrom[T HashFunc[H], H Hash](items []T) *HashSet[T, H] {
 	s := NewHashSet[T, H](len(items))
-	s.InsertSlice(items)
-	return s
-}
-
-// NewHashSetFromFunc creates a new HashSet containing each element in items.
-func HashSetFromFunc[T any, H Hash](items []T, hash HashFunc[T, H]) *HashSet[T, H] {
-	s := NewHashSetFunc[T, H](len(items), hash)
 	s.InsertSlice(items)
 	return s
 }
@@ -82,12 +56,21 @@ func HashSetFromFunc[T any, H Hash](items []T, hash HashFunc[T, H]) *HashSet[T, 
 //
 // Return true if s was modified (item was not already in s), false otherwise.
 func (s *HashSet[T, H]) Insert(item T) bool {
-	key := s.fn(item)
+	key := item.Hash()
 	if _, exists := s.items[key]; exists {
 		return false
 	}
 	s.items[key] = item
 	return true
+}
+
+// InsertAll will insert each item in items into s.
+//
+// Return true if s was modified (at least one item was not already in s), false otherwise.
+//
+// Deprecated: use InsertSlice instead.
+func (s *HashSet[T, H]) InsertAll(items []T) bool {
+	return s.InsertSlice(items)
 }
 
 // InsertSlice will insert each item in items into s.
@@ -103,17 +86,17 @@ func (s *HashSet[T, H]) InsertSlice(items []T) bool {
 	return modified
 }
 
-// InsertSet will insert each element of col into s.
+// InsertSet will insert each element of o into s.
 //
-// Return true if s was modified (at least one item of col was not already in s), false otherwise.
-func (s *HashSet[T, H]) InsertSet(col Collection[T]) bool {
+// Return true if s was modified (at least one item of o was not already in s), false otherwise.
+func (s *HashSet[T, H]) InsertSet(o *HashSet[T, H]) bool {
 	modified := false
-	col.ForEach(func(item T) bool {
-		if s.Insert(item) {
+	for key, value := range o.items {
+		if _, exists := s.items[key]; !exists {
 			modified = true
 		}
-		return true
-	})
+		s.items[key] = value
+	}
 	return modified
 }
 
@@ -121,12 +104,21 @@ func (s *HashSet[T, H]) InsertSet(col Collection[T]) bool {
 //
 // Return true if s was modified (item was present), false otherwise.
 func (s *HashSet[T, H]) Remove(item T) bool {
-	key := s.fn(item)
+	key := item.Hash()
 	if _, exists := s.items[key]; !exists {
 		return false
 	}
 	delete(s.items, key)
 	return true
+}
+
+// RemoveAll will remove each item in items from s.
+//
+// Return true if s was modified (any item was present), false otherwise.
+//
+// Deprecated: use RemoveSlice instead.
+func (s *HashSet[T, H]) RemoveAll(items []T) bool {
+	return s.RemoveSlice(items)
 }
 
 // RemoveSlice will remove each item in items from s.
@@ -142,25 +134,51 @@ func (s *HashSet[T, H]) RemoveSlice(items []T) bool {
 	return modified
 }
 
-// RemoveSet will remove each element of col from s.
+// RemoveSet will remove each element of o from s.
 //
-// Return true if s was modified (any item of col was present in s), false otherwise.
-func (s *HashSet[T, H]) RemoveSet(col Collection[T]) bool {
-	return removeSet(s, col)
+// Return true if s was modified (any item of o was present in s), false otherwise.
+func (s *HashSet[T, H]) RemoveSet(o *HashSet[T, H]) bool {
+	modified := false
+	for key := range o.items {
+		if _, exists := s.items[key]; exists {
+			modified = true
+			delete(s.items, key)
+		}
+	}
+	return modified
 }
 
 // RemoveFunc will remove each element from s that satisfies condition f.
 //
 // Return true if s was modified, false otherwise.
 func (s *HashSet[T, H]) RemoveFunc(f func(item T) bool) bool {
-	return removeFunc(s, f)
+	modified := false
+	for _, item := range s.items {
+		if applies := f(item); applies {
+			s.Remove(item)
+			modified = true
+		}
+	}
+	return modified
 }
 
 // Contains returns whether item is present in s.
 func (s *HashSet[T, H]) Contains(item T) bool {
-	hash := s.fn(item)
-	_, exists := s.items[hash]
+	_, exists := s.items[item.Hash()]
 	return exists
+}
+
+// ContainsAll returns whether s contains at least every item in items.
+func (s *HashSet[T, H]) ContainsAll(items []T) bool {
+	if len(s.items) < len(items) {
+		return false
+	}
+	for _, item := range items {
+		if !s.Contains(item) {
+			return false
+		}
+	}
+	return true
 }
 
 // ContainsSlice returns whether s contains the same set of of elements
@@ -169,20 +187,20 @@ func (s *HashSet[T, H]) Contains(item T) bool {
 // If the slice is known to be set-like (no duplicates), EqualSlice provides
 // a more efficient implementation.
 func (s *HashSet[T, H]) ContainsSlice(items []T) bool {
-	return s.Equal(HashSetFromFunc[T, H](items, s.fn))
+	return s.Equal(HashSetFrom[T, H](items))
 }
 
-// Subset returns whether col is a subset of s.
-func (s *HashSet[T, H]) Subset(col Collection[T]) bool {
-	return subset(s, col)
-}
-
-// ProperSubset returns whether col is a proper subset of s.
-func (s *HashSet[T, H]) ProperSubset(col Collection[T]) bool {
-	if len(s.items) <= col.Size() {
+// Subset returns whether o is a subset of s.
+func (s *HashSet[T, H]) Subset(o *HashSet[T, H]) bool {
+	if len(s.items) < len(o.items) {
 		return false
 	}
-	return s.Subset(col)
+	for _, item := range o.items {
+		if !s.Contains(item) {
+			return false
+		}
+	}
+	return true
 }
 
 // Size returns the cardinality of s.
@@ -195,38 +213,47 @@ func (s *HashSet[T, H]) Empty() bool {
 	return s.Size() == 0
 }
 
-// Union returns a set that contains all elements of s and col combined.
-//
-// Elements in s take priority in the event of colliding hash values.
-func (s *HashSet[T, H]) Union(col Collection[T]) Collection[T] {
-	result := NewHashSetFunc[T, H](s.Size(), s.fn)
-	insert(result, s)
-	insert(result, col)
+// Union returns a set that contains all elements of s and o combined.
+func (s *HashSet[T, H]) Union(o *HashSet[T, H]) *HashSet[T, H] {
+	result := NewHashSet[T, H](s.Size())
+	for key, item := range s.items {
+		result.items[key] = item
+	}
+	for key, item := range o.items {
+		result.items[key] = item
+	}
 	return result
 }
 
-// Difference returns a set that contains elements of s that are not in col.
-func (s *HashSet[T, H]) Difference(col Collection[T]) Collection[T] {
-	result := NewHashSetFunc[T, H](max(0, s.Size()-col.Size()), s.fn)
-	s.ForEach(func(item T) bool {
-		if !col.Contains(item) {
+// Difference returns a set that contains elements of s that are not in o.
+func (s *HashSet[T, H]) Difference(o *HashSet[T, H]) *HashSet[T, H] {
+	result := NewHashSet[T, H](max(0, s.Size()-o.Size()))
+	for key, item := range s.items {
+		if _, exists := o.items[key]; !exists {
+			result.items[key] = item
+		}
+	}
+	return result
+}
+
+// Intersect returns a set that contains elements that are present in both s and o.
+func (s *HashSet[T, H]) Intersect(o *HashSet[T, H]) *HashSet[T, H] {
+	result := NewHashSet[T, H](0)
+	big, small := s, o
+	if s.Size() < o.Size() {
+		big, small = o, s
+	}
+	for _, item := range small.items {
+		if big.Contains(item) {
 			result.Insert(item)
 		}
-		return true
-	})
-	return result
-}
-
-// Intersect returns a set that contains elements that are present in both s and col.
-func (s *HashSet[T, H]) Intersect(col Collection[T]) Collection[T] {
-	result := NewHashSetFunc[T, H](0, s.fn)
-	intersect(result, s, col)
+	}
 	return result
 }
 
 // Copy creates a shallow copy of s.
 func (s *HashSet[T, H]) Copy() *HashSet[T, H] {
-	result := NewHashSetFunc[T, H](s.Size(), s.fn)
+	result := NewHashSet[T, H](s.Size())
 	for key, item := range s.items {
 		result.items[key] = item
 	}
@@ -242,6 +269,13 @@ func (s *HashSet[T, H]) Slice() []T {
 		result = append(result, item)
 	}
 	return result
+}
+
+// List creates a copy of s as a slice.
+//
+// Deprecated: use Slice() instead.
+func (s *HashSet[T, H]) List() []T {
+	return s.Slice()
 }
 
 // String creates a string representation of s, using "%v" printf formatting to transform
@@ -277,41 +311,16 @@ func (s *HashSet[T, H]) Equal(o *HashSet[T, H]) bool {
 	return true
 }
 
-// EqualSet returns whether s and col contain the same elements.
-func (s *HashSet[T, H]) EqualSet(col Collection[T]) bool {
-	return equalSet(s, col)
-}
-
 // EqualSlice returns whether s and items contain the same elements.
 //
-// The items slice may contain duplicates.
-//
-// If the items slice is known to contain no duplicates, EqualSliceSet can be
-// used instead as a faster implementation.
-//
-// To detect if a slice is a subset of s, use ContainsSlice.
+// If items contains duplicates EqualSlice will return false; it is
+// assumed that items is itself set-like. For comparing equality with
+// a slice that may contain duplicates, use ContainsSlice.
 func (s *HashSet[T, H]) EqualSlice(items []T) bool {
-	other := HashSetFromFunc[T, H](items, s.fn)
-	return s.Equal(other)
-}
-
-// EqualSliceSet returns whether s and items contain exactly the same elements.
-//
-// If items contains duplicates EqualSliceSet will return false. The elements of
-// items are assumed to be set-like. For comparing s to a slice that may contain
-// duplicate elements, use EqualSlice instead.
-//
-// To detect if a slice is a subset of s, use ContainsSlice.
-func (s *HashSet[T, H]) EqualSliceSet(items []T) bool {
-	if len(items) != s.Size() {
+	if len(s.items) != len(items) {
 		return false
 	}
-	for _, item := range items {
-		if !s.Contains(item) {
-			return false
-		}
-	}
-	return true
+	return s.ContainsAll(items)
 }
 
 // MarshalJSON implements the json.Marshaler interface.
@@ -324,9 +333,6 @@ func (s *HashSet[T, H]) UnmarshalJSON(data []byte) error {
 	return unmarshalJSON[T](s, data)
 }
 
-// ForEach iterates every element in s, apply the given visit function.
-//
-// If the visit returns false at any point, iteration is halted.
 func (s *HashSet[T, H]) ForEach(visit func(T) bool) {
 	for _, item := range s.items {
 		if !visit(item) {

@@ -7,26 +7,17 @@
 The `go-set` repository provides a `set` package containing a few
 generic [Set](https://en.wikipedia.org/wiki/Set) implementations for Go.
 
----
-
-**PSA** October 2023 - The **v2** version of this package has been published, starting at
-tag version `v2.1.0`. A description of the changes including backwards incompatibilities
-can be found in https://github.com/hashicorp/go-set/issues/73
-
----
-
 Each implementation is optimal for a particular use case.
 
-**Set[T]** is ideal for `comparable` types.
+`Set` is ideal for `comparable` types.
   - backed by `map` builtin
   - commonly used with `string`, `int`, simple `struct` types, etc.
 
-**HashSet[T]** is useful for types that implement a `Hash()` function.
+`HashSet` is useful for types that implement a `Hash()` function.
   - backed by `map` builtin
   - commonly used with complex structs
-  - also works with custom `HashFunc[T]` implementations
 
-**TreeSet[T]** is useful for comparable data (via `CompareFunc[T]`)
+`TreeSet` is useful for comparable data (via `Compare[T]`)
   - backed by Red-Black Binary Search Tree
   - commonly used with complex structs with extrinsic order
   - efficient iteration in sort order
@@ -34,21 +25,9 @@ Each implementation is optimal for a particular use case.
 
 This package is not thread-safe.
 
----
-
 # Documentation
 
-The full `go-set` package reference is available on [pkg.go.dev](https://pkg.go.dev/github.com/hashicorp/go-set).
-
-# Install
-
-```shell
-go get github.com/hashicorp/go-set/v2@latest
-```
-
-```shell
-import "github.com/hashicorp/go-set/v2"
-```
+The full documentation is available on [pkg.go.dev](https://pkg.go.dev/github.com/hashicorp/go-set).
 
 # Motivation
 
@@ -79,13 +58,10 @@ list := set.From[string](items).Slice()
 # Set
 
 The `go-set` package includes `Set` for types that satisfy the `comparable` constraint.
-Uniqueness of a set elements is guaranteed via shallow comparison (result of == operator).
-
-Note: if pointers or structs with pointer fields are stored in the `Set`, they will
-be compared in the sense of pointer addresses, not in the sense of referenced values.
-Due to this fact the `Set` type is recommended to be used with builtin types like
-`string`, `int`, or simple struct types with no pointers. `Set` usage with pointers or 
-structs with pointer is also possible if shallow equality is acceptable.
+Note that complex structs (i.e. is a pointer or contains pointer fields) will not be
+"comparable" in the sense of deep equality, but rather in the sense of pointer addresses.
+The `Set` type should be used with builtin types like `string`, `int`, or simple struct
+types with no pointers.
 
 # HashSet
 
@@ -99,31 +75,63 @@ implement an efficient hash function using a hash code based on prime multiples.
 
 The `go-set` package includes `TreeSet` for creating sorted sets. A `TreeSet` may
 be used with any type `T` as the comparison between elements is provided by implementing
-`CompareFunc[T]`. The `Compare[GoType]` helper provides a convenient implementation of
-`CompareFunc` for `builtin` types like `string` or `int`. A `TreeSet` is backed by
+`Compare[T]`. The `Cmp[builtin]` helper provides a convenient implementation of
+`Compare` for `builtin` types like `string` or `int`. A `TreeSet` is backed by
 an underlying balanced binary search tree, making operations like in-order traversal
 efficient, in addition to enabling functions like `Min()`, `Max()`, `TopK()`, and
 `BottomK()`.
 
-# Collection[T]
 
-The `Collection[T]` interface is implemented by each of `Set`, `HashSet`, and `TreeSet`.
+### Methods
 
-It serves as a useful abstraction over the common methods implemented by each set type.
+Implements the following set operations
 
-### Iteration
+- Insert
+- InsertSlice
+- InsertSet
+- Remove
+- RemoveSlice
+- RemoveSet
+- RemoveFunc
+- Contains
+- ContainsAll
+- ContainsSlice
+- Subset
+- Size
+- Empty
+- Union
+- Difference
+- Intersect
 
-Go still has no support for using `range` over user defined types. Until that becomes
-possible, each of `Set`, `HashSet`, and `TreeSet` implements a `ForEach` method for
-iterating each element in a set. The argument is a function that accepts an item from
-the set and returns a boolean, indicating whether iteration should be halted.
+Provides helper methods
 
-```go
-// e.g. print each item in the set
-s.ForEach(func(item T) bool {
-  fmt.Println(item)
-  return true
-})
+- Equal
+- Copy
+- Slice
+- String
+
+TreeSet helper methods
+- Min
+- Max
+- TopK
+- BottomK
+- FirstAbove
+- FirstAboveEqual
+- Above
+- AboveEqual
+- FirstBelow
+- FirstBelowEqual
+- Below
+- BelowEqual
+
+# Install
+
+```
+go get github.com/hashicorp/go-set@latest
+```
+
+```
+import "github.com/hashicorp/go-set"
 ```
 
 # Set Examples
@@ -193,14 +201,14 @@ s.Insert(e1)
 
 Below are simple example usages of `TreeSet`
 
-(using the `Compare` helper to compare a built in `GoType`)
+(using `Cmp` as `Compare`)
 
 ```go
-ts := NewTreeSet[int](Compare[int])
+ts := NewTreeSet[int, Compare[int]](Cmp[int])
 ts.Insert(5)
 ```
 
-(using a custom `CompareFunc`)
+(using custom `Compare`)
 
 ```go
 type waypoint struct {
@@ -212,7 +220,7 @@ cmp := func(w1, w2 *waypoint) int {
     return w1.distance - w2.distance
 }
 
-ts := NewTreeSet[*waypoint](cmp)
+ts := NewTreeSet[*waypoint, Compare[*waypoint]](cmp)
 ts.Insert(&waypoint{distance: 42, name: "tango"})
 ts.Insert(&waypoint{distance: 13, name: "alpha"})
 ts.Insert(&waypoint{distance: 71, name: "xray"})

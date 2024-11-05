@@ -8,7 +8,7 @@ import (
 
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
-	set "github.com/hashicorp/go-set/v2"
+	set "github.com/hashicorp/go-set"
 )
 
 // Data structures used to create the configuration lens

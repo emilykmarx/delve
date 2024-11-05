@@ -14,7 +14,7 @@ import (
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
-	"github.com/hashicorp/go-set/v2"
+	"github.com/hashicorp/go-set"
 )
 
 // Add taint in pendingWp state to any existing entry in m-p map

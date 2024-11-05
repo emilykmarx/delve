@@ -15,14 +15,20 @@ type nothing struct{}
 
 var sentinel = nothing{}
 
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // New creates a new Set with initial underlying capacity of size.
 //
 // A Set will automatically grow or shrink its capacity as items are added or
 // removed.
 //
-// T may be any comparable type. Keep in mind that pointer types or structs
-// containing pointer fields will be compared using shallow equality. For deep
-// equality use HashSet instead.
+// T must *not* be of pointer type, nor contain pointer fields, which are comparable
+// but not in the way you expect. For these types, use HashSet instead.
 func New[T comparable](size int) *Set[T] {
 	return &Set[T]{
 		items: make(map[T]nothing, max(0, size)),
@@ -31,9 +37,8 @@ func New[T comparable](size int) *Set[T] {
 
 // From creates a new Set containing each item in items.
 //
-// T may be any comparable type. Keep in mind that pointer types or structs
-// containing pointer fields will be compared using shallow equality. For deep
-// equality use HashSet instead.
+// T must *not* be of pointer type, nor contain pointer fields, which are comparable
+// but not in the way you expect. For these types, use HashSet instead.
 func From[T comparable](items []T) *Set[T] {
 	s := New[T](len(items))
 	s.InsertSlice(items)
@@ -42,9 +47,8 @@ func From[T comparable](items []T) *Set[T] {
 
 // FromFunc creates a new Set containing a conversion of each item in items.
 //
-// T may be any comparable type. Keep in mind that pointer types or structs
-// containing pointer fields will be compared using shallow equality. For deep
-// equality use HashSet instead.
+// T must *not* be of pointer type, nor contain pointer fields, which are comparable
+// but not in the way you expect. For these types, use HashSet instead.
 func FromFunc[A any, T comparable](items []A, conversion func(A) T) *Set[T] {
 	s := New[T](len(items))
 	for _, item := range items {
@@ -71,6 +75,15 @@ func (s *Set[T]) Insert(item T) bool {
 	return true
 }
 
+// InsertAll will insert each item in items into s.
+//
+// Return true if s was modified (at least one item was not already in s), false otherwise.
+//
+// Deprecated: use InsertSlice instead.
+func (s *Set[T]) InsertAll(items []T) bool {
+	return s.InsertSlice(items)
+}
+
 // InsertSlice will insert each item in items into s.
 //
 // Return true if s was modified (at least one item was not already in s), false otherwise.
@@ -84,17 +97,16 @@ func (s *Set[T]) InsertSlice(items []T) bool {
 	return modified
 }
 
-// InsertSet will insert each element of col into s.
+// InsertSet will insert each element of o into s.
 //
-// Return true if s was modified (at least one item of col was not already in s), false otherwise.
-func (s *Set[T]) InsertSet(col Collection[T]) bool {
+// Return true if s was modified (at least one item of o was not already in s), false otherwise.
+func (s *Set[T]) InsertSet(o *Set[T]) bool {
 	modified := false
-	col.ForEach(func(item T) bool {
+	for item := range o.items {
 		if s.Insert(item) {
 			modified = true
 		}
-		return true
-	})
+	}
 	return modified
 }
 
@@ -107,6 +119,15 @@ func (s *Set[T]) Remove(item T) bool {
 	}
 	delete(s.items, item)
 	return true
+}
+
+// RemoveAll will remove each item in items from s.
+//
+// Return true if s was modified (any item was present), false otherwise.
+//
+// Deprecated: use RemoveSlice instead.
+func (s *Set[T]) RemoveAll(items []T) bool {
+	return s.RemoveSlice(items)
 }
 
 // RemoveSlice will remove each item in items from s.
@@ -122,18 +143,31 @@ func (s *Set[T]) RemoveSlice(items []T) bool {
 	return modified
 }
 
-// RemoveSet will remove each element of col from s.
+// RemoveSet will remove each element of o from s.
 //
 // Return true if s was modified (any item of o was present in s), false otherwise.
-func (s *Set[T]) RemoveSet(col Collection[T]) bool {
-	return removeSet(s, col)
+func (s *Set[T]) RemoveSet(o *Set[T]) bool {
+	modified := false
+	for item := range o.items {
+		if s.Remove(item) {
+			modified = true
+		}
+	}
+	return modified
 }
 
 // RemoveFunc will remove each element from s that satisfies condition f.
 //
 // Return true if s was modified, false otherwise.
 func (s *Set[T]) RemoveFunc(f func(T) bool) bool {
-	return removeFunc(s, f)
+	modified := false
+	for item := range s.items {
+		if applies := f(item); applies {
+			s.Remove(item)
+			modified = true
+		}
+	}
+	return modified
 }
 
 // Contains returns whether item is present in s.
@@ -142,22 +176,39 @@ func (s *Set[T]) Contains(item T) bool {
 	return exists
 }
 
-// ContainsSlice returns whether all elements in items are present in s.
-func (s *Set[T]) ContainsSlice(items []T) bool {
-	return containsSlice(s, items)
-}
-
-// Subset returns whether col is a subset of s.
-func (s *Set[T]) Subset(col Collection[T]) bool {
-	return subset(s, col)
-}
-
-// Subset returns whether col is a proper subset of s.
-func (s *Set[T]) ProperSubset(col Collection[T]) bool {
-	if len(s.items) <= col.Size() {
+// ContainsAll returns whether s contains at least every item in items.
+func (s *Set[T]) ContainsAll(items []T) bool {
+	if len(s.items) < len(items) {
 		return false
 	}
-	return s.Subset(col)
+	for _, item := range items {
+		if !s.Contains(item) {
+			return false
+		}
+	}
+	return true
+}
+
+// ContainsSlice returns whether s contains the same set of of elements
+// that are in items. The elements of items may contain duplicates.
+//
+// If the slice is known to be set-like (no duplicates), EqualSlice provides
+// a more efficient implementation.
+func (s *Set[T]) ContainsSlice(items []T) bool {
+	return s.Equal(From(items))
+}
+
+// Subset returns whether o is a subset of s.
+func (s *Set[T]) Subset(o *Set[T]) bool {
+	if len(s.items) < len(o.items) {
+		return false
+	}
+	for item := range o.items {
+		if !s.Contains(item) {
+			return false
+		}
+	}
+	return true
 }
 
 // Size returns the cardinality of s.
@@ -170,30 +221,41 @@ func (s *Set[T]) Empty() bool {
 	return s.Size() == 0
 }
 
-// Union returns a set that contains all elements of s and col combined.
-func (s *Set[T]) Union(col Collection[T]) Collection[T] {
-	size := max(s.Size(), col.Size())
-	result := New[T](size)
-	insert(result, s)
-	insert(result, col)
+// Union returns a set that contains all elements of s and o combined.
+func (s *Set[T]) Union(o *Set[T]) *Set[T] {
+	result := New[T](s.Size())
+	for item := range s.items {
+		result.items[item] = sentinel
+	}
+	for item := range o.items {
+		result.items[item] = sentinel
+	}
 	return result
 }
 
-// Difference returns a set that contains elements of s that are not in col.
-func (s *Set[T]) Difference(col Collection[T]) Collection[T] {
-	result := New[T](max(0, s.Size()-col.Size()))
+// Difference returns a set that contains elements of s that are not in o.
+func (s *Set[T]) Difference(o *Set[T]) *Set[T] {
+	result := New[T](max(0, s.Size()-o.Size()))
 	for item := range s.items {
-		if !col.Contains(item) {
+		if !o.Contains(item) {
 			result.items[item] = sentinel
 		}
 	}
 	return result
 }
 
-// Intersect returns a set that contains elements that are present in both s and col.
-func (s *Set[T]) Intersect(col Collection[T]) Collection[T] {
+// Intersect returns a set that contains elements that are present in both s and o.
+func (s *Set[T]) Intersect(o *Set[T]) *Set[T] {
 	result := New[T](0)
-	intersect(result, s, col)
+	big, small := s, o
+	if s.Size() < o.Size() {
+		big, small = o, s
+	}
+	for item := range small.items {
+		if big.Contains(item) {
+			result.Insert(item)
+		}
+	}
 	return result
 }
 
@@ -213,6 +275,13 @@ func (s *Set[T]) Slice() []T {
 		result = append(result, item)
 	}
 	return result
+}
+
+// List creates a copy of s as a slice.
+//
+// Deprecated: use Slice() instead.
+func (s *Set[T]) List() []T {
+	return s.Slice()
 }
 
 // String creates a string representation of s, using "%v" printf formating to transform
@@ -240,49 +309,26 @@ func (s *Set[T]) Equal(o *Set[T]) bool {
 	if len(s.items) != len(o.items) {
 		return false
 	}
+
 	for item := range s.items {
 		if !o.Contains(item) {
 			return false
 		}
 	}
-	return true
-}
 
-// EqualSet returns whether s and col contain the same elements.
-func (s *Set[T]) EqualSet(col Collection[T]) bool {
-	return equalSet(s, col)
+	return true
 }
 
 // EqualSlice returns whether s and items contain the same elements.
 //
-// The items slice may contain duplicates.
-//
-// If the items slice is known to contain no duplicates, EqualSliceSet may be
-// used instead as a faster implementation.
-//
-// To detect if a slice is a subset of s, use ContainsSlice.
+// If items contains duplicates EqualSlice will return false; it is
+// assumed that items is itself set-like. For comparing equality with
+// a slice that may contain duplicates, use ContainsSlice.
 func (s *Set[T]) EqualSlice(items []T) bool {
-	other := From[T](items)
-	return s.Equal(other)
-}
-
-// EqualSliceSet returns whether s and items contain exactly the same elements.
-//
-// If items contains duplicates EqualSliceSet will return false. The elements of
-// items are assumed to be set-like. For comparing s to a slice that may contain
-// duplicate elements, use EqualSlice instead.
-//
-// To detect if a slice is a subset of s, use ContainsSlice.
-func (s *Set[T]) EqualSliceSet(items []T) bool {
-	if len(items) != s.Size() {
+	if len(s.items) != len(items) {
 		return false
 	}
-	for _, item := range items {
-		if !s.Contains(item) {
-			return false
-		}
-	}
-	return true
+	return s.ContainsAll(items)
 }
 
 // MarshalJSON implements the json.Marshaler interface.
@@ -295,9 +341,6 @@ func (s *Set[T]) UnmarshalJSON(data []byte) error {
 	return unmarshalJSON[T](s, data)
 }
 
-// ForEach iterates every element in s, applying the given visit function.
-//
-// If the visit returns false at any point, iteration is halted.
 func (s *Set[T]) ForEach(visit func(T) bool) {
 	for item := range s.items {
 		if !visit(item) {
