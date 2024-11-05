@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	sys "golang.org/x/sys/unix"
 
@@ -329,8 +330,8 @@ func (dbp *nativeProcess) requestManualStop() (err error) {
 }
 
 const (
-	ptraceOptionsNormal     = syscall.PTRACE_O_TRACECLONE
-	ptraceOptionsFollowExec = syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEVFORK | syscall.PTRACE_O_TRACEEXEC
+	ptraceOptionsNormal     = syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACESYSGOOD
+	ptraceOptionsFollowExec = syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEVFORK | syscall.PTRACE_O_TRACEEXEC | syscall.PTRACE_O_TRACESYSGOOD
 )
 
 // Attach to a newly created thread, and store that thread in our list of
@@ -447,6 +448,16 @@ var (
 	First_launch                = true
 	Start_time                  = time.Now()
 )
+
+type ptraceSyscallinfoAmd64 struct {
+	op   uint8
+	arch uint32
+	pc   uint64
+	rsp  uint64
+	// entry info (no need for exit info)
+	syscall_no uint64
+	args       [6]uintptr // only care about pointer args
+}
 
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
 	var waitdbp *nativeProcess = nil
@@ -606,6 +617,36 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 				th.os.setbp = true
 			}
 			return th, nil
+		}
+
+		if status.StopSignal() == sys.SIGTRAP|0x80 {
+			// syscall entry/exit
+			if threadStacktrace(th, "syscall.openat") {
+				fmt.Println("OPENAT\n")
+				var syscallerr error
+				var syscallinfo ptraceSyscallinfoAmd64
+				sz := unsafe.Sizeof(syscallinfo)
+				th.dbp.execPtraceFunc(func() {
+					_, _, syscallerr = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GET_SYSCALL_INFO, uintptr(th.ThreadID()), uintptr(sz),
+						uintptr(unsafe.Pointer(&syscallinfo)), 0, 0)
+				})
+				if syscallerr != syscall.Errno(0) {
+					log.Panicf("PTRACE_GET_SYSCALL_INFO returned err: %v\n", syscallerr.Error())
+				}
+				fmt.Printf("syscallinfo: %+v\n", syscallinfo)
+
+				if syscallinfo.op == sys.PTRACE_SYSCALL_INFO_ENTRY {
+					fmt.Printf("syscall no: %v\n", syscallinfo.syscall_no)
+					for _, arg := range syscallinfo.args {
+						fmt.Printf("arg: %#x\n", arg)
+					}
+				}
+			}
+			// TODO for now, just resume this thread and continue
+			if err := th.resume(); err != nil {
+				log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+			}
+			continue
 		}
 
 		// TODO(dp) alert user about unexpected signals here.
@@ -858,6 +899,29 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 	}
 
 	return trapthread, nil
+}
+
+// If fn is passed, check for it in stacktrace
+// Else print stacktrace
+func threadStacktrace(th *nativeThread, function string) bool {
+	t := proc.Target{Process: th.dbp}
+	stack, err := proc.ThreadStacktrace(&t, th, 50)
+	if err != nil {
+		fmt.Printf("Failed to get stacktrace: %v\n", err)
+	}
+	for _, frame := range stack {
+		fn := "nil"
+		if frame.Call.Fn != nil {
+			fn = frame.Call.Fn.Name
+			if fn == function {
+				return true
+			}
+		}
+		if function == "" {
+			fmt.Printf("%#x in %s\n at %s:%d\n", frame.Call.PC, fn, frame.Call.File, frame.Call.Line)
+		}
+	}
+	return false
 }
 
 func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativeThread, switchTrapthread *bool) error {

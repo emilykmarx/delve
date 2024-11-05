@@ -47,7 +47,7 @@ func (t *nativeThread) resume() error {
 
 func (t *nativeThread) resumeWithSig(sig int) (err error) {
 	t.os.running = true
-	t.dbp.execPtraceFunc(func() { err = ptraceCont(t.ID, sig) })
+	t.dbp.execPtraceFunc(func() { err = sys.PtraceSyscall(t.ID, sig) })
 	return
 }
 
