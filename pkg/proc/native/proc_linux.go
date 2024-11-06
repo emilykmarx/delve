@@ -456,8 +456,75 @@ type ptraceSyscallinfoAmd64 struct {
 	rsp  uint64
 	// entry info (no need for exit info)
 	syscall_no uint64
-	args       [6]uintptr // only care about pointer args
+	args       [6]uint64 // only care about pointer args
 }
+
+func handleSyscallTrap(th *nativeThread) {
+	if threadStacktrace(th, "syscall.openat") {
+		fmt.Println("OPENAT\n")
+	} else {
+		// TODO for now, just resume this thread and continue
+		if err := th.resume(); err != nil {
+			log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+		}
+		return
+	}
+	// PERF for common syscalls we know won't fault (sigreturn/sigaction?),
+	// could just resume
+	var syscallerr error
+	var syscallinfo ptraceSyscallinfoAmd64
+	sz := unsafe.Sizeof(syscallinfo)
+	th.dbp.execPtraceFunc(func() {
+		_, _, syscallerr = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GET_SYSCALL_INFO, uintptr(th.ThreadID()), uintptr(sz),
+			uintptr(unsafe.Pointer(&syscallinfo)), 0, 0)
+	})
+	if syscallerr != syscall.Errno(0) {
+		log.Panicf("PTRACE_GET_SYSCALL_INFO returned err: %v\n", syscallerr.Error())
+	}
+	fmt.Printf("syscallinfo: %+v\n", syscallinfo)
+
+	if syscallinfo.op == sys.PTRACE_SYSCALL_INFO_ENTRY {
+		fmt.Printf("syscall no: %v\n", syscallinfo.syscall_no)
+		for _, arg := range syscallinfo.args {
+			fmt.Printf("arg: %#x\n", arg)
+		}
+		// Check if filename arg is on same page as a software watchpoint
+		// XXX for now, only handle openat
+		filename := syscallinfo.args[1]
+		fake_wp := proc.Breakpoint{Addr: filename} // just used to check for buddy
+		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
+			fmt.Printf("arg will fault\n")
+			th.syscallArg = &filename // record arg so we can re-mprotect on exit
+			// Set status as if segfaulted
+			*th.Status = SIGSEGV_STATUS
+		} else {
+			// TODO for now, just resume this thread and continue
+			if err := th.resume(); err != nil {
+				log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+			}
+		}
+	} else if syscallinfo.op == sys.PTRACE_SYSCALL_INFO_EXIT {
+		// Re-mprotect if necessary
+		if th.syscallArg != nil {
+			// Is it possible for the sw wp to be deleted during syscall? Check just in case
+			fake_wp := proc.Breakpoint{Addr: *th.syscallArg} // just used to check for buddy
+			if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
+				fmt.Printf("re-mprotecting\n")
+				th.toggleMprotect(*th.syscallArg, true)
+			}
+			th.syscallArg = nil
+		}
+		// TODO for now, just resume this thread and continue
+		if err := th.resume(); err != nil {
+			log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+		}
+	}
+}
+
+const (
+	SYSCALL_TRAP   = sys.SIGTRAP | 0x80
+	SIGSEGV_STATUS = 0xb7f
+)
 
 func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (*nativeThread, error) {
 	var waitdbp *nativeProcess = nil
@@ -605,7 +672,15 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			continue
 		}
 
-		// Set bp if thread segfaulted, whether spuriously or not
+		if status.StopSignal() == SYSCALL_TRAP {
+			handleSyscallTrap(th)
+			if status.StopSignal() != sys.SIGSEGV {
+				// we resumed
+				continue
+			}
+		}
+
+		// Set bp if thread segfaulted (or would segfault in a syscall), whether spuriously or not
 		if (halt && status.StopSignal() == sys.SIGSTOP) ||
 			(status.StopSignal() == sys.SIGTRAP) ||
 			(status.StopSignal() == sys.SIGSEGV) {
@@ -617,36 +692,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 				th.os.setbp = true
 			}
 			return th, nil
-		}
-
-		if status.StopSignal() == sys.SIGTRAP|0x80 {
-			// syscall entry/exit
-			if threadStacktrace(th, "syscall.openat") {
-				fmt.Println("OPENAT\n")
-				var syscallerr error
-				var syscallinfo ptraceSyscallinfoAmd64
-				sz := unsafe.Sizeof(syscallinfo)
-				th.dbp.execPtraceFunc(func() {
-					_, _, syscallerr = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GET_SYSCALL_INFO, uintptr(th.ThreadID()), uintptr(sz),
-						uintptr(unsafe.Pointer(&syscallinfo)), 0, 0)
-				})
-				if syscallerr != syscall.Errno(0) {
-					log.Panicf("PTRACE_GET_SYSCALL_INFO returned err: %v\n", syscallerr.Error())
-				}
-				fmt.Printf("syscallinfo: %+v\n", syscallinfo)
-
-				if syscallinfo.op == sys.PTRACE_SYSCALL_INFO_ENTRY {
-					fmt.Printf("syscall no: %v\n", syscallinfo.syscall_no)
-					for _, arg := range syscallinfo.args {
-						fmt.Printf("arg: %#x\n", arg)
-					}
-				}
-			}
-			// TODO for now, just resume this thread and continue
-			if err := th.resume(); err != nil {
-				log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
-			}
-			continue
 		}
 
 		// TODO(dp) alert user about unexpected signals here.
@@ -777,13 +822,28 @@ func (procgrp *processGroup) resume() error {
 			for _, thread := range dbp.threads {
 				prev_bp := thread.CurrentBreakpoint.Breakpoint
 				if thread.CurrentBreakpoint.Breakpoint != nil {
-					if err := procgrp.stepInstruction(thread); err != nil {
-						return err
+					if thread.syscallArg != nil {
+						// Entering syscall that would fault => un-mprotect the page.
+						// Will re-mprotect on corresponding exit
+						prev_bp.AlwaysToggleMprotect = true
+						fmt.Printf("un-mprotecting\n")
+						if err := thread.clearSoftwareWatchpoint(prev_bp); err != nil {
+							fmt.Printf("failed to un-mprotect\n")
+							return err
+						}
+
+						prev_bp.AlwaysToggleMprotect = false
+					} else {
+						// regular bp
+						if err := procgrp.stepInstruction(thread); err != nil {
+							return err
+						}
+						if thread.CurrentBreakpoint.Breakpoint != prev_bp {
+							// Non-spurious segfault during step over sw bp
+							return SoftwareWatchpointAtBreakpoint{thread}
+						}
 					}
-					if thread.CurrentBreakpoint.Breakpoint != prev_bp {
-						// Non-spurious segfault during step over sw bp
-						return SoftwareWatchpointAtBreakpoint{thread}
-					}
+
 					thread.CurrentBreakpoint.Clear()
 				}
 			}

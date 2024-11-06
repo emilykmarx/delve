@@ -22,6 +22,9 @@ type nativeThread struct {
 	singleStepping bool
 	os             *osSpecificDetails
 	common         proc.CommonThread
+	// If thread is currently in a syscall that required un-mprotecting a page
+	// to prevent faulting on an arg, this is the addr of that arg
+	syscallArg *uint64
 }
 
 func (procgrp *processGroup) StepInstruction(threadID int) error {

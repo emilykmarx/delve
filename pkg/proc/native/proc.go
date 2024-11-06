@@ -401,11 +401,16 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 	return addr1 < addr2+sz2 && addr2 < addr1+sz1
 }
 
-// Assuming thread just segfaulted,
-// find the software watchpoint for the faulting address' page, if any.
+// Assuming thread just segfaulted (or would in syscall it's about to enter)
+// find the software watchpoint for the faulting address (or syscall arg), if any.
 // If none (i.e. spurious segfault), return placeholder wp.
 func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
-	faultingAddr := uint64(t.faultingAddr())
+	var faultingAddr uint64
+	if t.syscallArg != nil {
+		faultingAddr = *t.syscallArg
+	} else {
+		faultingAddr = uint64(t.faultingAddr())
+	}
 
 	for _, bp := range t.dbp.Breakpoints().M {
 		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
@@ -552,6 +557,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	mprotect_regs.Regs.Rip = thread.dbp.syscallPC
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
 	mprotect_regs.Regs.Rdi = pageAddr(addr)
+	fmt.Printf("toggle %#x\n", pageAddr(addr))
 	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())
 	if protect {
 		// PERF would be better to allow writes, but doesn't seem to be supported
@@ -583,8 +589,8 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 		return fmt.Errorf("failed to get regs after mprotect: %v", err.Error())
 	}
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
-	if mprotect_ret := sys.Errno(int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
-		return fmt.Errorf("mprotect for page addr %#x failed: errno %v", pageAddr(addr), mprotect_ret.Error())
+	if mprotect_ret := sys.Errno(-1 * int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
+		log.Panicf("mprotect for page addr %#x failed: errno %v", pageAddr(addr), mprotect_ret.Error())
 	}
 
 	// 3. Restore registers
@@ -599,10 +605,10 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	return nil
 }
 
-// Whether another software watchpoint exists on the same page as wp
+// Whether another software watchpoint (distinguished by ID) exists on the same page as wp
 func (dbp *nativeProcess) buddySoftwareWatchpoint(wp *proc.Breakpoint) bool {
 	for _, bp := range dbp.Breakpoints().M {
-		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware && bp.Addr != wp.Addr {
+		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware && bp.LogicalID() != wp.LogicalID() {
 			if pageAddr(bp.Addr) == pageAddr(wp.Addr) {
 				return true
 			}
