@@ -16,7 +16,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unsafe"
 
 	sys "golang.org/x/sys/unix"
 
@@ -330,8 +329,8 @@ func (dbp *nativeProcess) requestManualStop() (err error) {
 }
 
 const (
-	ptraceOptionsNormal     = syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACESYSGOOD
-	ptraceOptionsFollowExec = syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEVFORK | syscall.PTRACE_O_TRACEEXEC | syscall.PTRACE_O_TRACESYSGOOD
+	ptraceOptionsNormal     = syscall.PTRACE_O_TRACECLONE
+	ptraceOptionsFollowExec = syscall.PTRACE_O_TRACECLONE | syscall.PTRACE_O_TRACEVFORK | syscall.PTRACE_O_TRACEEXEC
 )
 
 // Attach to a newly created thread, and store that thread in our list of
@@ -449,80 +448,73 @@ var (
 	Start_time                  = time.Now()
 )
 
-type ptraceSyscallinfoAmd64 struct {
-	op   uint8
-	arch uint32
-	pc   uint64
-	rsp  uint64
-	// entry info (no need for exit info)
-	syscall_no uint64
-	args       [6]uint64 // only care about pointer args
-}
-
-func handleSyscallTrap(th *nativeThread) {
-	if threadStacktrace(th, "syscall.openat") {
-		fmt.Println("OPENAT\n")
-	} else {
-		// TODO for now, just resume this thread and continue
-		if err := th.resume(); err != nil {
-			log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
-		}
-		return
-	}
+func handleSyscallEntry(th *nativeThread) {
+	fmt.Printf("handleSyscallEntry\n")
+	threadStacktrace(th, "")
 	// PERF for common syscalls we know won't fault (sigreturn/sigaction?),
 	// could just resume
-	var syscallerr error
-	var syscallinfo ptraceSyscallinfoAmd64
-	sz := unsafe.Sizeof(syscallinfo)
-	th.dbp.execPtraceFunc(func() {
-		_, _, syscallerr = syscall.Syscall6(syscall.SYS_PTRACE, sys.PTRACE_GET_SYSCALL_INFO, uintptr(th.ThreadID()), uintptr(sz),
-			uintptr(unsafe.Pointer(&syscallinfo)), 0, 0)
-	})
-	if syscallerr != syscall.Errno(0) {
-		log.Panicf("PTRACE_GET_SYSCALL_INFO returned err: %v\n", syscallerr.Error())
-	}
-	fmt.Printf("syscallinfo: %+v\n", syscallinfo)
 
-	if syscallinfo.op == sys.PTRACE_SYSCALL_INFO_ENTRY {
-		fmt.Printf("syscall no: %v\n", syscallinfo.syscall_no)
-		for _, arg := range syscallinfo.args {
-			fmt.Printf("arg: %#x\n", arg)
-		}
-		// Check if filename arg is on same page as a software watchpoint
-		// XXX for now, only handle openat
-		filename := syscallinfo.args[1]
-		fake_wp := proc.Breakpoint{Addr: filename} // just used to check for buddy
+	// Syscall6 just moves args from go ABI regs to kernel ABI regs
+	raw_regs, err := th.Registers()
+	if err != nil {
+		log.Panicf("getting regs in handleSyscallEntry: %v\n", err.Error())
+	}
+	amd_regs := raw_regs.(*linutil.AMD64Registers)
+	regs := amd_regs.Regs
+	arg_regs := []uint64{regs.Rbx, regs.Rcx, regs.Rdi, regs.Rsi, regs.R8, regs.R9}
+	for _, arg := range arg_regs {
+		// TODO handle multiple faulting args
+		// TODO is is possible for args to be non-contiguous? (e.g. struct has a pointer -
+		// need to check if can access struct and what it points to?)
+		fake_wp := proc.Breakpoint{Addr: arg} // just used to check for buddy
 		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
-			fmt.Printf("arg will fault\n")
-			th.syscallArg = &filename // record arg so we can re-mprotect on exit
+			// Arg is on same page as a software watchpoint => syscall would fail with "bad address"
+			fmt.Printf("arg will fault: %#x\n", arg)
+			th.syscallArg = &arg // record arg so we can re-mprotect on exit
 			// Set status as if segfaulted
 			*th.Status = SIGSEGV_STATUS
-		} else {
-			// TODO for now, just resume this thread and continue
-			if err := th.resume(); err != nil {
-				log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+			// Set bp on syscall exit (XXX actual exit)
+			// Setting it this way won't update state in the Debugger - ok?
+			target := proc.Target{Process: th.dbp, Proc: th.dbp}
+			_, err := target.SetBreakpoint(-1, 0x4044ee, proc.UserBreakpoint, nil)
+			if err != nil {
+				log.Panicf("set syscall exit breakpoint: %v\n", err.Error())
 			}
-		}
-	} else if syscallinfo.op == sys.PTRACE_SYSCALL_INFO_EXIT {
-		// Re-mprotect if necessary
-		if th.syscallArg != nil {
-			// Is it possible for the sw wp to be deleted during syscall? Check just in case
-			fake_wp := proc.Breakpoint{Addr: *th.syscallArg} // just used to check for buddy
-			if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
-				fmt.Printf("re-mprotecting\n")
-				th.toggleMprotect(*th.syscallArg, true)
-			}
-			th.syscallArg = nil
-		}
-		// TODO for now, just resume this thread and continue
-		if err := th.resume(); err != nil {
-			log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+			return
 		}
 	}
+	// TODO for now, just resume this thread and continue
+	if err := th.resume(); err != nil {
+		log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+	}
+}
+
+func handleSyscallExit(th *nativeThread) {
+	fmt.Printf("handleSyscallExit\n")
+	threadStacktrace(th, "")
+	// Re-mprotect if necessary
+	if th.syscallArg != nil {
+		// Is it possible for the sw wp to be deleted during syscall? Check just in case
+		fake_wp := proc.Breakpoint{Addr: *th.syscallArg} // just used to check for buddy
+		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
+			fmt.Printf("re-mprotecting\n")
+			th.toggleMprotect(*th.syscallArg, true)
+		}
+		th.syscallArg = nil
+	}
+	// Clear the bp we had on exit
+	target := proc.Target{Process: th.dbp, Proc: th.dbp}
+	if err := target.ClearBreakpoint(0x4044ee); err != nil {
+		log.Panicf("clear syscall exit breakpoint: %v\n", err.Error())
+	}
+	// TODO for now, just resume this thread and continue
+	if err := th.resume(); err != nil {
+		log.Panicf("resuming thread at syscall entry/exit: %v\n", err.Error())
+	}
+
 }
 
 const (
-	SYSCALL_TRAP   = sys.SIGTRAP | 0x80
 	SIGSEGV_STATUS = 0xb7f
 )
 
@@ -672,12 +664,16 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			continue
 		}
 
-		if status.StopSignal() == SYSCALL_TRAP {
-			handleSyscallTrap(th)
+		pc, _ := th.PC()
+		if status.StopSignal() == sys.SIGTRAP && pc == 0x4044e0+1 { // XXX set bp on Syscall6 w/in dlv and save the PC
+			handleSyscallEntry(th)
 			if status.StopSignal() != sys.SIGSEGV {
 				// we resumed
 				continue
 			}
+		} else if status.StopSignal() == sys.SIGTRAP && pc == 0x4044ee+1 {
+			handleSyscallExit(th)
+			continue
 		}
 
 		// Set bp if thread segfaulted (or would segfault in a syscall), whether spuriously or not

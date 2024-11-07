@@ -1587,7 +1587,7 @@ func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread,
 		if recorded {
 			return
 		}
-		if bpsize := IsHardcodedBreakpoint(t.proc, pc); bpsize > 0 {
+		if bpsize := IsHardcodedBreakpoint(t.Proc, pc); bpsize > 0 {
 			setPC(thread, pc+bpsize)
 		}
 	}
@@ -1650,7 +1650,7 @@ func (t *Target) handleHardcodedBreakpoints(grp *TargetGroup, trapthread Thread,
 			// preceding instruction is a hardcoded breakpoint.
 			// We explicitly check for entry points of functions because the space
 			// between functions is usually filled with hardcoded breakpoints.
-			if (loc.Fn == nil || loc.Fn.Entry != loc.PC) && IsHardcodedBreakpoint(t.proc, loc.PC) > 0 {
+			if (loc.Fn == nil || loc.Fn.Entry != loc.PC) && IsHardcodedBreakpoint(t.Proc, loc.PC) > 0 {
 				stepOverBreak(thread, loc.PC)
 				setHardcodedBreakpoint(thread, loc)
 			}

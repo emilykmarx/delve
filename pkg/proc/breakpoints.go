@@ -536,7 +536,7 @@ func (t *Target) SetEBPFTracepoint(fnName string) error {
 	// Not every OS/arch that we support has support for eBPF,
 	// so check early and return an error if this is called on an
 	// unsupported system.
-	if !t.proc.SupportsBPF() {
+	if !t.Proc.SupportsBPF() {
 		return errors.New("eBPF is not supported")
 	}
 	fns, err := t.BinInfo().FindFunction(fnName)
@@ -623,7 +623,7 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 	//TODO(aarzilli): inlined calls?
 
 	// Finally, set the uprobe on the function.
-	return t.proc.SetUProbe(fn.Name, goidOffset, args)
+	return t.Proc.SetUProbe(fn.Name, goidOffset, args)
 }
 
 // Set watchpoint whose addr and size is already known
@@ -849,7 +849,7 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 		Addr:         addr,
 	}
 
-	err := t.proc.WriteBreakpoint(newBreakpoint)
+	err := t.Proc.WriteBreakpoint(newBreakpoint)
 	if err != nil {
 		if wtype != 0 {
 			fmt.Printf("exit setBreakpointInternal for wp w/ err from WriteBreakpoint: %v\n", err)
@@ -954,7 +954,7 @@ func (t *Target) finishClearBreakpoint(bp *Breakpoint) (bool, error) {
 	if len(bp.Breaklets) > 0 {
 		return false, nil
 	}
-	if err := t.proc.EraseBreakpoint(bp); err != nil {
+	if err := t.Proc.EraseBreakpoint(bp); err != nil {
 		return false, err
 	}
 

@@ -388,7 +388,7 @@ func (grp *TargetGroup) FollowExec(v bool, regex string) error {
 	}
 	it := ValidTargets{Group: grp}
 	for it.Next() {
-		err := it.proc.FollowExec(v)
+		err := it.Proc.FollowExec(v)
 		if err != nil {
 			return err
 		}

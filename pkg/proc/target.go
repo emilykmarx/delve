@@ -38,7 +38,7 @@ const (
 type Target struct {
 	Process
 
-	proc   ProcessInternal
+	Proc   ProcessInternal
 	recman RecordingManipulationInternal
 
 	pid     int
@@ -179,7 +179,7 @@ func (grp *TargetGroup) newTarget(p ProcessInternal, pid int, currentThread Thre
 
 	t := &Target{
 		Process:       p,
-		proc:          p,
+		Proc:          p,
 		fncallForG:    make(map[int64]*callInjection),
 		currentThread: currentThread,
 		pid:           pid,
@@ -237,7 +237,7 @@ func (t *Target) IsCgo() bool {
 // also returns an error describing why the Process is invalid (either
 // ErrProcessExited or ErrProcessDetached).
 func (t *Target) Valid() (bool, error) {
-	ok, err := t.proc.Valid()
+	ok, err := t.Proc.Valid()
 	if !ok && err != nil {
 		if pe, ok := err.(ErrProcessExited); ok {
 			pe.Status = t.exitStatus
@@ -424,7 +424,7 @@ type UProbeTraceResult struct {
 
 func (t *Target) GetBufferedTracepoints() []*UProbeTraceResult {
 	var results []*UProbeTraceResult
-	tracepoints := t.proc.GetBufferedTracepoints()
+	tracepoints := t.Proc.GetBufferedTracepoints()
 	convertInputParamToVariable := func(ip *ebpf.RawUProbeParam) *Variable {
 		v := &Variable{}
 		v.RealType = ip.RealType
@@ -477,7 +477,7 @@ func (grp *TargetGroup) RequestManualStop() error {
 	grp.cctx.StopMu.Lock()
 	defer grp.cctx.StopMu.Unlock()
 	grp.cctx.manualStopRequested = true
-	return grp.Selected.proc.RequestManualStop(grp.cctx)
+	return grp.Selected.Proc.RequestManualStop(grp.cctx)
 }
 
 const (

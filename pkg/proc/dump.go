@@ -166,7 +166,7 @@ func (t *Target) Dump(out elfwriter.WriteCloserSeeker, flags DumpFlags, state *D
 	var threadsDone bool
 
 	if flags&DumpPlatformIndependent == 0 {
-		threadsDone, notes, err = t.proc.DumpProcessNotes(notes, state.threadDone)
+		threadsDone, notes, err = t.Proc.DumpProcessNotes(notes, state.threadDone)
 		if err != nil {
 			state.setErr(err)
 			return
@@ -187,7 +187,7 @@ func (t *Target) Dump(out elfwriter.WriteCloserSeeker, flags DumpFlags, state *D
 		}
 	}
 
-	memmap, err := t.proc.MemoryMap()
+	memmap, err := t.Proc.MemoryMap()
 	if err != nil {
 		state.setErr(err)
 		return
