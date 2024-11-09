@@ -5662,6 +5662,46 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 		})
 }
 
+// Syscall should succeed even though one of its arguments is on the same page as a software watchpoint.
+func TestWatchpointsSyscallArgFault(t *testing.T) {
+	withTestProcessArgs("dlv_config_client/syscall_arg_fault", t, ".", []string{}, protest.AllNonOptimized,
+		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
+			// Set watchpoint on arg to syscall
+			// Open should succeed (no "bad address")
+
+			// bp in openat to set wp on one of its args (force situation where arg would fault)
+			setFileBreakpoint(p, t, "/usr/local/go/src/syscall/zsyscall_linux_amd64.go", 95)
+			assertNoError(grp.Continue(), t, "Continue to openAt")
+
+			scope, err := proc.GoroutineScope(p, p.CurrentThread())
+			assertNoError(err, t, "GoroutineScope")
+			_, err = p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware)
+			assertNoError(err, t, "SetWatchpoint")
+
+			// bp on syscall entry (set after wp just to avoid a bunch of continues before then)
+			setFunctionBreakpoint(p, t, "runtime/internal/syscall.Syscall6")
+			assertNoError(grp.Continue(), t, "Continue to openAt")
+
+			// hit bp for openat syscall entry => arg will non-spuriously fault
+			stack, err := proc.ThreadStacktrace(p, p.CurrentThread(), 50)
+			assertNoError(err, t, "Stacktrace after continue to openAt")
+			cur_syscall := stack[3].Call.Fn.Name // asm, RawSyscall6, Syscall6, openAt
+			if cur_syscall != "syscall.openat" {
+				t.Fatalf("Stopped at %v, not openat\n", cur_syscall)
+			}
+
+			// bunch of syscall entries that don't fault
+			err = grp.Continue()
+			for ; err == nil; err = grp.Continue() {
+			}
+			fmt.Printf("err after cont: %v\n", err)
+
+			//proc.ErrProcessExited
+			// open succeeds
+			//assertLineNumber(p, t, 17, "Return from os.Open()") // Position 0
+		})
+}
+
 func TestManualStopWhileStopped(t *testing.T) {
 	// Checks that RequestManualStop sent to a stopped thread does not cause the target process to die.
 	withTestProcess("loopprog", t, func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {

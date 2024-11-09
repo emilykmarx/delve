@@ -2,19 +2,18 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
-	"runtime"
 	_ "syscall"
 )
 
-// Note Open involves multiple syscalls: openat, epollctl
+// Open involves multiple syscalls: openat (non-spuriously faults in the test),
+// write (spuriously faults), others (no fault)
 func main() {
 	_, err := os.Open("proc_test.go")
 	if err != nil {
-		fmt.Printf("Open err: %v\n", err.Error())
-		runtime.Breakpoint()
+		log.Panicf("Open err: %v\n", err.Error())
 	} else {
 		fmt.Printf("Open succeeded\n")
-		runtime.Breakpoint()
 	}
 }

@@ -311,6 +311,9 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 
 	for {
 		err := procgrp.resume()
+		if err != nil {
+			fmt.Printf("resume() err: %v\n", err.Error())
+		}
 		if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
 			// Return the thread that was stopped at a breakpoint,
 			// which is now stopped at a software watchpoint
@@ -557,7 +560,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	mprotect_regs.Regs.Rip = thread.dbp.syscallPC
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
 	mprotect_regs.Regs.Rdi = pageAddr(addr)
-	fmt.Printf("toggle %#x\n", pageAddr(addr))
+	fmt.Printf("toggle %#x %v\n", pageAddr(addr), protect)
 	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())
 	if protect {
 		// PERF would be better to allow writes, but doesn't seem to be supported
@@ -589,6 +592,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 		return fmt.Errorf("failed to get regs after mprotect: %v", err.Error())
 	}
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
+	// Seems like want -1 only for some errnos?
 	if mprotect_ret := sys.Errno(-1 * int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
 		log.Panicf("mprotect for page addr %#x failed: errno %v", pageAddr(addr), mprotect_ret.Error())
 	}

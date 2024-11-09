@@ -38,6 +38,7 @@ func (procgrp *processGroup) StepInstruction(threadID int) error {
 // execute the instruction, and then replace the breakpoint.
 // Otherwise we simply execute the next instruction.
 func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
+	fmt.Println("stepInstruction")
 	t.singleStepping = true
 	defer func() {
 		t.singleStepping = false
@@ -60,6 +61,7 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			err = t.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 		}()
 	} else if t.stopSignal() == syscall.SIGSEGV {
+		fmt.Printf("stepInstruction treating thread %v as sigsegv\n", t.ThreadID())
 		// Software watchpoint (spurious or not)
 		// turn on toggling for duration of stepInstruction
 		bp.AlwaysToggleMprotect = true
@@ -76,6 +78,7 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			bp.AlwaysToggleMprotect = false
 		}()
 	} else if bp, ok := t.dbp.FindBreakpoint(pc, false); ok {
+		fmt.Println("step over sw bp")
 		// Software breakpoint
 		err = t.clearSoftwareBreakpoint(bp)
 		if err != nil {
@@ -158,6 +161,8 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 					return err
 				}
 			}
+		} else {
+			fmt.Println("did not find sw bp")
 		}
 	}
 
