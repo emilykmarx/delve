@@ -5694,11 +5694,9 @@ func TestWatchpointsSyscallArgFault(t *testing.T) {
 			err = grp.Continue()
 			for ; err == nil; err = grp.Continue() {
 			}
-			fmt.Printf("err after cont: %v\n", err)
 
-			//proc.ErrProcessExited
 			// open succeeds
-			//assertLineNumber(p, t, 17, "Return from os.Open()") // Position 0
+			assertExited(p, t, err)
 		})
 }
 

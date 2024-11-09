@@ -27,6 +27,23 @@ type nativeThread struct {
 	syscallArg *uint64
 }
 
+// Assuming th was stopped by SIGSEGV,
+// check if we're currently in a syscall whose arg shares a page with the faulting addr.
+// (This can happen if one thread hits the syscall entry bp, and another segfaults
+// in the same iteration of ContinueOnce).
+func (th *nativeThread) buddySyscall() bool {
+	for _, thread := range th.dbp.threads {
+		if thread.syscallArg != nil {
+			wpAddr := th.CurrentBreakpoint.Breakpoint.Addr
+			if pageAddr(wpAddr) == pageAddr(*thread.syscallArg) {
+				fmt.Printf("Found buddy syscall for segv thread %v - won't stepInstruction\n", th.ThreadID())
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (procgrp *processGroup) StepInstruction(threadID int) error {
 	return procgrp.stepInstruction(procgrp.procForThread(threadID).threads[threadID])
 }
@@ -62,6 +79,10 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 		}()
 	} else if t.stopSignal() == syscall.SIGSEGV {
 		fmt.Printf("stepInstruction treating thread %v as sigsegv\n", t.ThreadID())
+		if t.buddySyscall() {
+			// Don't toggle/stepi if page is already un-mprotected due to a syscall
+			return
+		}
 		// Software watchpoint (spurious or not)
 		// turn on toggling for duration of stepInstruction
 		bp.AlwaysToggleMprotect = true
