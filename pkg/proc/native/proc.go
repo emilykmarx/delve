@@ -560,7 +560,6 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	mprotect_regs.Regs.Rip = thread.dbp.syscallPCs[1]
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
 	mprotect_regs.Regs.Rdi = pageAddr(addr)
-	fmt.Printf("toggle %#x %v\n", pageAddr(addr), protect)
 	mprotect_regs.Regs.Rsi = uint64(os.Getpagesize())
 	if protect {
 		// PERF would be better to allow writes, but doesn't seem to be supported

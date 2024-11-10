@@ -5671,18 +5671,16 @@ func TestWatchpointsSyscallArgFault(t *testing.T) {
 
 			// bp in openat to set wp on one of its args (force situation where arg would fault)
 			setFileBreakpoint(p, t, "/usr/local/go/src/syscall/zsyscall_linux_amd64.go", 95)
-			assertNoError(grp.Continue(), t, "Continue to openAt")
+			assertNoError(grp.Continue(), t, "Continue to set wp in openAt")
 
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
 			_, err = p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware)
 			assertNoError(err, t, "SetWatchpoint")
+			assertNoError(grp.Continue(), t, "Continue to hit wp in openAt")
 
-			// bp on syscall entry (set after wp just to avoid a bunch of continues before then)
-			setFunctionBreakpoint(p, t, "runtime/internal/syscall.Syscall6")
-			assertNoError(grp.Continue(), t, "Continue to openAt")
-
-			// hit bp for openat syscall entry => arg will non-spuriously fault
+			// hit bp for openat syscall entry => arg will non-spuriously fault =>
+			// return to client as wp hit
 			stack, err := proc.ThreadStacktrace(p, p.CurrentThread(), 50)
 			assertNoError(err, t, "Stacktrace after continue to openAt")
 			cur_syscall := stack[3].Call.Fn.Name // asm, RawSyscall6, Syscall6, openAt
@@ -5690,13 +5688,9 @@ func TestWatchpointsSyscallArgFault(t *testing.T) {
 				t.Fatalf("Stopped at %v, not openat\n", cur_syscall)
 			}
 
-			// bunch of syscall entries that don't fault
-			err = grp.Continue()
-			for ; err == nil; err = grp.Continue() {
-			}
-
+			// no other non-spurious faults
 			// open succeeds
-			assertExited(p, t, err)
+			assertExited(p, t, grp.Continue())
 		})
 }
 

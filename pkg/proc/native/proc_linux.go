@@ -19,6 +19,7 @@ import (
 
 	sys "golang.org/x/sys/unix"
 
+	"github.com/go-delve/delve/pkg/astutil"
 	"github.com/go-delve/delve/pkg/logflags"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/proc/internal/ebpf"
@@ -166,6 +167,14 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 
 	if First_launch {
 		Start_time = time.Now()
+		First_launch = false
+		dbp.syscallPCs = dbp.getSyscallPCs()
+		// Break on syscall entry (use cond that always evaluates false so Continue() doesn't return to client)
+		false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
+		target := proc.Target{Process: dbp, Proc: dbp}
+		if _, err := target.SetBreakpoint(-1, dbp.syscallPCs[0], proc.UserBreakpoint, false_cond); err != nil {
+			return nil, fmt.Errorf("set breakpoint on syscall entry: %v", err)
+		}
 	} else {
 		runtime_s := time.Since(Start_time).Seconds()
 		// TODO for metrics: Investigate where Launch() is called - ah, from (d *Debugger) Launch()
@@ -175,8 +184,6 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 		fmt.Printf("SEGV_TOTAL %v\t SEGV_TRAPTHREAD %v\n", Sigsegv_total, Sigsegv_trapthread)
 		fmt.Printf("SPURIOUS_TRAP_TOTAL %v\t SPURIOUS_TRAP_TRAPTHREAD %v\n", Spurious_sigtrap_total, Spurious_sigtrap_trapthread)
 	}
-	First_launch = false
-	dbp.syscallPCs = dbp.getSyscallPCs()
 	return tgt, nil
 }
 
@@ -504,7 +511,8 @@ func handleSyscallEntry(th *nativeThread) {
 			if !th.dbp.buddyFaultingSyscall(nil) {
 				// Setting it this way won't update state in the Debugger - ok?
 				target := proc.Target{Process: th.dbp, Proc: th.dbp}
-				if _, err := target.SetBreakpoint(-1, th.dbp.syscallPCs[2], proc.UserBreakpoint, nil); err != nil {
+				false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
+				if _, err := target.SetBreakpoint(-1, th.dbp.syscallPCs[2], proc.UserBreakpoint, false_cond); err != nil {
 					if noSuchProcess(err) {
 						return
 					}
@@ -515,7 +523,6 @@ func handleSyscallEntry(th *nativeThread) {
 			// If don't copy arg (even if do copy regs), *th.faultingSyscallArg = 0 by the time we get to resume() - no idea why
 			arg_copy := uint64(arg)
 			th.faultingSyscallArg = &arg_copy // set after check buddies
-			fmt.Printf("faultingSyscall arg for thread %v: %#x\n", th.ThreadID(), *th.faultingSyscallArg)
 			th.faultingSyscall = &syscall
 			// Set status as if segfaulted
 			*th.Status = SIGSEGV_STATUS
@@ -675,15 +682,12 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		}
 
 		pc, _ := th.PC()
-		if status.StopSignal() == sys.SIGSEGV {
-			fmt.Printf("Real (possibly spurious) SEGV (thread %v); pc %#x\n", th.ThreadID(), pc)
-		}
-		// XXX set bp on Syscall6 w/in dlv
 		// TODO are there any ways to do a syscall that don't end up in Syscall6?
 		if status.StopSignal() == sys.SIGTRAP && pc == dbp.syscallPCs[0]+1 {
 			handleSyscallEntry(th)
-		} else if status.StopSignal() == sys.SIGTRAP {
-			fmt.Printf("TRAP; pc %#x\n", pc)
+		}
+		if status.StopSignal() == sys.SIGSEGV {
+			fmt.Println("SEGV")
 		}
 		// Set bp if thread segfaulted (or would segfault in a syscall), whether spuriously or not
 		if (halt && status.StopSignal() == sys.SIGSTOP) ||
@@ -881,7 +885,6 @@ func (procgrp *processGroup) resume() error {
 				prev_bp := thread.CurrentBreakpoint.Breakpoint
 				if thread.CurrentBreakpoint.Breakpoint != nil {
 					if thread.stopSignal() == sys.SIGSEGV && thread.faultingSyscallArg != nil {
-						fmt.Printf("thread %v has faultingSyscallArg %#x\n", thread.ThreadID(), *thread.faultingSyscallArg)
 						// Just hit syscall entry bp => CurrentBreakpoint is the sw wp we set for it.
 						// Reset status so SetCurrentBreakpoint will set the sw bp and adjust PC,
 						// and stepInstruction will step over the sw bp
