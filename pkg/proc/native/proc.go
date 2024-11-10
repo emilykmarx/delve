@@ -47,8 +47,8 @@ type nativeProcess struct {
 
 	exited, detached bool
 
-	// PC of a syscall instruction
-	syscallPC uint64
+	// PCs of syscall entry, syscall instruction, and one after syscall instr
+	syscallPCs [3]uint64
 }
 
 // newProcess returns an initialized Process struct. Before returning,
@@ -409,8 +409,8 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 // If none (i.e. spurious segfault), return placeholder wp.
 func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 	var faultingAddr uint64
-	if t.syscallArg != nil {
-		faultingAddr = *t.syscallArg
+	if t.faultingSyscallArg != nil {
+		faultingAddr = *t.faultingSyscallArg
 	} else {
 		faultingAddr = uint64(t.faultingAddr())
 	}
@@ -557,7 +557,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	}
 	mprotect_regs := regs.(*linutil.AMD64Registers)
 
-	mprotect_regs.Regs.Rip = thread.dbp.syscallPC
+	mprotect_regs.Regs.Rip = thread.dbp.syscallPCs[1]
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
 	mprotect_regs.Regs.Rdi = pageAddr(addr)
 	fmt.Printf("toggle %#x %v\n", pageAddr(addr), protect)

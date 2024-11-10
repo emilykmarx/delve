@@ -23,20 +23,21 @@ type nativeThread struct {
 	os             *osSpecificDetails
 	common         proc.CommonThread
 	// If thread is currently in a syscall that required un-mprotecting a page
-	// to prevent faulting on an arg, this is the addr of that arg
-	syscallArg *uint64
+	// to prevent faulting on an arg, this is the addr of that arg and name of syscall
+	faultingSyscallArg *uint64
+	faultingSyscall    *string
 }
 
-// Assuming th was stopped by SIGSEGV,
-// check if we're currently in a syscall whose arg shares a page with the faulting addr.
-// (This can happen if one thread hits the syscall entry bp, and another segfaults
-// in the same iteration of ContinueOnce).
-func (th *nativeThread) buddySyscall() bool {
-	for _, thread := range th.dbp.threads {
-		if thread.syscallArg != nil {
-			wpAddr := th.CurrentBreakpoint.Breakpoint.Addr
-			if pageAddr(wpAddr) == pageAddr(*thread.syscallArg) {
-				fmt.Printf("Found buddy syscall for segv thread %v - won't stepInstruction\n", th.ThreadID())
+// Whether some thread is currently in a syscall (per its faultingSyscallArg)
+// If addr is passed, only return true if that thread's arg shares a page with addr.
+func (dbp *nativeProcess) buddyFaultingSyscall(addr *uint64) bool {
+	for _, thread := range dbp.threads {
+		fmt.Printf("thread %v\n", thread.ThreadID())
+		if thread.faultingSyscallArg != nil {
+			if addr != nil {
+				fmt.Printf("thread %v has syscallArg; addrs %#x vs %#x\n", thread.ThreadID(), *addr, *thread.faultingSyscallArg)
+			}
+			if addr == nil || pageAddr(*addr) == pageAddr(*thread.faultingSyscallArg) {
 				return true
 			}
 		}
@@ -78,9 +79,12 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			err = t.writeHardwareBreakpoint(bp.Addr, bp.WatchType, bp.HWBreakIndex)
 		}()
 	} else if t.stopSignal() == syscall.SIGSEGV {
-		fmt.Printf("stepInstruction treating thread %v as sigsegv\n", t.ThreadID())
-		if t.buddySyscall() {
+		fmt.Printf("stepInstruction treating thread %v as sigsegv - bp addr %x\n", t.ThreadID(), t.CurrentBreakpoint.Breakpoint.Addr)
+		if t.dbp.buddyFaultingSyscall(&t.CurrentBreakpoint.Breakpoint.Addr) {
+			fmt.Printf("Found buddy syscall for segv thread %v - won't stepInstruction\n", t.ThreadID())
 			// Don't toggle/stepi if page is already un-mprotected due to a syscall
+			// (This can happen if one thread hits the syscall entry bp, and another segfaults
+			// in the same iteration of ContinueOnce).
 			return
 		}
 		// Software watchpoint (spurious or not)
