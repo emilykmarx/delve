@@ -24,7 +24,6 @@ Only supports linux/amd64 and Delve's native backend; currently only tested with
 
 
 ## Supported Go constructs
-See the [client tests](../client_test.go) for examples, and [taint.go](taint.go) for implementation.
 ### Propagation
 * Function calls
 * Assignment
@@ -34,8 +33,25 @@ See the [client tests](../client_test.go) for examples, and [taint.go](taint.go)
 
 Data-flow propagation only.
 
+See the [client tests](../client_test.go) for examples.
+
+Implemented in [taint.go](taint.go).
+
 ### Watchpoints
-* String: Watch characters (which are typically heap-allocated, so these watchpoints never go out of scope)
+* String: Watch characters
 * Slice: Watch backing array (or if elements are slices/strings, their backing arrays)
-* Array
+* Array: Watch elements (or if elements are slices/strings, their backing arrays)
 * Any other type with size <= 8 bytes
+
+See the [client tests](../client_test.go) for examples of non-trivial types.
+
+Type-specific support implemented in [breakpoints.go](../../../pkg/proc/breakpoints.go).
+
+Watchexprs match the name of the expr passed by the client,
+except for types containing reference elements (e.g. slice of strings) -
+for these, a watchpoint is created for each element with an indexed watchexpr
+(e.g. `s[0]` for slice of strings, or `s[0][0]` for slice of slice of strings).
+
+## Limitations
+* If one thread is in a syscall that would fault on a user arg while another thread
+  would access tainted memory, we will miss the latter access.

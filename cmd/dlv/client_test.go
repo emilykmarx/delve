@@ -115,6 +115,7 @@ func TestStructs(t *testing.T) {
 		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s_callee.Data"},
 		// s.callee OOS
 		{kind: CreateWatchpoint, lineno: 27, watchexpr: "s_caller.Data"},
+		{kind: CreateWatchpoint, lineno: 32, watchexpr: "multiline_lit.Data"},
 	}
 	run(t, "structs.go", expected_logs, nil)
 }
@@ -152,7 +153,7 @@ func TestRuntimeHits(t *testing.T) {
 	run(t, "runtime_hits.go", expected_logs, nil)
 }
 
-/* Need to investigate this - per asm, doesn't seem like should be fake...
+/* TODO need to investigate this - per asm, doesn't seem like should be fake...
 func TestFakeArg(t *testing.T) {
 	expected_logs := []expectedWpLog{
 		{kind: CreateWatchpoint, lineno: 13, watchexpr: "a"},
@@ -163,43 +164,34 @@ func TestFakeArg(t *testing.T) {
 }
 */
 
-// TODO update for sw wp
 // Not fully automated, but here for convenience.
 // (Need to manually run xenon, then place outfiles in ./dlv_config_client/xenon_out/)
-// Note there is concurrency, so it's technically possible this is a brittle test
-// (assumes a certain ordering).
-/*
+// Note there is concurrency, so may need to reorder expected logs
+// These linenos are correct for go1.20.1 d5ccb84
+//
+// dlv exec --init=init.txt /go/src/github.com/radondb/xenon/bin/xenon -- -c /etc/xenon/xenon.json
 func TestXenon_single_query(t *testing.T) {
 	// Server makes a single DNS query (type A), then exits (after Ping fails)
 	expected_logs := []expectedWpLog{
-		// ROUND 1
 		// dnsconfig_unix.go:dnsReadConfig()
-		{kind: CreateWatchpoint, lineno: 144, watchexpr: "conf.search"},
+		// conf.search only has one string with this resolv.conf
+		{kind: CreateWatchpoint, lineno: 144, watchexpr: "conf.search[0]"},
 
 		// dnsclient_unix.go:nameList()
-		{kind: CreateWatchpoint, lineno: 510, watchexpr: "suffix"},
-		{kind: CreateWatchpoint, lineno: 510, watchexpr: "suffix[0]"},
-		{kind: CreateWatchpoint, lineno: 515, watchexpr: "names"},
-
-		// OOS: suffix, names
+		// suffix and conf.search[0] share backing array, but not names
+		{kind: CreateWatchpoint, lineno: 519, watchexpr: "names"},
 
 		// dnsclient_unix.go:goLookupIPCNAMEOrder()
-		{kind: CreateWatchpoint, lineno: 664, watchexpr: "fqdn"},
-		{kind: CreateWatchpoint, lineno: 664, watchexpr: "fqdn[0]"},
-
-		// dnsclient_unix.go:queryFn()
-		{kind: RecordHWPending, lineno: 651, watchexpr: "fqdn"},
-		// callee fqdn[0] re-uses caller mem
+		// names has 2 strings (eecs and localhost.)
+		// Share backing array: fqdn in range on 668, fqdn in queryFn(), names, name in tryOneName, name in NewName
 
 		// dnsclient_unix.go:responseFn()
 		// interleaved w/ querying: Hit on 669 => set bp on 659 => hit 659
-		{kind: RecordHWPending, lineno: 659, watchexpr: "fqdn"},
+		{kind: CreateWatchpoint, lineno: 659, watchexpr: "fqdn"},
 		// callee fqdn[0] re-uses caller mem
 
 		// hit for fqdn[0] (via copy of name)
-		{kind: RecordHWPending, lineno: 1907, watchexpr: "n.Data[0]"},
-
-		// ROUND 2: Haven't done yet
+		{kind: CreateWatchpoint, lineno: 1907, watchexpr: "n.Data[0]"},
 	}
 
 	files := []string{"client_err.txt", "server_err.txt", "client_out.txt", "server_out.txt"}
@@ -213,9 +205,9 @@ func TestXenon_single_query(t *testing.T) {
 		outs[i] = out
 	}
 
-	checkOutput(t, outs[0], outs[1], outs[2], expected_logs)
+	checkOutput(t, outs[0], outs[1])
+	checkWatchpoints(t, outs[3], expected_logs, "conf.search")
 }
-*/
 
 func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
 	// Wait for server to start

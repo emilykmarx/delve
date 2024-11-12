@@ -25,4 +25,9 @@ func main() {
 	runtime.KeepAlive(s)
 	s_caller := struct_member(s) // pass struct as arg => propagate to callee's copy of member
 	fmt.Printf("%v\n", s_caller)
+	multiline_lit := Name{ // assign to struct (via multiline literal) => propagate to struct's copy of member
+		Data: arr,
+		fake: 2,
+	}
+	fmt.Printf("%v\n", multiline_lit)
 }

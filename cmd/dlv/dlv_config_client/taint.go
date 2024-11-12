@@ -181,7 +181,7 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) bool {
 	return false
 }
 
-/* Assuming this line hits hit_bp, record pending watchpoints for newly tainted exprs on line.
+/* Assuming this line hits a watchpoint, record pending watchpoints for newly tainted exprs on line.
  * Accounts for aliased reads (i.e. those that don't match hit_bp.WatchExpr). */
 func (tc *TaintCheck) propagateTaint() {
 	fset := token.NewFileSet()
@@ -193,13 +193,17 @@ func (tc *TaintCheck) propagateTaint() {
 	// DFS of file's AST
 	ast.Inspect(root, func(node ast.Node) bool {
 		// PERF: How to properly only inspect one line?
-		var pos token.Position
+		var start token.Position
+		var end token.Position
 		if node != nil {
-			pos = fset.Position(node.Pos())
+			start = fset.Position(node.Pos())
+			end = fset.Position(node.End())
 		}
-		if pos.Line != tc.hit.hit_instr.Loc.Line {
+		hit_line := tc.hit.hit_instr.Loc.Line
+		if !(start.Line <= hit_line && hit_line <= end.Line) {
 			return true
 		}
+		// hit line is part of node
 
 		switch typed_node := node.(type) {
 
@@ -209,7 +213,7 @@ func (tc *TaintCheck) propagateTaint() {
 				if tc.isTainted(typed_node.Args[1]) != nil {
 					// TODO won't necessarily be next line - could actually set at current loc,
 					// but need a special case for that
-					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1, tc.hit.frame)
+					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)
 				}
 			} else if builtinFcts[fn] || fn == "runtime.KeepAlive" {
@@ -248,7 +252,7 @@ func (tc *TaintCheck) propagateTaint() {
 				// TODO properly handle multiple rhs (unsure of semantics)
 				if overlap_expr := tc.isTainted(rhs); overlap_expr != nil {
 					// Watched location is read on the rhs => taint lhs
-					pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1, tc.hit.frame)
+					pending_loc := tc.lineWithStmt(nil, end.Filename, end.Line+1, tc.hit.frame)
 					for _, lhs := range typed_node.Lhs {
 						watchexpr := exprToString(lhs) + *overlap_expr
 						tc.recordPendingWp(watchexpr, pending_loc, nil)
@@ -261,7 +265,7 @@ func (tc *TaintCheck) propagateTaint() {
 			if tc.isTainted(typed_node.X) != nil && typed_node.Value != nil {
 				// Watched location is read on the rhs =>
 				// taint value expr
-				pending_loc := tc.lineWithStmt(nil, pos.Filename, pos.Line+1, tc.hit.frame)
+				pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
 				tc.recordPendingWp(exprToString(typed_node.Value), pending_loc, nil)
 			}
 		} // end switch

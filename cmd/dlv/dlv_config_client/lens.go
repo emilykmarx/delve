@@ -58,10 +58,12 @@ type TaintCheck struct {
 }
 
 /* If hit was in runtime, either ignore (e.g. newstack), or
- * record first non-runtime frame as line to check taint in
- * (can't assume that line will additionally have a non-runtime hit (e.g. some memmoves).
- * TODO in e.g. Printf, tainted line may be up the stack - analyze every non-runtime line?
- * Return false to ignore. */
+ * record first non-runtime frame as line to check taint in.
+ * (Can't assume that line will additionally have a non-runtime hit, e.g. some memmoves.)
+ * Return false to ignore.
+ * TODO first non-runtime frame isn't always what we want - e.g. syscall arg faults:
+ * user code may call Syscall6 directly, or e.g. os.Open().
+ * Analyze every non-runtime line? */
 func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	// TODO check for partially loaded (in any calls with LoadConfig)
@@ -80,6 +82,10 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 			// TODO skip all hits from go runtime threads (sw wp commit may hv a test for sysmon?)
 			// (but not hits in go runtime from program thread)
 			if fn == "runtime.newstack" {
+				return nil, false
+			} else if fn == "runtime/internal/syscall.Syscall6" {
+				// TODO for now, ignore "hits" due to syscall with tainted arg.
+				// May need to model specific syscalls (see gdoc).
 				return nil, false
 			}
 			if !strings.HasPrefix(fn, "runtime") {

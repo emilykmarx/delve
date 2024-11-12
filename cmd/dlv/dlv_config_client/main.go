@@ -35,7 +35,7 @@ func (tc *TaintCheck) run() {
 		}
 
 		for _, wp_oos := range state.WatchOutOfScope {
-			fmt.Printf("Watchpoint on 0x%x went out of scope since last continue\n", wp_oos.Addrs[0])
+			fmt.Printf("Watchpoint on %v went out of scope since last continue\n", wp_oos.WatchExpr)
 			delete(tc.mem_param_map, wp_oos.Addrs[0])
 		}
 	}

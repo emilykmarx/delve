@@ -96,7 +96,6 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			bp.AlwaysToggleMprotect = false
 		}()
 	} else if bp, ok := t.dbp.FindBreakpoint(pc, false); ok {
-		fmt.Println("step over sw bp")
 		// Software breakpoint
 		err = t.clearSoftwareBreakpoint(bp)
 		if err != nil {
@@ -179,8 +178,6 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 					return err
 				}
 			}
-		} else {
-			fmt.Println("did not find sw bp")
 		}
 	}
 

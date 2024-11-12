@@ -464,8 +464,7 @@ var (
 // If this syscall would fault on one of its args (spuriously or not):
 // un-mprotect arg's page, set thread status to segfault, set a breakpoint on its exit, and save the arg.
 func handleSyscallEntry(th *nativeThread) {
-	fmt.Printf("handleSyscallEntry\n")
-	syscall, err := threadStacktrace(th, true)
+	syscall, err := threadStacktrace(th, false, true)
 	if noSuchProcess(err) {
 		return
 	}
@@ -685,9 +684,6 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		if status.StopSignal() == sys.SIGTRAP && pc == dbp.syscallPCs[0]+1 {
 			handleSyscallEntry(th)
 		}
-		if status.StopSignal() == sys.SIGSEGV {
-			fmt.Println("SEGV")
-		}
 		// Set bp if thread segfaulted (or would segfault in a syscall), whether spuriously or not
 		if (halt && status.StopSignal() == sys.SIGSTOP) ||
 			(status.StopSignal() == sys.SIGTRAP) ||
@@ -826,8 +822,7 @@ func (e SoftwareWatchpointAtBreakpoint) Error() string {
 // If this syscall exit corresponds to an entry that would fault,
 // undo what the entry did (except wait to clear bp).
 func handleSyscallExit(th *nativeThread) {
-	fmt.Printf("handleSyscallExit\n")
-	syscall, err := threadStacktrace(th, true)
+	syscall, err := threadStacktrace(th, false, true)
 	if noSuchProcess(err) {
 		return
 	}
@@ -864,7 +859,6 @@ func handleSyscallExit(th *nativeThread) {
 	// (unless another thread is still faulting on any syscall)
 	target := proc.Target{Process: th.dbp, Proc: th.dbp}
 	if !th.dbp.buddyFaultingSyscall(nil) {
-		fmt.Println("clear exit bp")
 		if err := target.ClearBreakpoint(th.dbp.syscallPCs[2]); err != nil {
 			if noSuchProcess(err) {
 				return
@@ -875,7 +869,6 @@ func handleSyscallExit(th *nativeThread) {
 }
 
 func (procgrp *processGroup) resume() error {
-	fmt.Println("resume()")
 	// all threads stopped over a breakpoint are made to step over it
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {
@@ -1032,15 +1025,17 @@ func noSuchProcess(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "no such process")
 }
 
-// Print stacktrace
+// Get stacktrace
 // If get_syscall, return the name of the syscall it's in
-func threadStacktrace(th *nativeThread, get_syscall bool) (string, error) {
+func threadStacktrace(th *nativeThread, print bool, get_syscall bool) (string, error) {
 	goroutine := "nil"
 	g, err := proc.GetG(th)
 	if err == nil {
 		goroutine = fmt.Sprintf("%v", g.ID)
 	}
-	fmt.Printf("thread %v, goroutine %v\n", th.ThreadID(), goroutine)
+	if print {
+		fmt.Printf("thread %v, goroutine %v\n", th.ThreadID(), goroutine)
+	}
 	t := proc.Target{Process: th.dbp}
 	stack, err := proc.ThreadStacktrace(&t, th, 50)
 	if err != nil {
@@ -1052,7 +1047,9 @@ func threadStacktrace(th *nativeThread, get_syscall bool) (string, error) {
 		if frame.Call.Fn != nil {
 			fn = frame.Call.Fn.Name
 		}
-		fmt.Printf("%#x in %s\n at %s:%d\n", frame.Call.PC, fn, frame.Call.File, frame.Call.Line)
+		if print {
+			fmt.Printf("%#x in %s\n at %s:%d\n", frame.Call.PC, fn, frame.Call.File, frame.Call.Line)
+		}
 	}
 	if get_syscall {
 		return stack[3].Call.Fn.Name, nil
