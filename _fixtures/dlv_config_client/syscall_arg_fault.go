@@ -3,17 +3,24 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
+	"syscall"
 	_ "syscall"
+	"unsafe"
 )
 
-// Open involves multiple syscalls: openat (non-spuriously faults in the test),
-// write (spuriously faults), others (no fault)
+// Call Syscall6 directly so can easily set wp on arg, and access arg after
 func main() {
-	_, err := os.Open("proc_test.go")
+	var _p0 *byte
+	_p0, err := syscall.BytePtrFromString("proc_test.go")
 	if err != nil {
-		log.Panicf("Open err: %v\n", err.Error())
+		log.Panicf("BytePtrFromString err: %v\n", err.Error())
+	}
+	_, _, e1 := syscall.Syscall6(syscall.SYS_OPEN, uintptr(unsafe.Pointer(_p0)), uintptr(0), uintptr(0), 0, 0, 0)
+	if e1 != 0 {
+		log.Panicf("Open err: %v\n", e1)
 	} else {
 		fmt.Printf("Open succeeded\n")
 	}
+
+	_ = *_p0
 }

@@ -217,7 +217,6 @@ func (grp *TargetGroup) Continue() error {
 				return conditionErrors(grp)
 			}
 		case curbp.Active:
-			// TODO (PERF, but probably significant): Don't return if all hits were spurious SIGSEGV
 			onNextGoroutine, err := onNextGoroutine(dbp, curthread, dbp.Breakpoints())
 			if err != nil {
 				return err

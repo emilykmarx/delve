@@ -5662,34 +5662,41 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 		})
 }
 
-// Syscall should succeed even though one of its arguments is on the same page as a software watchpoint.
+// Syscall should succeed even though one of its arguments is on the same page as a software watchpoint,
+// Entry to non-spuriously faulting syscall (here open) should return to client as a wp hit.
+// Entry to spuriously faulting syscall (here write) should be treated as a spurious segv.
+// Page should be re-mprotected once syscall finishes.
 func TestWatchpointsSyscallArgFault(t *testing.T) {
 	withTestProcessArgs("dlv_config_client/syscall_arg_fault", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
-			// Set watchpoint on arg to syscall
-			// Open should succeed (no "bad address")
-
-			// bp in openat to set wp on one of its args (force situation where arg would fault)
-			setFileBreakpoint(p, t, "/usr/local/go/src/syscall/zsyscall_linux_amd64.go", 95)
+			// 1. Set wp on syscall arg (force situation where arg would fault)
+			setFileBreakpoint(p, t, fixture.Source, 15)
 			assertNoError(grp.Continue(), t, "Continue to set wp in openAt")
 
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
 			_, err = p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware)
 			assertNoError(err, t, "SetWatchpoint")
-			assertNoError(grp.Continue(), t, "Continue to hit wp in openAt")
+			assertNoError(grp.Continue(), t, "Continue to hit wp in entry to open")
 
-			// hit bp for openat syscall entry => arg will non-spuriously fault =>
-			// return to client as wp hit
+			// 2. Hit bp for open syscall entry => arg will non-spuriously fault =>
+			// return to client as wp hit (stack won't directly indicate open, since we called Syscall6 directly)
 			stack, err := proc.ThreadStacktrace(p, p.CurrentThread(), 50)
-			assertNoError(err, t, "Stacktrace after continue to openAt")
-			cur_syscall := stack[3].Call.Fn.Name // asm, RawSyscall6, Syscall6, openAt
-			if cur_syscall != "syscall.openat" {
-				t.Fatalf("Stopped at %v, not openat\n", cur_syscall)
+			assertNoError(err, t, "Stacktrace")
+			// Syscall6, RawSyscall6, Syscall6, main.main
+
+			main_frame := stack[3].Call
+			// assertLineNumber doesn't work here, since main is in the middle of stack
+			if main_frame.Fn.Name != "main.main" || main_frame.Line != 18 {
+				t.Fatalf("Stopped at %+v, not at wp hit\n", main_frame)
 			}
 
-			// no other non-spurious faults
-			// open succeeds
+			// 3. Open succeeds (no "bad address").
+			// Then, access syscall arg after syscall arg => regular wp hit (i.e. re-mprotected the page after syscall)
+			assertNoError(grp.Continue(), t, "Continue to hit wp after open")
+			assertLineNumber(p, t, 25, "Hit wp after open")
+
+			// 4. No more accesses
 			assertExited(p, t, grp.Continue())
 		})
 }

@@ -488,16 +488,14 @@ func handleSyscallEntry(th *nativeThread) {
 	for _, arg := range arg_regs {
 		// TODO handle multiple faulting args (either bc a single syscall faults on multiple, or
 		// multiple goroutines on same thread enter a faulting syscall)
-		// TODO is is possible for args to be non-contiguous? (e.g. struct has a pointer -
-		// need to check if can access struct and what it points to?)
+		// TODO check whole region, not just start address
+		// TODO handle vector read/write (region won't be contiguous)
 		fake_wp := proc.Breakpoint{Addr: arg}
 		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
 			// Arg is on same page as a software watchpoint => syscall would fail with "bad address"
 			fmt.Printf("arg will fault: %#x\n", arg)
 			// Un-mprotect the page (unless another thread is currently in a faulting syscall on this page, so already has)
 			// Will re-mprotect on corresponding exit
-			// TODO if another thread faults on that page while this thread is in the syscall,
-			// will miss that fault.
 			fmt.Printf("un-mprotecting\n")
 			if !th.dbp.buddyFaultingSyscall(&arg) {
 				if err := th.toggleMprotect(arg, false); err != nil {
@@ -682,7 +680,8 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 		}
 
 		pc, _ := th.PC()
-		// TODO are there any ways to do a syscall that don't end up in Syscall6?
+		// TODO if cgo, may not end up in Syscall6 - may need another bp for syscall entry
+		// where args are already allocated but still in user space (look for `syscall` instr?)
 		if status.StopSignal() == sys.SIGTRAP && pc == dbp.syscallPCs[0]+1 {
 			handleSyscallEntry(th)
 		}
@@ -826,8 +825,6 @@ func (e SoftwareWatchpointAtBreakpoint) Error() string {
 
 // If this syscall exit corresponds to an entry that would fault,
 // undo what the entry did (except wait to clear bp).
-
-// XXX Check if hv test for wp hitting after a syscall exit (i.e. that we re-mprotected)
 func handleSyscallExit(th *nativeThread) {
 	fmt.Printf("handleSyscallExit\n")
 	syscall, err := threadStacktrace(th, true)
@@ -835,7 +832,7 @@ func handleSyscallExit(th *nativeThread) {
 		return
 	}
 	if err != nil {
-		log.Panicf("getting stacktrace in handleSyscallEntry: %v\n", err.Error())
+		log.Panicf("getting stacktrace in handleSyscallExit: %v\n", err.Error())
 	}
 	if th.faultingSyscall == nil || *th.faultingSyscall != syscall {
 		// Exit for a non-faulting syscall (e.g. another thread set the exit bp)
@@ -843,7 +840,8 @@ func handleSyscallExit(th *nativeThread) {
 		// have seen a thread enter multiple syscalls with no exit between.
 		// On different goroutines? But getG() can return nil, so may not be able to use goroutine ID.
 		// For now, use name of syscall (won't handle this sequence - unsure if possible:
-		// "enter faulting syscallX, exit non-faulting syscallX, exit faulting syscallX")
+		// "enter faulting syscallX, exit non-faulting syscallX, exit faulting syscallX").
+		// Maybe get local vars on exit and see if any would fault.
 		return
 	}
 	faultingAddr := *th.faultingSyscallArg
@@ -886,6 +884,7 @@ func (procgrp *processGroup) resume() error {
 				if thread.CurrentBreakpoint.Breakpoint != nil {
 					if thread.stopSignal() == sys.SIGSEGV && thread.faultingSyscallArg != nil {
 						// Just hit syscall entry bp => CurrentBreakpoint is the sw wp we set for it.
+						// (If segv while in faulting syscall, should only be bc we explicitly set status.)
 						// Reset status so SetCurrentBreakpoint will set the sw bp and adjust PC,
 						// and stepInstruction will step over the sw bp
 						*thread.Status = SIGTRAP_STATUS
