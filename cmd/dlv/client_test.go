@@ -109,13 +109,15 @@ func TestReferenceElems(t *testing.T) {
 
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 22, watchexpr: "arr"},
-		{kind: CreateWatchpoint, lineno: 23, watchexpr: "struct_lit.Data"},
-		{kind: CreateWatchpoint, lineno: 25, watchexpr: "s.Data"},
-		{kind: CreateWatchpoint, lineno: 16, watchexpr: "s_callee.Data"},
+		{kind: CreateWatchpoint, lineno: 26, watchexpr: "arr"},
+		{kind: CreateWatchpoint, lineno: 27, watchexpr: "struct_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 29, watchexpr: "s.Data"},
+		{kind: CreateWatchpoint, lineno: 20, watchexpr: "s_callee.Data"},
 		// s.callee OOS
-		{kind: CreateWatchpoint, lineno: 27, watchexpr: "s_caller.Data"},
-		{kind: CreateWatchpoint, lineno: 32, watchexpr: "multiline_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 31, watchexpr: "s_caller.Data"},
+		{kind: CreateWatchpoint, lineno: 36, watchexpr: "multiline_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 41, watchexpr: "nested.name.Data"},
+		{kind: CreateWatchpoint, lineno: 44, watchexpr: "nested2.name.Data"},
 	}
 	run(t, "structs.go", expected_logs, nil)
 }

@@ -127,15 +127,11 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 							} else {
 								found_overlap = "." + tainted_field
 							}
-						} else if xv.Kind == reflect.Struct {
+						}
+						if xv.Kind == reflect.Struct {
+							// TODO will this handle composite lit nested in a composite lit?
 							// Take the first field that overlaps (TODO support multiple tainted fields)
-							for _, field := range xv.Children {
-								field_name := exprToString((node.(ast.Expr))) + "." + field.Name
-								xv, err = tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, field_name, true)
-								if err == nil && memOverlap(xv.Addr, uint64(xv.Watchsz), watch_addr, watch_size) {
-									found_overlap = "." + field.Name
-								}
-							}
+							found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size)
 						}
 
 						overlap_expr = &found_overlap
@@ -151,6 +147,23 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 	})
 
 	return overlap_expr
+}
+
+// For struct xv, find the fully-qualified name of its overlapping field, minus `name`
+// (handling nested structs)
+func (tc *TaintCheck) taintedField(name string, xv *api.Variable, watch_addr uint64, watch_size uint64) string {
+	if xv.Kind != reflect.Struct {
+		return ""
+	}
+	for _, field := range xv.Children {
+		eval_name := name + "." + field.Name
+		xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, eval_name, true)
+		if err == nil && memOverlap(xv.Addr, uint64(xv.Watchsz), watch_addr, watch_size) {
+			name = "." + field.Name + tc.taintedField(eval_name, xv, watch_addr, watch_size)
+		}
+	}
+
+	return name
 }
 
 var builtinFcts = map[string]bool{

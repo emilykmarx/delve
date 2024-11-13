@@ -12,6 +12,10 @@ type Name struct {
 	fake int
 }
 
+type Nested struct {
+	name Name
+}
+
 func struct_member(s_callee Name) Name {
 	fmt.Printf("%v\n", s_callee)
 	return s_callee // return struct => propagate to caller's copy of struct member
@@ -30,4 +34,12 @@ func main() {
 		fake: 2,
 	}
 	fmt.Printf("%v\n", multiline_lit)
+	// assign to nested struct (via literal) => propagate to inner struct's copy of member
+	nested := Nested{
+		name: multiline_lit,
+	}
+	fmt.Printf("%v\n", nested)
+	// assign to nested struct (via copy) => propagate to inner struct's copy of member
+	nested2 := nested
+	fmt.Printf("%v\n", nested2)
 }
