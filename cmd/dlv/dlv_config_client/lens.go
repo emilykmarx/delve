@@ -269,6 +269,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 	})
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	for argno, overlap_expr := range info.watchargs {
+		// if method, args include receiver as arg 0 (as we did when recording argno)
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)

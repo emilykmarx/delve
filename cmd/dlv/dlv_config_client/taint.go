@@ -232,7 +232,18 @@ func (tc *TaintCheck) propagateTaint() {
 			} else if builtinFcts[fn] || fn == "runtime.KeepAlive" {
 				// append will be handled in assign/range
 			} else {
-				for i, arg := range typed_node.Args {
+				full_args := typed_node.Args
+				isMethod := false
+				if strings.Contains(fn, ".") {
+					isMethod = true
+					// method => don't check receiver for taint, but
+					// count it in args to match what we'll do when creating wp
+					full_args = append([]ast.Expr{typed_node.Fun}, full_args...)
+				}
+				for i, arg := range full_args {
+					if isMethod && i == 0 {
+						continue
+					}
 					if overlap_expr := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
 						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 						// First line of function body (params are "fake" at declaration line)

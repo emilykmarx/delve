@@ -30,12 +30,12 @@ func getClientBin(t *testing.T) string {
 // Tests clear when another sw wp still exists on same page
 func TestCallAndAssign1(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 26, watchexpr: "stack"},
-		{kind: CreateWatchpoint, lineno: 30, watchexpr: "spacer"},
-		{kind: CreateWatchpoint, lineno: 11, watchexpr: "tainted_param"},
-		{kind: CreateWatchpoint, lineno: 17, watchexpr: "tainted_param_2"},
-		{kind: CreateWatchpoint, lineno: 37, watchexpr: "y"},
-		{kind: CreateWatchpoint, lineno: 41, watchexpr: "z"},
+		{kind: CreateWatchpoint, lineno: 30, watchexpr: "stack"},
+		{kind: CreateWatchpoint, lineno: 34, watchexpr: "spacer"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "tainted_param"},
+		{kind: CreateWatchpoint, lineno: 20, watchexpr: "tainted_param_2"},
+		{kind: CreateWatchpoint, lineno: 41, watchexpr: "y"},
+		{kind: CreateWatchpoint, lineno: 45, watchexpr: "z"},
 	}
 	run(t, "call_assign_1.go", expected_logs, nil)
 }
@@ -195,6 +195,14 @@ func TestXenon_single_query(t *testing.T) {
 		// hit for fqdn[0] (via copy of name)
 		{kind: CreateWatchpoint, lineno: 1907, watchexpr: "n.Data[0]"},
 	}
+
+	/*
+			 dlv exec --headless --api-version=2 --accept-multiclient --listen=:4040 \
+		     /go/src/github.com/radondb/xenon/bin/xenon -- -c /etc/xenon/xenon.json \
+		     > server_out.txt 2> server_err.txt
+		 dlv_config_client -initial_bp_file=/usr/local/go/src/net/dnsconfig_unix.go -initial_bp_line=144 -initial_watchexpr=conf.search \
+		      > client_out.txt 2> client_err.txt
+	*/
 
 	files := []string{"client_err.txt", "server_err.txt", "client_out.txt", "server_out.txt"}
 	outs := make([][]byte, len(files))
