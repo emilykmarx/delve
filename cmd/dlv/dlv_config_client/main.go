@@ -56,6 +56,7 @@ func main() {
 
 	// TODO somehow prevent compiler from reading watched vars from registers -
 	// runtime.KeepAlive() helps, but only if placed correctly (at end of scope doesn't always work)
+	// This includes when a struct is initialized just before using it as a recvr (i.e. recvr := Recvr{X: x} recvr.f())
 
 	tc := TaintCheck{client: client,
 		pending_wps:   make(map[uint64]PendingWp),

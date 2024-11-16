@@ -677,7 +677,8 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 	if err != nil {
 		return nil, err
 	}
-	if xv.Addr == 0 || xv.Flags&VariableFakeAddress != 0 || xv.DwarfType == nil {
+	if xv.Addr == 0 || xv.Addr == FakeAddressBase || xv.Flags&VariableFakeAddress != 0 || xv.DwarfType == nil {
+		// Can be non-fake but still have beef addr
 		return xv, fmt.Errorf("can not watch %q; Addr 0x%x, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
 	}
 	if xv.Unreadable != nil {
@@ -730,6 +731,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		}
 		return xv, err
 	}
+	// TODO support other types - for types with elements e.g. structs, need to do the ElemsAreReferences thing
 
 	xv.Watchsz = sz
 	return xv, nil

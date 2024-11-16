@@ -224,8 +224,8 @@ func (tc *TaintCheck) propagateTaint() {
 			fn := exprToString(typed_node.Fun)
 			if fn == "copy" {
 				if tc.isTainted(typed_node.Args[1]) != nil {
-					// TODO won't necessarily be next line - could actually set at current loc,
-					// but need a special case for that
+					// Expr will be in scope, but can't set wp yet if runtime hit (often is, in memmove) -
+					// wps set from a newer frame will go OOS when exit that frame
 					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)
 				}
@@ -233,17 +233,13 @@ func (tc *TaintCheck) propagateTaint() {
 				// append will be handled in assign/range
 			} else {
 				full_args := typed_node.Args
-				isMethod := false
-				if strings.Contains(fn, ".") {
-					isMethod = true
-					// method => don't check receiver for taint, but
+				if recvr_name, _, isMethod := strings.Cut(fn, "."); isMethod {
+					// method => check receiver for taint, and
 					// count it in args to match what we'll do when creating wp
-					full_args = append([]ast.Expr{typed_node.Fun}, full_args...)
+					recvr := ast.Ident{NamePos: typed_node.Pos(), Name: recvr_name} // printable
+					full_args = append([]ast.Expr{&recvr}, full_args...)
 				}
 				for i, arg := range full_args {
-					if isMethod && i == 0 {
-						continue
-					}
 					if overlap_expr := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
 						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 						// First line of function body (params are "fake" at declaration line)
@@ -271,6 +267,8 @@ func (tc *TaintCheck) propagateTaint() {
 		// TODO except for if/else, maybe others
 		// And Range: If next line is }, set on next iter
 		// Need to handle case where never enter loop (never hit bp => main never terminates)
+		// ^ When fix this - keep in mind that wps go OOS when exit frame they're set in -
+		// so don't e.g. set a wp for a runtime hit while in the runtime frame (runtime_hits tests checks this)
 		case *ast.AssignStmt:
 			for _, rhs := range typed_node.Rhs {
 				// TODO properly handle multiple rhs (unsure of semantics)

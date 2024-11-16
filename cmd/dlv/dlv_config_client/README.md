@@ -25,7 +25,7 @@ Only supports linux/amd64 and Delve's native backend; currently only tested with
 
 ## Supported Go constructs
 ### Propagation
-* Function calls
+* Function/method calls (arguments, receiver, return value)
 * Assignment
 * Range
 * Index (string, array, slice)

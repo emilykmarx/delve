@@ -155,6 +155,17 @@ func TestRuntimeHits(t *testing.T) {
 	run(t, "runtime_hits.go", expected_logs, nil)
 }
 
+func TestMethods(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateWatchpoint, lineno: 22, watchexpr: "x"},
+		{kind: CreateWatchpoint, lineno: 24, watchexpr: "recvr.X"},
+		{kind: CreateWatchpoint, lineno: 14, watchexpr: "recvr_callee.X"},
+		{kind: CreateWatchpoint, lineno: 16, watchexpr: "x_callee"},
+	}
+
+	run(t, "methods.go", expected_logs, nil)
+}
+
 /* TODO need to investigate this - per asm, doesn't seem like should be fake...
 func TestFakeArg(t *testing.T) {
 	expected_logs := []expectedWpLog{

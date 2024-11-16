@@ -223,7 +223,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 
 	for _, watchpoint := range watchpoints {
 		// For each created or existing watchpoint: update map (tainting vals, and later sz), log
-		// XXX test for adding new taint to existing addr
+		// TODO test for adding new taint to existing addr
 
 		// Log for testing (will also log dups)
 		// TODO (minor): Move logic in this file to its own package, so can import it for testing
