@@ -175,8 +175,9 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 				tainting_vals = *tainting_vals_
 			}
 		}
-		// TODO add test for append w/ realloc
-		// TODO does append of a tainted value hit wp? (Currently is hitting bc of string concat and/or slice already being tainted)
+		// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
+		// Note that wp for tainted array can hit for append to empty slice (first call to packUint16) - need to investigate
+		// Also confirm that passing and returning a "[]" is always a slice (i.e. won't create new array)
 		if existed && !reflect.DeepEqual(tainting_vals, existing_info.tainting_vals) {
 			log.Fatalf("Pending wp already had an entry with different tainting values\n")
 		}

@@ -16,6 +16,19 @@ type Nested struct {
 	name Name
 }
 
+func (q *Nested) f() {
+	q.name.ptr_recvr()    // hit for q.name.Data, even tho pointer recvr => don't propagate to recvr.Data
+	q.name.nonptr_recvr() // hit for q.name.Data, non-pointer recvr => propagate to callee's copy of recvr.Data
+}
+
+func (recvr_callee *Name) ptr_recvr() {
+	fmt.Printf("using recvr %v\n", recvr_callee)
+}
+
+func (recvr_callee Name) nonptr_recvr() {
+	fmt.Printf("using recvr %v\n", recvr_callee)
+}
+
 func struct_member(s_callee Name) Name {
 	fmt.Printf("%v\n", s_callee)
 	return s_callee // return struct => propagate to caller's copy of struct member
@@ -41,5 +54,5 @@ func main() {
 	fmt.Printf("%v\n", nested)
 	// assign to nested struct (via copy) => propagate to inner struct's copy of member
 	nested2 := nested
-	fmt.Printf("%v\n", nested2)
+	nested2.f()
 }

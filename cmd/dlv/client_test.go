@@ -30,12 +30,12 @@ func getClientBin(t *testing.T) string {
 // Tests clear when another sw wp still exists on same page
 func TestCallAndAssign1(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 30, watchexpr: "stack"},
-		{kind: CreateWatchpoint, lineno: 34, watchexpr: "spacer"},
-		{kind: CreateWatchpoint, lineno: 14, watchexpr: "tainted_param"},
-		{kind: CreateWatchpoint, lineno: 20, watchexpr: "tainted_param_2"},
-		{kind: CreateWatchpoint, lineno: 41, watchexpr: "y"},
-		{kind: CreateWatchpoint, lineno: 45, watchexpr: "z"},
+		{kind: CreateWatchpoint, lineno: 31, watchexpr: "stack"},
+		{kind: CreateWatchpoint, lineno: 35, watchexpr: "spacer"},
+		{kind: CreateWatchpoint, lineno: 15, watchexpr: "tainted_param"},
+		{kind: CreateWatchpoint, lineno: 21, watchexpr: "tainted_param_2"},
+		{kind: CreateWatchpoint, lineno: 42, watchexpr: "y"},
+		{kind: CreateWatchpoint, lineno: 46, watchexpr: "z"},
 	}
 	run(t, "call_assign_1.go", expected_logs, nil)
 }
@@ -109,15 +109,17 @@ func TestReferenceElems(t *testing.T) {
 
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 26, watchexpr: "arr"},
-		{kind: CreateWatchpoint, lineno: 27, watchexpr: "struct_lit.Data"},
-		{kind: CreateWatchpoint, lineno: 29, watchexpr: "s.Data"},
-		{kind: CreateWatchpoint, lineno: 20, watchexpr: "s_callee.Data"},
+		{kind: CreateWatchpoint, lineno: 39, watchexpr: "arr"},
+		{kind: CreateWatchpoint, lineno: 40, watchexpr: "struct_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 42, watchexpr: "s.Data"},
+		{kind: CreateWatchpoint, lineno: 33, watchexpr: "s_callee.Data"},
 		// s.callee OOS
-		{kind: CreateWatchpoint, lineno: 31, watchexpr: "s_caller.Data"},
-		{kind: CreateWatchpoint, lineno: 36, watchexpr: "multiline_lit.Data"},
-		{kind: CreateWatchpoint, lineno: 41, watchexpr: "nested.name.Data"},
-		{kind: CreateWatchpoint, lineno: 44, watchexpr: "nested2.name.Data"},
+		{kind: CreateWatchpoint, lineno: 44, watchexpr: "s_caller.Data"},
+		{kind: CreateWatchpoint, lineno: 49, watchexpr: "multiline_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 54, watchexpr: "nested.name.Data"},
+		{kind: CreateWatchpoint, lineno: 57, watchexpr: "nested2.name.Data"},
+
+		{kind: CreateWatchpoint, lineno: 29, watchexpr: "recvr_callee.Data"},
 	}
 	run(t, "structs.go", expected_logs, nil)
 }
@@ -179,10 +181,8 @@ func TestFakeArg(t *testing.T) {
 
 // Not fully automated, but here for convenience.
 // (Need to manually run xenon, then place outfiles in ./dlv_config_client/xenon_out/)
-// Note there is concurrency, so may need to reorder expected logs
+// Due to non-determinism (concurrency, realloc from append), may require tweaking for some runs.
 // These linenos are correct for go1.20.1 d5ccb84
-//
-// dlv exec --init=init.txt /go/src/github.com/radondb/xenon/bin/xenon -- -c /etc/xenon/xenon.json
 func TestXenon_single_query(t *testing.T) {
 	// Server makes a single DNS query (type A), then exits (after Ping fails)
 	expected_logs := []expectedWpLog{

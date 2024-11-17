@@ -154,31 +154,70 @@ func (tc *TaintCheck) hitInPrint() bool {
 	return false
 }
 
+// Given a callexpr node, return full args including non-pointer receiver name (or "" if pointer receiver)
+func (tc *TaintCheck) fullArgs(node *ast.CallExpr) []ast.Expr {
+	full_args := node.Args
+	call_expr := exprToString(node.Fun)
+	decl_loc := tc.fnDecl(call_expr, tc.hit.frame)
+	// Decl:			pkg.<optional recvr type, perhaps ptr>.<fn name>
+	// CallExpr:	<optional pkg>.<optional recvr expr, perhaps with selector(s)>.<fn name>
+
+	decl_tokens := strings.Split(decl_loc.Function.Name(), ".")
+	if len(decl_tokens) > 2 {
+		// method
+		recvr := ""
+		if !strings.Contains(decl_loc.Function.Name(), "*") {
+			// non-pointer receiver => get its name from the callexpr
+			// remove fn name
+			call_tokens := strings.Split(exprToString(node.Fun), ".")
+			recvr = strings.Join(call_tokens[:len(call_tokens)-1], ".")
+		}
+
+		recvr_node := ast.Ident{NamePos: node.Pos(), Name: recvr}
+		full_args = append([]ast.Expr{&recvr_node}, full_args...)
+	}
+	return full_args
+}
+
+// Find the function declaration location - e.g. pkg.(*Recvr).f(),
+// given the call expr - e.g. recvr.f() or pkg.f()
+func (tc *TaintCheck) fnDecl(call_expr string, frame int) api.Location {
+	locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, call_expr, true, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "ambiguous") {
+			// Ambiguous name => qualify with package name
+			tokens := strings.Split(tc.hit.hit_instr.Loc.File, "/")
+			pkg := tokens[len(tokens)-2]
+			if pkg == "dlv_config_client" { // running in test
+				pkg = "main"
+			}
+			qualified_fn := pkg + "." + call_expr
+			locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, qualified_fn, true, nil)
+			if err != nil {
+				log.Fatalf("Error finding function %v in frame %v: %v\n", qualified_fn, frame, err)
+			}
+		} else {
+			log.Fatalf("Error finding function %v in frame %v: %v\n", call_expr, frame, err)
+		}
+	}
+	// Don't check loc's PCs here - won't use them, and
+	// fn decl loc has "PC" but empty "PCs" , whereas first line loc has "PC" and "PCs" (with PCs matching PC)
+	// (at least for call_assign_1.go)
+	if len(locs) > 1 {
+		// Unsure when this would happen - don't support for now
+		log.Fatalf("Too many locations: %v\n", locs)
+	}
+	return locs[0]
+}
+
 // Find the next line on or after this one with a statement, so we can set a bp.
 // TODO May want to consider doing this with PC when handle the non-linear stuff
-func (tc *TaintCheck) lineWithStmt(fn *string, file string, lineno int, frame int) api.Location {
+func (tc *TaintCheck) lineWithStmt(call_expr *string, file string, lineno int, frame int) api.Location {
 	var loc string
-	if fn != nil {
-		locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, *fn, true, nil)
-		if err != nil {
-			if strings.Contains(err.Error(), "ambiguous") {
-				// Ambiguous name => qualify with package name
-				tokens := strings.Split(tc.hit.hit_instr.Loc.File, "/")
-				pkg := tokens[len(tokens)-2]
-				if pkg == "dlv_config_client" { // running in test
-					pkg = "main"
-				}
-				qualified_fn := pkg + "." + *fn
-				locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, qualified_fn, true, nil)
-				if err != nil {
-					log.Fatalf("Error finding function %v in frame %v: %v\n", qualified_fn, frame, err)
-				}
-			} else {
-				log.Fatalf("Error finding function %v in frame %v: %v\n", *fn, frame, err)
-			}
-		}
-		file = locs[0].File
-		lineno = locs[0].Line + 1
+	if call_expr != nil {
+		decl_loc := tc.fnDecl(*call_expr, frame)
+		file = decl_loc.File
+		lineno = decl_loc.Line + 1
 	}
 
 	for i := 0; i < 100; i++ { // Likely won't need to skip more than a few lines?

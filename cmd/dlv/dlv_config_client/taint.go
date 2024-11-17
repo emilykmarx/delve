@@ -114,7 +114,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set
 			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)), true)
 			if err != nil {
-				// Try evaluating any children
+				// Try evaluating any children (for e.g. `x+1`)
 			} else {
 				for _, watch_addr := range tc.hit.hit_bp.Addrs {
 					watch_size := uint64((proc.WatchType)(tc.hit.hit_bp.WatchType).Size())
@@ -166,6 +166,7 @@ func (tc *TaintCheck) taintedField(name string, xv *api.Variable, watch_addr uin
 	return name
 }
 
+// TODO handle the rest that do propagate
 var builtinFcts = map[string]bool{
 	// Propagate taint
 	"append": true, "copy": true,
@@ -221,29 +222,24 @@ func (tc *TaintCheck) propagateTaint() {
 		switch typed_node := node.(type) {
 
 		case *ast.CallExpr:
-			fn := exprToString(typed_node.Fun)
-			if fn == "copy" {
+			call_expr := exprToString(typed_node.Fun)
+			if call_expr == "copy" {
 				if tc.isTainted(typed_node.Args[1]) != nil {
 					// Expr will be in scope, but can't set wp yet if runtime hit (often is, in memmove) -
 					// wps set from a newer frame will go OOS when exit that frame
 					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)
 				}
-			} else if builtinFcts[fn] || fn == "runtime.KeepAlive" {
+			} else if builtinFcts[call_expr] || call_expr == "runtime.KeepAlive" {
 				// append will be handled in assign/range
 			} else {
-				full_args := typed_node.Args
-				if recvr_name, _, isMethod := strings.Cut(fn, "."); isMethod {
-					// method => check receiver for taint, and
-					// count it in args to match what we'll do when creating wp
-					recvr := ast.Ident{NamePos: typed_node.Pos(), Name: recvr_name} // printable
-					full_args = append([]ast.Expr{&recvr}, full_args...)
-				}
-				for i, arg := range full_args {
+				// If method: check receiver for taint if non-pointer, and
+				// count it in args to match what we'll do when creating wp
+				pending_loc := tc.lineWithStmt(&call_expr, "", -1, tc.hit.frame)
+				for i, arg := range tc.fullArgs(typed_node) {
 					if overlap_expr := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
 						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 						// First line of function body (params are "fake" at declaration line)
-						pending_loc := tc.lineWithStmt(&fn, "", -1, tc.hit.frame)
 						tc.recordPendingWp(*overlap_expr, pending_loc, &i)
 					}
 				}

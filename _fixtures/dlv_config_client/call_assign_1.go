@@ -7,6 +7,7 @@ import (
 )
 
 type Recvr struct {
+	X int
 }
 
 func (Recvr) ret_untainted(tainted_param int) int {
@@ -23,7 +24,7 @@ func (*Recvr) ret_tainted(tainted_param_2 int) int {
 }
 
 func main() {
-	recvr := Recvr{}
+	recvr := Recvr{X: 2}
 	var stack int // Stack is initially tainted
 	var spacer int
 	// Hit for stack
