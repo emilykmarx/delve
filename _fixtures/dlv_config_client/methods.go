@@ -2,25 +2,39 @@ package main
 
 import (
 	"fmt"
-	"runtime"
 )
 
-// (CallAssign1 also has a receiver-related test: tainting non-receiver args to a method)
-type Recvr struct {
-	X int
+type Name struct {
+	Data [2]int
+	fake int
 }
 
-func (recvr_callee Recvr) f() {
-	fmt.Printf("using recvr %v\n", recvr_callee) // needed so recvr_callee.X gets an addr
-	x_callee := recvr_callee.X                   // propagate to x_callee
-	fmt.Printf("using x_callee %v\n", x_callee)
+type Nested struct {
+	name Name
 }
 
-// Propagate to non-pointer receiver (callee gets a copy)
+// (CallAssign1 also has a methods-related test: tainting non-receiver args to ptr/non-ptr method)
+func (q *Nested) f() {
+	q.name.ptr_recvr()    // hit for q.name.Data, even tho pointer recvr => don't propagate to recvr.Data
+	q.name.nonptr_recvr() // hit for q.name.Data, non-pointer recvr => propagate to callee's copy of recvr.Data
+}
+
+func (recvr_callee *Name) ptr_recvr() {
+	fmt.Printf("using recvr %v\n", recvr_callee)
+}
+
+func (recvr_callee Name) nonptr_recvr() {
+	fmt.Printf("using recvr %v\n", recvr_callee)
+}
+
 func main() {
-	x := 1 // x initially tainted
-	runtime.KeepAlive(x)
-	recvr := Recvr{X: x} // propagate to recvr.X
-	runtime.KeepAlive(recvr)
-	recvr.f() // propagate to function's copy of recvr.X
+	arr := [2]int{0, 1}
+	multiline_lit := Name{
+		Data: arr,
+		fake: 2,
+	}
+	nested := Nested{ // nested.name.Data initially tainted
+		name: multiline_lit,
+	}
+	nested.f()
 }

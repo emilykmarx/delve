@@ -109,19 +109,26 @@ func TestReferenceElems(t *testing.T) {
 
 func TestStructs(t *testing.T) {
 	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 39, watchexpr: "arr"},
-		{kind: CreateWatchpoint, lineno: 40, watchexpr: "struct_lit.Data"},
-		{kind: CreateWatchpoint, lineno: 42, watchexpr: "s.Data"},
-		{kind: CreateWatchpoint, lineno: 33, watchexpr: "s_callee.Data"},
+		{kind: CreateWatchpoint, lineno: 26, watchexpr: "arr"},
+		{kind: CreateWatchpoint, lineno: 27, watchexpr: "struct_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 29, watchexpr: "s.Data"},
+		{kind: CreateWatchpoint, lineno: 20, watchexpr: "s_callee.Data"},
 		// s.callee OOS
-		{kind: CreateWatchpoint, lineno: 44, watchexpr: "s_caller.Data"},
-		{kind: CreateWatchpoint, lineno: 49, watchexpr: "multiline_lit.Data"},
-		{kind: CreateWatchpoint, lineno: 54, watchexpr: "nested.name.Data"},
-		{kind: CreateWatchpoint, lineno: 57, watchexpr: "nested2.name.Data"},
-
-		{kind: CreateWatchpoint, lineno: 29, watchexpr: "recvr_callee.Data"},
+		{kind: CreateWatchpoint, lineno: 31, watchexpr: "s_caller.Data"},
+		{kind: CreateWatchpoint, lineno: 36, watchexpr: "multiline_lit.Data"},
+		{kind: CreateWatchpoint, lineno: 41, watchexpr: "nested.name.Data"},
+		{kind: CreateWatchpoint, lineno: 44, watchexpr: "nested2.name.Data"},
 	}
 	run(t, "structs.go", expected_logs, nil)
+}
+
+func TestMethods(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateWatchpoint, lineno: 39, watchexpr: "nested.name.Data"},
+		{kind: CreateWatchpoint, lineno: 27, watchexpr: "recvr_callee.Data"},
+	}
+
+	run(t, "methods.go", expected_logs, nil)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
@@ -155,17 +162,6 @@ func TestRuntimeHits(t *testing.T) {
 	}
 
 	run(t, "runtime_hits.go", expected_logs, nil)
-}
-
-func TestMethods(t *testing.T) {
-	expected_logs := []expectedWpLog{
-		{kind: CreateWatchpoint, lineno: 22, watchexpr: "x"},
-		{kind: CreateWatchpoint, lineno: 24, watchexpr: "recvr.X"},
-		{kind: CreateWatchpoint, lineno: 14, watchexpr: "recvr_callee.X"},
-		{kind: CreateWatchpoint, lineno: 16, watchexpr: "x_callee"},
-	}
-
-	run(t, "methods.go", expected_logs, nil)
 }
 
 /* TODO need to investigate this - per asm, doesn't seem like should be fake...

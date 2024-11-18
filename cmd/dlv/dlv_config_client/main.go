@@ -35,7 +35,9 @@ func (tc *TaintCheck) run() {
 		}
 
 		for _, wp_oos := range state.WatchOutOfScope {
-			fmt.Printf("Watchpoint on %v went out of scope since last continue\n", wp_oos.WatchExpr)
+			loc := state.SelectedGoroutine.CurrentLoc
+			fmt.Printf("Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x) \n",
+				wp_oos.WatchExpr, loc.File, loc.Line, loc.PC)
 			delete(tc.mem_param_map, wp_oos.Addrs[0])
 		}
 	}

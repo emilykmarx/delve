@@ -311,9 +311,6 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 
 	for {
 		err := procgrp.resume()
-		if err != nil {
-			fmt.Printf("resume() err: %v\n", err.Error())
-		}
 		if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
 			// Return the thread that was stopped at a breakpoint,
 			// which is now stopped at a software watchpoint
