@@ -164,6 +164,15 @@ func TestRuntimeHits(t *testing.T) {
 	run(t, "runtime_hits.go", expected_logs, nil)
 }
 
+func TestCasts(t *testing.T) {
+	expected_logs := []expectedWpLog{
+		{kind: CreateWatchpoint, lineno: 11, watchexpr: "x"},
+		{kind: CreateWatchpoint, lineno: 13, watchexpr: "y"},
+	}
+
+	run(t, "casts.go", expected_logs, nil)
+}
+
 /* TODO need to investigate this - per asm, doesn't seem like should be fake...
 func TestFakeArg(t *testing.T) {
 	expected_logs := []expectedWpLog{
@@ -178,29 +187,40 @@ func TestFakeArg(t *testing.T) {
 // Not fully automated, but here for convenience.
 // (Need to manually run xenon, then place outfiles in ./dlv_config_client/xenon_out/)
 // Due to non-determinism (concurrency, realloc from append), may require tweaking for some runs.
-// These linenos are correct for go1.20.1 d5ccb84
+// These linenos are correct for go1.20.1 fb06acf5, xenon e57b72b
 func TestXenon_single_query(t *testing.T) {
 	// Server makes a single DNS query (type A), then exits (after Ping fails)
 	expected_logs := []expectedWpLog{
-		// dnsconfig_unix.go:dnsReadConfig()
 		// conf.search only has one string with this resolv.conf
+		// names has 2 strings (eecs and localhost.)
+
+		// dnsReadConfig()- dnsclient_unix.go
 		{kind: CreateWatchpoint, lineno: 144, watchexpr: "conf.search[0]"},
 
-		// dnsclient_unix.go:nameList()
-		// suffix and conf.search[0] share backing array, but not names
-		{kind: CreateWatchpoint, lineno: 519, watchexpr: "names"},
+		// (*dnsConfig).nameList() - dnsclient_unix.go
+		{kind: CreateWatchpoint, lineno: 522, watchexpr: "names[0]"},
 
-		// dnsclient_unix.go:goLookupIPCNAMEOrder()
-		// names has 2 strings (eecs and localhost.)
-		// Share backing array: fqdn in range on 668, fqdn in queryFn(), names, name in tryOneName, name in NewName
+		// dnsmessage.NewName() - message.go
+		{kind: CreateWatchpoint, lineno: 1907, watchexpr: "n.Data[:]"},
 
-		// dnsclient_unix.go:responseFn()
-		// interleaved w/ querying: Hit on 669 => set bp on 659 => hit 659
-		{kind: CreateWatchpoint, lineno: 659, watchexpr: "fqdn"},
-		// callee fqdn[0] re-uses caller mem
+		// (*Resolver).tryOneName() - dnsclient_unix.go
+		{kind: CreateWatchpoint, lineno: 268, watchexpr: "n.Data"},
+		{kind: CreateWatchpoint, lineno: 277, watchexpr: "q.Name.Data"},
 
-		// hit for fqdn[0] (via copy of name)
-		{kind: CreateWatchpoint, lineno: 1907, watchexpr: "n.Data[0]"},
+		// (*Resolver).exchange() - dnsclient_unix.go
+		{kind: CreateWatchpoint, lineno: 166, watchexpr: "q.Name.Data"},
+
+		// newRequest() - dnsclient_unix.go
+		{kind: CreateWatchpoint, lineno: 60, watchexpr: "q.Name.Data"},
+
+		// (*Builder).Question() - message.go
+		{kind: CreateWatchpoint, lineno: 1324, watchexpr: "q.Name.Data"},
+
+		// (*Name).pack - message.go
+		{kind: CreateWatchpoint, lineno: 1971, watchexpr: "msg"},
+
+		// dnsPacketRoundTrip - dnsclient_unix.go
+		{kind: CreateWatchpoint, lineno: 106, watchexpr: "query.Name.Data"},
 	}
 
 	/*
@@ -302,7 +322,14 @@ func run(t *testing.T, testfile string, expected_logs []expectedWpLog, initial_w
 	client.Stdout = &client_out
 	client.Stderr = &client_err
 
-	assertNoError(client.Run(), t, "run client")
+	if err := client.Run(); err != nil {
+		if err.Error() == "signal: killed" {
+			// Can occur with structs test, but not when run outside `go test`
+			t.Logf("Test OOM - may cause failure if occurred before end")
+		} else {
+			t.Fatalf("Client exited with error: %v\n", err.Error())
+		}
+	}
 
 	checkOutput(t, client_err.savedOutput, server_err.savedOutput)
 	checkWatchpoints(t, client_out.savedOutput, expected_logs, init_watchexpr)

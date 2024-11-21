@@ -8,8 +8,6 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 )
 
-// PERF: Avoid re-parsing files
-
 // Run the target until exit
 func (tc *TaintCheck) run() {
 	state := <-tc.client.Continue()
@@ -20,6 +18,7 @@ func (tc *TaintCheck) run() {
 		}
 
 		for _, thread := range state.Threads {
+			// TODO check if anything bad happens if multiple threads hit same bp/wp at same time
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
 				tc.hit = Hit{hit_bp: hit_bp}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/service/api"
+	"github.com/hashicorp/go-set"
 )
 
 // Taint propagation logic
@@ -73,6 +74,10 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
 	return caller_lhs, next_line
 }
 
+// TODO (future) consider making tests more organized - e.g. split into "isTainted" and "propagateTaint",
+// so don't need to e.g. write an assign and range test for every new construct
+// (e.g. don't have a test for return callexpr/cast)
+
 /* If expr involves memory that overlaps the watched region,
  * ignoring function args (except builtins),
  * return the expression for the overlapping region, or "" if the entire region overlaps
@@ -95,8 +100,10 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 		case *ast.CallExpr:
 			if tc.handleAppend(typed_node) {
 				overlap_expr = &found_overlap
+			} else if !casts.Contains(exprToString(typed_node.Fun)) {
+				// casted expr is tainted if its arg is
+				return false
 			}
-			return false
 		case *ast.CompositeLit:
 			// Evaluate children to check which field is tainted
 			// Only support struct literal currently
@@ -167,18 +174,29 @@ func (tc *TaintCheck) taintedField(name string, xv *api.Variable, watch_addr uin
 }
 
 // TODO handle the rest that do propagate
-var builtinFcts = map[string]bool{
+var builtinFcts = *set.From([]string{
 	// Propagate taint
-	"append": true, "copy": true,
-	"min": true, "max": true,
-	"imag": true, "complex": true,
+	"append", "copy",
+	"min", "max",
+	"imag", "complex",
 	// Arguably propagate taint
-	"len": true, "make": true,
+	"len", "make",
 	// Don't propagate taint
-	"cap": true, "clear": true, "close": true,
-	"delete": true, "new": true, "panic": true,
-	"print": true, "println": true,
-}
+	"cap", "clear", "close",
+	"delete", "new", "panic",
+	"print", "println",
+})
+
+var casts = *set.From([]string{
+	"bool",
+	"string",
+	"int", "int8", "int16", "int32", "int64",
+	"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+	"byte",
+	"rune",
+	"float32", "float64",
+	"complex64", "complex128",
+})
 
 // Whether return value is tainted
 func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) bool {
@@ -224,14 +242,15 @@ func (tc *TaintCheck) propagateTaint() {
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
 			if call_expr == "copy" {
+				// TODO update test for this (previous one no longer propagates when only watching for underlying data)
 				if tc.isTainted(typed_node.Args[1]) != nil {
 					// Expr will be in scope, but can't set wp yet if runtime hit (often is, in memmove) -
 					// wps set from a newer frame will go OOS when exit that frame
 					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)
 				}
-			} else if builtinFcts[call_expr] || call_expr == "runtime.KeepAlive" {
-				// append will be handled in assign/range
+			} else if builtinFcts.Contains(call_expr) || casts.Contains(call_expr) || call_expr == "runtime.KeepAlive" {
+				// builtins will be handled in assign/range
 			} else {
 				// If method: check receiver for taint if non-pointer, and
 				// count it in args to match what we'll do when creating wp
