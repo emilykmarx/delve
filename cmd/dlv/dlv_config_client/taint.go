@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/service/api"
 	"github.com/hashicorp/go-set"
 )
@@ -123,26 +122,25 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
 			if err != nil {
 				// Try evaluating any children (for e.g. `x+1`)
 			} else {
-				for _, watch_addr := range tc.hit.hit_bp.Addrs {
-					watch_size := uint64((proc.WatchType)(tc.hit.hit_bp.WatchType).Size())
-					xv_size := uint64(xv.Watchsz)
+				watch_addr := tc.hit.hit_bp.Addr
+				watch_size := watchSize(tc.hit.hit_bp)
+				xv_size := uint64(xv.Watchsz)
 
-					if memOverlap(xv.Addr, xv_size, watch_addr, watch_size) {
-						if composite_lit {
-							if tainted_field, ok := field_names[exprToString(node.(ast.Expr))]; !ok {
-								log.Fatalf("Failed to find field name for %v\n", exprToString(node.(ast.Expr)))
-							} else {
-								found_overlap = "." + tainted_field
-							}
+				if memOverlap(xv.Addr, xv_size, watch_addr, watch_size) {
+					if composite_lit {
+						if tainted_field, ok := field_names[exprToString(node.(ast.Expr))]; !ok {
+							log.Fatalf("Failed to find field name for %v\n", exprToString(node.(ast.Expr)))
+						} else {
+							found_overlap = "." + tainted_field
 						}
-						if xv.Kind == reflect.Struct {
-							// TODO will this handle composite lit nested in a composite lit?
-							// Take the first field that overlaps (TODO support multiple tainted fields)
-							found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size)
-						}
-
-						overlap_expr = &found_overlap
 					}
+					if xv.Kind == reflect.Struct {
+						// TODO will this handle composite lit nested in a composite lit?
+						// Take the first field that overlaps (TODO support multiple tainted fields)
+						found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size)
+					}
+
+					overlap_expr = &found_overlap
 				}
 
 				// Don't evaluate children

@@ -57,6 +57,21 @@ type TaintCheck struct {
 	mem_param_map map[uint64]TaintingVals
 }
 
+// Handle syscall with tainted arg - server returns it to us as wp hit
+func (tc *TaintCheck) handleSyscallHit(syscall_name string) {
+	// TODO handle other syscalls that do network send and file open
+	if syscall_name == "syscall.write" {
+		// TODO find tainted region of msg - i.e. region of send buf that overlaps watched region.
+		// (Server needs to put send buf addr and sz in watchpoint.)
+		// For now assume full overlap
+		watch_addr := tc.hit.hit_bp.Addr
+		tainting_vals := tc.mem_param_map[watch_addr]
+
+		// log for test
+		fmt.Printf("SendTaintedMessage %+v\n", tainting_vals.params)
+	}
+}
+
 /* If hit was in runtime, either ignore (e.g. newstack), or
  * record first non-runtime frame as line to check taint in.
  * (Can't assume that line will additionally have a non-runtime hit, e.g. some memmoves.)
@@ -84,8 +99,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 			if fn == "runtime.newstack" {
 				return nil, false
 			} else if fn == "runtime/internal/syscall.Syscall6" {
-				// TODO for now, ignore "hits" due to syscall with tainted arg.
-				// May need to model specific syscalls (see gdoc).
+				tc.handleSyscallHit(stack[3].Function.Name())
 				return nil, false
 			}
 			if !strings.HasPrefix(fn, "runtime") {
@@ -240,7 +254,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 func (tc *TaintCheck) onWatchpointHit() {
 	fmt.Printf("\n\n*** Hit watchpoint for %v\n", tc.hit.hit_bp.WatchExpr)
 	if !tc.hittingLine() {
-		fmt.Printf("Ignoring watchpoint hit at %#x\n", tc.thread.PC)
+		fmt.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
 		return
 	}
 	tc.propagateTaint()

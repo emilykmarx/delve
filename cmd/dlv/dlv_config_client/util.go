@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
@@ -208,6 +209,10 @@ func (tc *TaintCheck) fnDecl(call_expr string, frame int) api.Location {
 		log.Fatalf("Too many locations: %v\n", locs)
 	}
 	return locs[0]
+}
+
+func watchSize(wp *api.Breakpoint) uint64 {
+	return uint64((proc.WatchType)(wp.WatchType).Size())
 }
 
 // Find the next line on or after this one with a statement, so we can set a bp.
