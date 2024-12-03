@@ -8,6 +8,8 @@ import (
 	"go/constant"
 	"go/parser"
 	"go/token"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
 
@@ -711,7 +713,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 			return xv, ElemsAreReferences{Xv: xv}
 		}
 	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
-		// watch backing array
+		// watch backing array - but not past len, since only initialized data is tainted
 		xv.Addr = xv.Base
 		sz = xv.Len
 		// If slice elements are a reference type (string or slice),
@@ -732,14 +734,42 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		return xv, err
 	}
 	// TODO support other types - for types with elements e.g. structs, need to do the ElemsAreReferences thing
+	// and pass capacity (not watchsz) to MoveObject below
 
 	xv.Watchsz = sz
 	return xv, nil
 }
 
+// Ask the target's runtime to move the object to a page only for tainted objects.
+// Return new address.
+func MoveObject(addr uint64, sz int64) (uint64, error) {
+	// TODO pass target's http endpoint into delve
+	url := fmt.Sprintf("http://localhost:6060/debug/pprof/moveObject?addr=%#x&sz=%v", addr, sz)
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("http get to allocator: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("bad response code %v from allocator", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return 0, fmt.Errorf("reading response body from allocator: %v", err)
+	}
+	fmt.Printf("body: %v\n", string(body))
+	var new_addr uint64
+	if _, err := fmt.Sscanf(string(body), "New address: %#x", &new_addr); err != nil {
+		return 0, fmt.Errorf("getting new address from allocator response %v: %v", string(body), err)
+	}
+
+	return new_addr, nil
+}
+
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
-func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
+// If move, first move object.
+func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl, move bool) (*Breakpoint, error) {
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
@@ -752,7 +782,21 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, err
 	}
 
-	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
+	// PERF: no need to call allocator if object isn't on heap (GCTestPointerClass)
+	watchaddr := xv.Addr
+	if move {
+		move_sz := xv.Watchsz
+		if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
+			// If slice, need to move arr[len:cap] (so append will work) but don't want to watch it
+			move_sz = xv.Cap
+		}
+		watchaddr, err = MoveObject(xv.Addr, move_sz)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, watchaddr, xv.Watchsz, wtype, cond, wimpl)
 	if err != nil {
 		return bp, err
 	}

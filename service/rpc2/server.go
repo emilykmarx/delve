@@ -1071,6 +1071,7 @@ type CreateWatchpointIn struct {
 	Size  int64
 	Type  api.WatchType
 	Impl  api.WatchImpl
+	Move  bool
 }
 
 type CreateWatchpointOut struct {
@@ -1080,7 +1081,7 @@ type CreateWatchpointOut struct {
 func (s *RPCServer) CreateWatchpoint(arg CreateWatchpointIn, out *CreateWatchpointOut) error {
 	var err error
 	out.Watchpoints, err = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall,
-		arg.Expr, arg.Type, arg.Impl)
+		arg.Expr, arg.Type, arg.Impl, arg.Move)
 	return err
 }
 

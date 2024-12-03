@@ -271,9 +271,9 @@ func (c *RPCClient) CreateEBPFTracepoint(fnName string) error {
 	return c.call("CreateEBPFTracepoint", CreateEBPFTracepointIn{FunctionName: fnName}, &out)
 }
 
-func (c *RPCClient) CreateWatchpoint(scope api.EvalScope, expr string, wtype api.WatchType, wimpl api.WatchImpl) ([]*api.Breakpoint, error) {
+func (c *RPCClient) CreateWatchpoint(scope api.EvalScope, expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
 	var out CreateWatchpointOut
-	err := c.call("CreateWatchpoint", CreateWatchpointIn{Scope: scope, Expr: expr, Type: wtype, Impl: wimpl}, &out)
+	err := c.call("CreateWatchpoint", CreateWatchpointIn{Scope: scope, Expr: expr, Type: wtype, Impl: wimpl, Move: move}, &out)
 	return out.Watchpoints, err
 }
 

@@ -228,11 +228,11 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	delete(tc.pending_wps, bp_addr)
 }
 
-// Set any watchpoint(s) corresponding to watchexpr
+// Move watchexpr to tainted page, and set any watchpoint(s) corresponding to watchexpr
 func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// We really want a read-only wp, but not supported
-	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware)
+	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, true)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
 	}

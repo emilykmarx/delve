@@ -2052,7 +2052,7 @@ func watchpoint(t *Term, ctx callContext, args string) error {
 	default:
 		return fmt.Errorf("wrong argument %q to watch", v[1])
 	}
-	bps, err := t.client.CreateWatchpoint(ctx.Scope, v[nargs], wtype, wimpl)
+	bps, err := t.client.CreateWatchpoint(ctx.Scope, v[nargs], wtype, wimpl, false)
 	if err != nil {
 		return err
 	}

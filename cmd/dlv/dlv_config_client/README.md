@@ -7,6 +7,8 @@ It relies on several changes to the server side of Delve, including:
 * Support for watching new types
 * Other stuff
 
+It also relies on changes to the go allocator - see below.
+
 ## Usage
 Tests: See [the pre-commit hook](pre-commit-hook.py) for tests of the client and of the server changes.
 
@@ -14,13 +16,17 @@ Performance: [This script](slowdown.py) gathers some rough slowdown statistics.
 
 Use in a real program (in progress): See [Xenon](https://github.com/emilykmarx/xenon)
 
-Only supports linux/amd64 and Delve's native backend; currently only tested with go 1.22.4.
+Only supports linux/amd64 and Delve's native backend.
 
 ### Building the target
 * Include `syscall.Syscall6()`, e.g. via `import "_ syscall"`
 * Build with `-gcflags="all=-N -l"` - this will minimize optimizations
   * But, compiler may still circumvent taint tracking by using registers -
     `runtime.KeepAlive()` can help.
+* Build with a [go allocator](https://github.com/emilykmarx/go) that supports moving tainted objects.
+* Import `net/http/pprof`
+* If target does not already run an HTTP server, start one.
+  * If server does not use the DefaultServeMux, register the pprof handlers (see pprof docs).
 
 
 ## Supported Go constructs

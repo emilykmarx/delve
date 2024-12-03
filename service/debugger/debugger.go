@@ -1110,9 +1110,10 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 // Returns all relevant watchpoints, even if some existed,
 // unless some other error occurs along the way.
 // If already existed, don't return error (this is for ConfLens - may
-// break some existing delve tests)
+// break some existing delve tests).
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
-	expr string, wtype api.WatchType, wimpl api.WatchImpl) ([]*api.Breakpoint, error) {
+	expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
+
 	p := d.target.Selected
 	watchpoints := []*api.Breakpoint{}
 
@@ -1121,12 +1122,12 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 		return nil, err
 	}
 	d.breakpointIDCounter++
-	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl))
+	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), move)
 	if slice, ok := err.(proc.ElemsAreReferences); ok {
 		// Make recursive call for each element
 		for i := 0; i < int(slice.Xv.Len); i++ {
 			string_elem := fmt.Sprintf("%v[%v]", expr, i)
-			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl)
+			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl, move)
 			if _, ok := err.(proc.BreakpointExistsError); ok {
 				// If one already existed, add it to the list and continue to the others
 			} else if err != nil {
