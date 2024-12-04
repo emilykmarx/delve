@@ -8,16 +8,17 @@ import (
 	"go/constant"
 	"go/parser"
 	"go/token"
-	"io"
-	"net/http"
+	"log"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/dwarf/reader"
 	"github.com/go-delve/delve/pkg/goversion"
 	"github.com/go-delve/delve/pkg/proc/internal/ebpf"
+	sys "golang.org/x/sys/unix"
 )
 
 const (
@@ -742,28 +743,17 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 
 // Ask the target's runtime to move the object to a page only for tainted objects.
 // Return new address.
-func MoveObject(addr uint64, sz int64) (uint64, error) {
-	// TODO pass target's http endpoint into delve
-	url := fmt.Sprintf("http://localhost:6060/debug/pprof/moveObject?addr=%#x&sz=%v", addr, sz)
-	resp, err := http.Get(url)
+func (t *Target) MoveObject(addr uint64, sz int64) (uint64, error) {
+	var err error
+	t.Process.ExecPtraceFunc(func() { err = sys.PtraceCont(t.CurrentThread().ThreadID(), int(sys.SIGUSR1)) })
 	if err != nil {
-		return 0, fmt.Errorf("http get to allocator: %v", err)
+		log.Panicf("Error sending MoveObject signal to runtime: %v\n", err.Error())
 	}
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("bad response code %v from allocator", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		return 0, fmt.Errorf("reading response body from allocator: %v", err)
-	}
-	fmt.Printf("body: %v\n", string(body))
-	var new_addr uint64
-	if _, err := fmt.Sscanf(string(body), "New address: %#x", &new_addr); err != nil {
-		return 0, fmt.Errorf("getting new address from allocator response %v: %v", string(body), err)
-	}
+	// Time for sighandler to run
+	time.Sleep(1 * time.Hour)
+	// TODO if alloc didn't move it, log why and increment a metric for it, but don't panic
 
-	return new_addr, nil
+	return 0, nil
 }
 
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
@@ -790,7 +780,7 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 			// If slice, need to move arr[len:cap] (so append will work) but don't want to watch it
 			move_sz = xv.Cap
 		}
-		watchaddr, err = MoveObject(xv.Addr, move_sz)
+		watchaddr, err = t.MoveObject(xv.Addr, move_sz)
 		if err != nil {
 			return nil, err
 		}

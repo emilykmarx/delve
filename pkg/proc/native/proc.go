@@ -176,6 +176,10 @@ func (dbp *nativeProcess) Memory() proc.MemoryReadWriter {
 	return dbp.memthread
 }
 
+func (dbp *nativeProcess) ExecPtraceFunc(fn func()) {
+	dbp.execPtraceFunc(fn)
+}
+
 // Breakpoints returns a list of breakpoints currently set.
 func (dbp *nativeProcess) Breakpoints() *proc.BreakpointMap {
 	return &dbp.breakpoints
