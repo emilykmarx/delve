@@ -445,8 +445,6 @@ func (p *process) Memory() proc.MemoryReadWriter {
 	return p
 }
 
-func (p *process) ExecPtraceFunc(fn func()) {}
-
 // Detach will always return nil and have no
 // effect as you cannot detach from a core file
 // and have it continue execution or exit.
