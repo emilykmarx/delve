@@ -819,8 +819,6 @@ func (p *gdbProcess) Memory() proc.MemoryReadWriter {
 	return p
 }
 
-func (p *gdbProcess) ExecPtraceFunc(fn func()) {}
-
 const (
 	interruptSignal  = 0x2
 	breakpointSignal = 0x5

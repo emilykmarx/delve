@@ -34,8 +34,6 @@ type Process interface {
 
 	// Memory returns a memory read/writer for this process's memory.
 	Memory() MemoryReadWriter
-
-	ExecPtraceFunc(func())
 }
 
 // ProcessInternal holds a set of methods that need to be implemented by a
