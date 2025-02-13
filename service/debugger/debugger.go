@@ -1111,7 +1111,8 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 // unless some other error occurs along the way.
 // If already existed, don't return error (this is for ConfLens - may
 // break some existing delve tests).
-// If `move`: don't set it yet - record state to set it upon continue (so we can reach target http server)
+// If `move` (and not on stack): don't set it yet - record state to set it upon continue (so we can reach target http server)
+// PERF: Can also set normally for globals
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
 	if wimpl == api.WatchHardware && move {
@@ -1127,7 +1128,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	}
 	d.breakpointIDCounter++
 	write := wimpl == api.WatchHardware || !move
-	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), write)
+	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), &write)
 
 	if slice, ok := err.(proc.ElemsAreReferences); ok {
 		// Make recursive call for each element
@@ -1146,7 +1147,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	} else if err != nil {
 		return nil, err
 	} else {
-		if move {
+		if !write {
 			pendingwp := proc.PendingWp{Scope: s, Expr: expr, LogicalID: d.breakpointIDCounter}
 			d.Target().Process.AddPendingWatchpoint(pendingwp)
 		} else {

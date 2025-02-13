@@ -629,11 +629,15 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 	return t.Proc.SetUProbe(fn.Name, goidOffset, args)
 }
 
+// Whether addr is on stack
+func StackAddr(scope *EvalScope, addr uint64) bool {
+	return scope.g != nil && !scope.g.SystemStack && addr >= scope.g.stack.lo && addr < scope.g.stack.hi
+}
+
 // Set watchpoint whose addr and size is already known
 // EvalScope just used to determine stack location
 func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr string, watchaddr uint64, sz int64, wtype WatchType,
 	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
-	stackWatch := scope.g != nil && !scope.g.SystemStack && watchaddr >= scope.g.stack.lo && watchaddr < scope.g.stack.hi
 
 	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
 	if err != nil {
@@ -641,7 +645,7 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	}
 	bp.WatchExpr = expr
 
-	if stackWatch {
+	if StackAddr(scope, watchaddr) {
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
 		err := t.setStackWatchBreakpoints(scope, bp)
 		if err != nil {
@@ -774,7 +778,8 @@ func MoveObject(addr uint64) (uint64, error) {
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
 // If !write, don't write it yet - just check if it's watchable
-func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl, write bool) (*Breakpoint, error) {
+func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr,
+	wimpl WatchImpl, write *bool) (*Breakpoint, error) {
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
@@ -787,7 +792,10 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, err
 	}
 
-	if !write {
+	if StackAddr(scope, xv.Addr) {
+		*write = true // no need to move stack objects
+	}
+	if !*write {
 		return nil, nil
 	}
 
