@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
@@ -690,9 +691,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		return xv, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
 	}
 
-	if xv.Name == "" {
-		xv.Name = expr
-	}
+	xv.Name = expr
 	// TODO (minor): Below assumes software impl (i.e. can watch sz > 8)
 	sz := xv.DwarfType.Size()
 
@@ -742,10 +741,15 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 
 // Ask the target's runtime to move the object to a page only for tainted objects.
 // Return new address.
-func MoveObject(addr uint64, sz int64) (uint64, error) {
+func MoveObject(addr uint64) (uint64, error) {
 	// TODO pass target's http endpoint into delve
-	url := fmt.Sprintf("http://localhost:6060/debug/pprof/moveObject?addr=%#x&sz=%v", addr, sz)
-	resp, err := http.Get(url)
+	url := fmt.Sprintf("http://localhost:6060/debug/pprof/moveObject?addr=%#x", addr)
+	fmt.Println("enter MoveObject")
+
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Get(url)
 	if err != nil {
 		return 0, fmt.Errorf("http get to allocator: %v", err)
 	}
@@ -757,19 +761,20 @@ func MoveObject(addr uint64, sz int64) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading response body from allocator: %v", err)
 	}
-	fmt.Printf("body: %v\n", string(body))
+	fmt.Printf("allocator response body: %v\n", string(body))
 	var new_addr uint64
-	if _, err := fmt.Sscanf(string(body), "New address: %#x", &new_addr); err != nil {
+	if _, err := fmt.Sscanf(string(body), "New address: 0x%x", &new_addr); err != nil {
 		return 0, fmt.Errorf("getting new address from allocator response %v: %v", string(body), err)
 	}
 
+	fmt.Println("exit MoveObject")
 	return new_addr, nil
 }
 
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
-// If move, first move object.
-func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl, move bool) (*Breakpoint, error) {
+// If !write, don't write it yet - just check if it's watchable
+func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr, wimpl WatchImpl, write bool) (*Breakpoint, error) {
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
@@ -782,21 +787,11 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		return nil, err
 	}
 
-	// PERF: no need to call allocator if object isn't on heap (GCTestPointerClass)
-	watchaddr := xv.Addr
-	if move {
-		move_sz := xv.Watchsz
-		if _, ok := xv.DwarfType.(*godwarf.SliceType); ok {
-			// If slice, need to move arr[len:cap] (so append will work) but don't want to watch it
-			move_sz = xv.Cap
-		}
-		watchaddr, err = MoveObject(xv.Addr, move_sz)
-		if err != nil {
-			return nil, err
-		}
+	if !write {
+		return nil, nil
 	}
 
-	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, watchaddr, xv.Watchsz, wtype, cond, wimpl)
+	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
 	if err != nil {
 		return bp, err
 	}
@@ -804,7 +799,8 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 }
 
 // For breakpoints (addr = PC) and watchpoints (addr = addr to watch)
-func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind, wtype WatchType, wimpl WatchImpl, cond ast.Expr) (*Breakpoint, error) {
+func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind BreakpointKind,
+	wtype WatchType, wimpl WatchImpl, cond ast.Expr) (*Breakpoint, error) {
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()
 		if !recorded {

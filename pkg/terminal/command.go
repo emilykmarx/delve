@@ -2027,10 +2027,9 @@ func edit(t *Term, ctx callContext, args string) error {
 }
 
 func watchpoint(t *Term, ctx callContext, args string) error {
-	nargs := 2
-	v := strings.SplitN(args, " ", nargs+1)
-	if len(v) != nargs+1 {
-		return errors.New("wrong number of arguments: watch [-r|-w|-rw] [-hw|-sw] <expr>")
+	v := strings.SplitN(args, " ", 4)
+	if len(v) != 3 && len(v) != 4 { // -nomove is optional
+		return errors.New("wrong number of arguments: watch [-r|-w|-rw] [-hw|-sw] (-nomove) <expr>")
 	}
 	var wtype api.WatchType
 	switch v[0] {
@@ -2052,7 +2051,17 @@ func watchpoint(t *Term, ctx callContext, args string) error {
 	default:
 		return fmt.Errorf("wrong argument %q to watch", v[1])
 	}
-	bps, err := t.client.CreateWatchpoint(ctx.Scope, v[nargs], wtype, wimpl, false)
+	move := wimpl == api.WatchSoftware
+	if len(v) == 4 {
+		if v[2] != "-nomove" {
+			return fmt.Errorf("wrong argument %q to watch", v[2])
+		} else if wimpl == api.WatchHardware {
+			return errors.New("-nomove argument does not apply to hardware watchpoints")
+		} else {
+			move = false
+		}
+	}
+	bps, err := t.client.CreateWatchpoint(ctx.Scope, v[len(v)-1], wtype, wimpl, move)
 	if err != nil {
 		return err
 	}

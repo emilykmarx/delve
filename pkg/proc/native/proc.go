@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -49,6 +50,8 @@ type nativeProcess struct {
 
 	// PCs of syscall entry, syscall instruction, and one after syscall instr
 	syscallPCs [3]uint64
+
+	pendingWatchpoints []proc.PendingWp
 }
 
 // newProcess returns an initialized Process struct. Before returning,
@@ -176,6 +179,10 @@ func (dbp *nativeProcess) Memory() proc.MemoryReadWriter {
 	return dbp.memthread
 }
 
+func (dbp *nativeProcess) AddPendingWatchpoint(wp proc.PendingWp) {
+	dbp.pendingWatchpoints = append(dbp.pendingWatchpoints, wp)
+}
+
 // Breakpoints returns a list of breakpoints currently set.
 func (dbp *nativeProcess) Breakpoints() *proc.BreakpointMap {
 	return &dbp.breakpoints
@@ -291,12 +298,169 @@ func ProgramThreads(procgrp *processGroup, msg string) {
 	for _, thread := range procgrp.procs[0].ThreadList() {
 		loc, _ := thread.Location()
 		if loc != nil && loc.Fn != nil && loc.Fn.Name == "main.main" {
-			fmt.Printf("Thread at line: %v\n", loc.Line)
+			fmt.Printf("Thread %v at line: %v\n", thread.ThreadID(), loc.Line)
 			if thread.Breakpoint() != nil && thread.Breakpoint().Breakpoint != nil {
 				fmt.Printf("Breakpoint: %v\n", thread.Breakpoint())
 			} else {
 				fmt.Printf("Nil breakpoint\n")
 			}
+		}
+	}
+}
+
+// Handle any breakpoints/watchpoints hit while threads are running during MoveObject
+func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, dbp *nativeProcess, donech chan error) error {
+	fmt.Println("enter monitorMoveObject")
+	for {
+		// XXX check if any of these functions will use a thread besides trapthread to do ptrace
+		// XXX if any hits were non-spurious, return to client
+		// XXX test both versions of target (one that would hang, and conn refused)
+
+		select {
+		// Two ways to exit this loop:
+		// - Get stop signal from MoveObject (trapWait returns SIGSTOP)
+		// - Get return value from MoveObject (trapWait would return some thread at a bp/wp, but we should exit)
+		// XXX test both cases
+		case moveErr := <-donech:
+			fmt.Println("donech; exit monitorMoveObject")
+			return moveErr
+		default:
+			// 1. Wait for a thread to hit a bp/wp (or for moveObject to signal that it's done)
+			trapthread, err := trapWait(procgrp, -1)
+			if err != nil {
+				log.Panicf("trapWait error: %v\n", err)
+			}
+			fmt.Printf("found trapthread %v, status %#x\n", trapthread.ThreadID(), *trapthread.Status)
+
+			if trapthread.stopSignal() == sys.SIGSTOP {
+				// From stop() after MoveObject
+				fmt.Println("SIGSTOP; exit monitorMoveObject")
+				return <-donech
+			}
+
+			// 2. Set the stopped thread's breakpoint/watchpoint
+			var unused bool
+			if err := setThreadBreakpoint(cctx, dbp, trapthread, trapthread, &unused); err != nil {
+				log.Panicf("setThreadBreakpoint error for thread %v: %v\n", trapthread.ThreadID(), err)
+			}
+
+			fmt.Printf("set bp to %+v\n", trapthread.CurrentBreakpoint.Breakpoint)
+
+			// 3. Step over the breakpoint/watchpoint
+			if err := procgrp.stepOverBreakpoint(trapthread, dbp); err != nil {
+				if _, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
+					// stepped over the bp - now step over the sw wp
+					if err := procgrp.stepOverBreakpoint(trapthread, dbp); err != nil {
+						log.Panicf("stepOverBreakpoint error for SoftwareWatchpointAtBreakpoint thread %v: %v\n", trapthread.ThreadID(), err)
+					}
+				} else {
+					log.Panicf("stepOverBreakpoint error for thread %v: %v\n", trapthread.ThreadID(), err)
+				}
+			}
+
+			fmt.Printf("stepped over bp\n")
+
+			// 4. Resume thread
+			if err := trapthread.resume(); err != nil && err != sys.ESRCH {
+				log.Panicf("resume error for thread %v: %v\n", trapthread.ThreadID(), err)
+			}
+
+			fmt.Printf("resumed thread\n")
+		}
+	}
+}
+
+func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch chan uint64, donech chan error) {
+	var watchaddr uint64
+	var err error
+	i := 0
+	// XXX run this a bunch of times - unsure if this combo of n_retries and 5ms sleep will always work
+	n_retries := 100
+	defer func() {
+		// Ensure that main goroutine's trapWait will return
+		for _, th := range dbp.threads {
+			// loop in case some thread has exited
+			if err := th.stop(); err == nil {
+				fmt.Printf("sent stop() to thread %v\n", th.ThreadID())
+				break
+			} else {
+				fmt.Printf("failed to send stop() to thread %v\n", th.ThreadID())
+			}
+		}
+	}()
+
+	for ; i < n_retries; i++ {
+		watchaddr, err = proc.MoveObject(xv.Addr)
+		if err == nil {
+			watchaddrch <- watchaddr
+			donech <- nil
+			return
+		} else if strings.Contains(err.Error(), "connection refused") {
+			// server thread is at a breakpoint - try again once monitor goroutine has stepped over it
+			fmt.Println("conn refused - trying again")
+			time.Sleep(5 * time.Millisecond)
+		} else {
+			donech <- err
+			return
+		}
+	}
+
+	donech <- errors.New("retries exceeded")
+}
+
+// Set any watchpoints the client requested during the last stop
+// (moving the objects to a tainted page first).
+// PERF: no need to call allocator if object isn't on heap (GCTestPointerClass)
+// XXX add allocator_http.go to automated suite, and update rest of tests to either pass -nomove,
+// or run http server (may also want sleep after set wp so can check it also hits after move)
+func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContext) {
+	for _, dbp := range procgrp.procs {
+		if valid, _ := dbp.Valid(); valid {
+			for _, wp := range dbp.pendingWatchpoints {
+				fmt.Printf("ZZEM setting pending wp: %v\n", wp)
+				xv, err := cctx.Target.EvalWatchexpr(wp.Scope, wp.Expr, false)
+				if err != nil {
+					log.Panicf("eval pending watchpoint %+v: %v", xv, err)
+				}
+
+				// 1. Resume all threads to reach HTTP server (may also be needed for pointer updates to avoid hang in GC)
+				if err := procgrp.resume(); err != nil {
+					if _, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
+						// thread was stopped at a breakpoint, now stopped at a software watchpoint
+						// XXX think abt if this can happen/what to do
+					} else {
+						log.Panicf("resume in setPendingWatchpoints: %v", err)
+					}
+				}
+
+				// 2. Make HTTP request to move object
+				watchaddrch := make(chan uint64, 1) // non-blocking sends, since we'll be stuck in trapWait here
+				donech := make(chan error, 1)
+				go MoveObjectWithRetries(xv, dbp, watchaddrch, donech)
+
+				// 3. Monitor threads until move is done, check result
+				if err := procgrp.monitorMoveObject(cctx, dbp, donech); err != nil {
+					log.Panicf("MoveObject failed for %+v: %v\n", xv, err)
+				}
+				watchaddr := <-watchaddrch
+
+				// 4. Stop all threads to set watchpoint (so they can't access the old location in the meantime)
+				fmt.Println("about to stop()")
+				if _, err := procgrp.stop(cctx, dbp.memthread); err != nil {
+					log.Panicf("stop in setPendingWatchpoints: %v", err)
+				}
+
+				fmt.Println("about to set wp after successful MoveObject")
+
+				// 4. Set watchpoint on new location
+				// XXX set on old location in CreateWatchpoint, un-set here
+				_, err = cctx.Target.SetWatchpointNoEval(wp.LogicalID, wp.Scope, wp.Expr, watchaddr, xv.Watchsz,
+					proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
+				if err != nil {
+					log.Panicf("SetWatchpointNoEval in setPendingWatchpoints: %v\n", err)
+				}
+			}
+			dbp.pendingWatchpoints = nil
 		}
 	}
 }
@@ -308,6 +472,8 @@ func (procgrp *processGroup) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.
 	if procgrp.numValid() == 0 {
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: procgrp.procs[0].pid}
 	}
+
+	procgrp.setPendingWatchpoints(cctx)
 
 	for {
 		err := procgrp.resume()
@@ -573,7 +739,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 
 	// 2. Execute mprotect syscall
 	// TODO (future): See comment on TargetGroup for when group contains > 1 process -
-	// if want to support, add a `procgrp` field to dbp?
+	// if want to support, add a `procgrp` field to dbp? Would also need to update pending wp logic in ContinueOnce
 	procgrp := &processGroup{procs: []*nativeProcess{thread.dbp}}
 	err = procgrp.singleStep(thread)
 	if err != nil {

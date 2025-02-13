@@ -838,6 +838,7 @@ const (
 	debugServerTargetExcBreakpoint     = 0x96
 )
 
+func (p *gdbProcess) AddPendingWatchpoint(wp proc.PendingWp) {}
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if p.exited {
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}

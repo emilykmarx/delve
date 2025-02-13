@@ -85,6 +85,7 @@ func (grp *TargetGroup) Continue() error {
 			dbp.ClearCaches()
 		}
 		logflags.DebuggerLogger().Debugf("ContinueOnce")
+		grp.cctx.Target = *grp.targets[0]
 		trapthread, stopReason, contOnceErr := grp.procgrp.ContinueOnce(grp.cctx)
 		var traptgt *Target
 		if trapthread != nil {

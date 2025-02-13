@@ -1105,14 +1105,18 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 	return p.EvalWatchexpr(s, expr, ignoreUnsupported)
 }
 
-// CreateWatchpoint creates watchpoint[s] for the specified expression.
+// CreateWatchpoint creates watchpoint(s) for the specified expression.
 // (May create multiple, e.g. for an array of strings).
 // Returns all relevant watchpoints, even if some existed,
 // unless some other error occurs along the way.
 // If already existed, don't return error (this is for ConfLens - may
 // break some existing delve tests).
+// If `move`: don't set it yet - record state to set it upon continue (so we can reach target http server)
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
+	if wimpl == api.WatchHardware && move {
+		return nil, errors.New("move argument does not apply to hardware watchpoints")
+	}
 
 	p := d.target.Selected
 	watchpoints := []*api.Breakpoint{}
@@ -1122,12 +1126,14 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 		return nil, err
 	}
 	d.breakpointIDCounter++
-	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), move)
+	write := wimpl == api.WatchHardware || !move
+	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), write)
+
 	if slice, ok := err.(proc.ElemsAreReferences); ok {
 		// Make recursive call for each element
 		for i := 0; i < int(slice.Xv.Len); i++ {
 			string_elem := fmt.Sprintf("%v[%v]", expr, i)
-			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl, move)
+			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl, write)
 			if _, ok := err.(proc.BreakpointExistsError); ok {
 				// If one already existed, add it to the list and continue to the others
 			} else if err != nil {
@@ -1140,11 +1146,17 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	} else if err != nil {
 		return nil, err
 	} else {
-		if d.findBreakpointByName(expr) == nil {
-			bp.Logical.Name = expr
+		if move {
+			pendingwp := proc.PendingWp{Scope: s, Expr: expr, LogicalID: d.breakpointIDCounter}
+			d.Target().Process.AddPendingWatchpoint(pendingwp)
+		} else {
+			if d.findBreakpointByName(expr) == nil {
+				bp.Logical.Name = expr
+			}
+			watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))
 		}
-		watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))
 	}
+
 	return watchpoints, nil // ignore ExistsError, else will overwrite watchpoints to nil when returning to client
 }
 

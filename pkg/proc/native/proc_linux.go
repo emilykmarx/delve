@@ -899,49 +899,57 @@ func (e SoftwareWatchpointAtBreakpoint) Error() string {
 	return "non-spurious segfault during step over software breakpoint"
 }
 
+func (procgrp *processGroup) stepOverBreakpoint(thread *nativeThread, dbp *nativeProcess) error {
+	prev_bp := thread.CurrentBreakpoint.Breakpoint
+	if thread.CurrentBreakpoint.Breakpoint != nil {
+		if thread.stopSignal() == sys.SIGSEGV && thread.faultingSyscallArg != nil {
+			// Just hit syscall entry bp => CurrentBreakpoint is the sw wp we set for it.
+			// (If segv while in faulting syscall, should only be bc we explicitly set status.)
+			// Reset status so SetCurrentBreakpoint will set the sw bp and adjust PC,
+			// and stepInstruction will step over the sw bp
+			fmt.Printf("thread %v has faultingSyscallArg %#x - will step over entry bp\n",
+				thread.ThreadID(), *thread.faultingSyscallArg)
+
+			*thread.Status = SIGTRAP_STATUS
+			if err := thread.SetCurrentBreakpoint(true); err != nil {
+				log.Panicf("failed to find syscall entry breakpoint in stepOverBreakpoint()")
+			}
+			// so we don't think it's a SoftwareWatchpointAtBreakpoint
+			prev_bp = thread.CurrentBreakpoint.Breakpoint
+			if prev_bp == nil {
+				log.Panicf("failed to find syscall entry breakpoint in stepOverBreakpoint()")
+			}
+		}
+
+		if err := procgrp.stepInstruction(thread); err != nil {
+			return err
+		}
+		if thread.CurrentBreakpoint.Breakpoint != prev_bp {
+			// Non-spurious segfault during step over sw bp
+			// (stepInstruction segfaulted and set bp to sw wp)
+			return SoftwareWatchpointAtBreakpoint{thread}
+		}
+
+		thread.CurrentBreakpoint.Clear()
+		if prev_bp.Addr == dbp.syscallPCs[2] {
+			handleSyscallExit(thread)
+		}
+	}
+	return nil
+}
+
 func (procgrp *processGroup) resume() error {
-	// all threads stopped over a breakpoint are made to step over it
+	// for all threads stopped at a breakpoint, step over it
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {
 			for _, thread := range dbp.threads {
-				prev_bp := thread.CurrentBreakpoint.Breakpoint
-				if thread.CurrentBreakpoint.Breakpoint != nil {
-					if thread.stopSignal() == sys.SIGSEGV && thread.faultingSyscallArg != nil {
-						// Just hit syscall entry bp => CurrentBreakpoint is the sw wp we set for it.
-						// (If segv while in faulting syscall, should only be bc we explicitly set status.)
-						// Reset status so SetCurrentBreakpoint will set the sw bp and adjust PC,
-						// and stepInstruction will step over the sw bp
-						fmt.Printf("thread %v has faultingSyscallArg %#x - will step over entry bp\n",
-							thread.ThreadID(), *thread.faultingSyscallArg)
-
-						*thread.Status = SIGTRAP_STATUS
-						if err := thread.SetCurrentBreakpoint(true); err != nil {
-							log.Panicf("failed to find syscall entry breakpoint in resume()")
-						}
-						// so we don't think it's a SoftwareWatchpointAtBreakpoint
-						prev_bp = thread.CurrentBreakpoint.Breakpoint
-						if prev_bp == nil {
-							log.Panicf("failed to find syscall entry breakpoint in resume()")
-						}
-					}
-
-					if err := procgrp.stepInstruction(thread); err != nil {
-						return err
-					}
-					if thread.CurrentBreakpoint.Breakpoint != prev_bp {
-						// Non-spurious segfault during step over sw bp
-						return SoftwareWatchpointAtBreakpoint{thread}
-					}
-
-					thread.CurrentBreakpoint.Clear()
-					if prev_bp.Addr == dbp.syscallPCs[2] {
-						handleSyscallExit(thread)
-					}
+				if err := procgrp.stepOverBreakpoint(thread, dbp); err != nil {
+					return err
 				}
 			}
 		}
 	}
-	// everything is resumed
+	// resume all threads
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {
 			for _, thread := range dbp.threads {
@@ -1001,6 +1009,7 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 	}
 
 	// wait for all threads to stop
+	fmt.Println("about to wait for all threads to stop")
 	for {
 		allstopped := true
 		for _, dbp := range procgrp.procs {
@@ -1022,6 +1031,7 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 			return nil, err
 		}
 	}
+	fmt.Println("done waiting for all threads to stop")
 
 	switchTrapthread := false
 
@@ -1083,7 +1093,7 @@ func noSuchProcess(th *nativeThread, err error) bool {
 }
 
 // Get stacktrace
-// If get_syscall, return the name of the syscall it's in
+// If get_syscall, return the name of the syscall it's in (assumes it's in one)
 func threadStacktrace(th *nativeThread, print bool, get_syscall bool) (string, error) {
 	if print {
 		printFaultingSyscall(th)
@@ -1109,6 +1119,83 @@ func threadStacktrace(th *nativeThread, print bool, get_syscall bool) (string, e
 	return "", nil
 }
 
+func setThreadBreakpoint(cctx *proc.ContinueOnceContext, dbp *nativeProcess, th *nativeThread, trapthread *nativeThread, switchTrapthread *bool) error {
+	pc, _ := th.PC()
+
+	if !th.os.setbp && pc != th.os.phantomBreakpointPC {
+		// check if this could be a breakpoint hit anyway that the OS hasn't notified us about, yet.
+		if _, ok := dbp.FindBreakpoint(pc, dbp.BinInfo().Arch.BreakInstrMovesPC()); ok {
+			th.os.phantomBreakpointPC = pc
+		}
+	}
+
+	if pc != th.os.phantomBreakpointPC {
+		th.os.phantomBreakpointPC = 0
+	}
+
+	if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp {
+		if err := th.SetCurrentBreakpoint(true); err != nil {
+			return err
+		}
+	}
+
+	// Check spurious sigtrap stuff (only care if th.os.setbp, I think)
+	// Here for paranoia - could probably remove
+	if th.stopSignal() == syscall.SIGTRAP && th.os.setbp {
+		if th.os.phantomBreakpointPC == pc {
+			// phantom bp
+		} else if bpsize := proc.IsHardcodedBreakpoint(dbp, pc); bpsize > 0 {
+			// hardcoded bp
+		} else if th.CurrentBreakpoint.Breakpoint != nil {
+			// regular bp
+		} else {
+			// spurious trap
+			Spurious_sigtrap_total += 1
+			if trapthread.ThreadID() == th.ThreadID() {
+				Spurious_sigtrap_trapthread += 1
+			}
+			Sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
+		}
+	} else if th.stopSignal() == syscall.SIGSEGV && th.os.setbp {
+		Sigsegv_total += 1
+		if trapthread.ThreadID() == th.ThreadID() {
+			Sigsegv_trapthread += 1
+		}
+	}
+
+	if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
+		manualStop := false
+		if th.ThreadID() == trapthread.ThreadID() {
+			manualStop = cctx.GetManualStopRequested()
+		}
+
+		if !manualStop && th.os.phantomBreakpointPC == pc {
+			// Thread received a SIGTRAP or SIGSEGV but we don't have a breakpoint for it and
+			// it wasn't sent by a manual stop request. It's either a hardcoded
+			// breakpoint or a phantom breakpoint hit (a breakpoint that was hit but
+			// we have removed before we could receive its signal). Check if it is a
+			// hardcoded breakpoint, otherwise rewind the thread if was SIGTRAP.
+			if bpsize := proc.IsHardcodedBreakpoint(dbp, pc); bpsize == 0 {
+				// phantom breakpoint hit
+				if th.stopSignal() == sys.SIGTRAP {
+					_ = th.setPC(pc - uint64(len(dbp.BinInfo().Arch.BreakpointInstruction())))
+				}
+				th.os.setbp = false
+				if trapthread.ThreadID() == th.ThreadID() {
+					// Will switch to a different thread for trapthread because we don't
+					// want pkg/proc to believe that this thread was stopped by a
+					// hardcoded breakpoint.
+					// (Unsure if software watchpoints can have phantom hits, but doesn't hurt to
+					// switch trapthread, and don't want pkg/proc to check for hardcoded bp)
+					fmt.Printf("Phantom breakpoint hit: PC (advanced) %#x, thread %v\n", pc, th.ThreadID())
+					*switchTrapthread = true
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativeThread, switchTrapthread *bool) error {
 	if err := linutil.ElfUpdateSharedObjects(dbp); err != nil {
 		return err
@@ -1117,80 +1204,7 @@ func stop1(cctx *proc.ContinueOnceContext, dbp *nativeProcess, trapthread *nativ
 	// set breakpoints on SIGTRAP and SIGSEGV threads
 	var err1 error
 	for _, th := range dbp.threads {
-		pc, _ := th.PC()
-
-		if !th.os.setbp && pc != th.os.phantomBreakpointPC {
-			// check if this could be a breakpoint hit anyway that the OS hasn't notified us about, yet.
-			if _, ok := dbp.FindBreakpoint(pc, dbp.BinInfo().Arch.BreakInstrMovesPC()); ok {
-				th.os.phantomBreakpointPC = pc
-			}
-		}
-
-		if pc != th.os.phantomBreakpointPC {
-			th.os.phantomBreakpointPC = 0
-		}
-
-		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp {
-			if err := th.SetCurrentBreakpoint(true); err != nil {
-				err1 = err
-				continue
-			}
-		}
-
-		// Check spurious sigtrap stuff (only care if th.os.setbp, I think)
-		// Here for paranoia - could probably remove
-		if th.stopSignal() == syscall.SIGTRAP && th.os.setbp {
-			if th.os.phantomBreakpointPC == pc {
-				// phantom bp
-			} else if bpsize := proc.IsHardcodedBreakpoint(dbp, pc); bpsize > 0 {
-				// hardcoded bp
-			} else if th.CurrentBreakpoint.Breakpoint != nil {
-				// regular bp
-			} else {
-				// spurious trap
-				Spurious_sigtrap_total += 1
-				if trapthread.ThreadID() == th.ThreadID() {
-					Spurious_sigtrap_trapthread += 1
-				}
-				Sigtrap_info[fmt.Sprintf("PC %#xXXXX\t th %v", pc>>uint64(16), th.ThreadID())] += 1
-			}
-		} else if th.stopSignal() == syscall.SIGSEGV && th.os.setbp {
-			Sigsegv_total += 1
-			if trapthread.ThreadID() == th.ThreadID() {
-				Sigsegv_trapthread += 1
-			}
-		}
-
-		if th.CurrentBreakpoint.Breakpoint == nil && th.os.setbp && (th.Status != nil) && dbp.BinInfo().Arch.BreakInstrMovesPC() {
-			manualStop := false
-			if th.ThreadID() == trapthread.ThreadID() {
-				manualStop = cctx.GetManualStopRequested()
-			}
-
-			if !manualStop && th.os.phantomBreakpointPC == pc {
-				// Thread received a SIGTRAP or SIGSEGV but we don't have a breakpoint for it and
-				// it wasn't sent by a manual stop request. It's either a hardcoded
-				// breakpoint or a phantom breakpoint hit (a breakpoint that was hit but
-				// we have removed before we could receive its signal). Check if it is a
-				// hardcoded breakpoint, otherwise rewind the thread if was SIGTRAP.
-				if bpsize := proc.IsHardcodedBreakpoint(dbp, pc); bpsize == 0 {
-					// phantom breakpoint hit
-					if th.stopSignal() == sys.SIGTRAP {
-						_ = th.setPC(pc - uint64(len(dbp.BinInfo().Arch.BreakpointInstruction())))
-					}
-					th.os.setbp = false
-					if trapthread.ThreadID() == th.ThreadID() {
-						// Will switch to a different thread for trapthread because we don't
-						// want pkg/proc to believe that this thread was stopped by a
-						// hardcoded breakpoint.
-						// (Unsure if software watchpoints can have phantom hits, but doesn't hurt to
-						// switch trapthread, and don't want pkg/proc to check for hardcoded bp)
-						fmt.Printf("Phantom breakpoint hit: PC (advanced) %#x, thread %v\n", pc, th.ThreadID())
-						*switchTrapthread = true
-					}
-				}
-			}
-		}
+		err1 = setThreadBreakpoint(cctx, dbp, th, trapthread, switchTrapthread)
 	}
 	return err1
 }

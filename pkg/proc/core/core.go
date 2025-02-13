@@ -271,7 +271,8 @@ func (p *process) Checkpoint(string) (int, error) { return -1, ErrContinueCore }
 func (p *process) Checkpoints() ([]proc.Checkpoint, error) { return nil, nil }
 
 // ClearCheckpoint clears a checkpoint, but will only return an error for core files.
-func (p *process) ClearCheckpoint(int) error { return errors.New("checkpoint not found") }
+func (p *process) ClearCheckpoint(int) error                { return errors.New("checkpoint not found") }
+func (dbp *process) AddPendingWatchpoint(wp proc.PendingWp) {}
 
 func (p *process) SupportsBPF() bool {
 	return false

@@ -16,6 +16,12 @@ type ProcessGroup interface {
 	Close() error
 }
 
+type PendingWp struct {
+	Scope     *EvalScope
+	Expr      string
+	LogicalID int
+}
+
 // Process represents the target of the debugger. This
 // target could be a system process, core file, etc.
 //
@@ -34,6 +40,10 @@ type Process interface {
 
 	// Memory returns a memory read/writer for this process's memory.
 	Memory() MemoryReadWriter
+
+	// Watchpoints requested while threads were stopped -
+	// will be set upon resuming
+	AddPendingWatchpoint(PendingWp)
 }
 
 // ProcessInternal holds a set of methods that need to be implemented by a
@@ -128,6 +138,8 @@ type ContinueOnceContext struct {
 	// signalled to stop as a result of a Halt API call. Used to disambiguate
 	// why a thread is found to have stopped.
 	manualStopRequested bool
+	// Target used to set pending software watchpoints
+	Target Target
 }
 
 // CheckAndClearManualStopRequest will check for a manual
