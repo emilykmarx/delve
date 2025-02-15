@@ -375,6 +375,7 @@ func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch ch
 	var err error
 	i := 0
 	// XXX run this a bunch of times - unsure if this combo of n_retries and 5ms sleep will always work
+	// Need to check both that server can respond, and allocator can update pointers
 	n_retries := 100
 	defer func() {
 		// Ensure that main goroutine's trapWait will return
@@ -568,19 +569,37 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 }
 
 // Assuming thread just segfaulted (or would in syscall it's about to enter)
-// find the software watchpoint for the faulting address (or syscall arg), if any.
-// If none (i.e. spurious segfault), return placeholder wp.
+// find the software watchpoint that overlaps the faulting address, if any.
+// For syscalls, only check `write` since others can't propagate taint
+// (except reads, not yet supported).
+// If none, return placeholder ("spurious") wp.
 func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 	var faultingAddr uint64
+	faultingSize := uint64(1)
 	if t.faultingSyscallArg != nil {
-		faultingAddr = *t.faultingSyscallArg
+		if *t.faultingSyscall == "syscall.write" {
+			faultingAddr = *t.faultingSyscallArg
+			// Need to check if any part of buffer overlaps any watchpoint
+			// (since we haven't actually faulted, we don't know which part overlaps)
+			raw_regs, err := t.Registers()
+			if err != nil {
+				log.Panicf("getting regs to check for syscall.write buffer overlap in FindSoftwareWatchpoint: %v\n", err.Error())
+			}
+			amd_regs := raw_regs.(*linutil.AMD64Registers)
+			regs := amd_regs.Regs
+			faultingSize = regs.Rdi // buffer size
+		} else {
+			faultingAddr = 0 // ignore
+		}
 	} else {
 		faultingAddr = uint64(t.faultingAddr())
 	}
 
 	for _, bp := range t.dbp.Breakpoints().M {
 		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
-			if memOverlap(faultingAddr, 1, bp.Addr, uint64(bp.WatchType.Size())) {
+			if memOverlap(faultingAddr, faultingSize, bp.Addr, uint64(bp.WatchType.Size())) {
+				// TODO handle access that overlaps multiple wp (client checks for overlap between
+				// expressions on the line and the watchpoint addr).
 				return bp
 			}
 		}

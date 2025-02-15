@@ -18,7 +18,6 @@ func (tc *TaintCheck) run() {
 		}
 
 		for _, thread := range state.Threads {
-			// TODO check if anything bad happens if multiple threads hit same bp/wp at same time
 			hit_bp := thread.Breakpoint
 			if hit_bp != nil {
 				tc.hit = Hit{hit_bp: hit_bp}
@@ -61,7 +60,8 @@ func main() {
 
 	tc := TaintCheck{client: client,
 		pending_wps:   make(map[uint64]PendingWp),
-		mem_param_map: make(map[uint64]TaintingVals)}
+		mem_param_map: make(map[uint64]TaintingVals),
+		behavior_map:  make(map[BehaviorValue]TaintingVals)}
 
 	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
 

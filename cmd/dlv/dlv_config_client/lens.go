@@ -18,8 +18,20 @@ type TaintingParam struct {
 	flow  TaintFlow
 }
 
+type BehaviorValue struct {
+	offset       uint64 // for network msgs: offset in message
+	behavior_key string // XXX for network msgs: 5-tuple, protocol, request vs response
+}
+
+// XXX unused until we support network receives
+type TaintingBehavior struct {
+	behavior BehaviorValue
+	flow     TaintFlow
+}
+
 type TaintingVals struct {
-	params set.Set[TaintingParam]
+	params    set.Set[TaintingParam]
+	behaviors set.Set[TaintingBehavior]
 }
 
 // Things that should be reset for each hit
@@ -46,29 +58,49 @@ type TaintCheck struct {
 	client *rpc2.RPCClient
 	thread *api.Thread
 
-	// "Pending" = waiting for var to be in scope, or for hw wp to free up
+	// "Pending" = waiting for var to be in scope
 	// Key: Bp addr where exprs go in scope
 	// Value: Before hit corresp bp in any round, expr info. After, watch addr
 	pending_wps map[uint64]PendingWp
+
+	// Note for both mem_param_map and behavior_map, each entry is for a single byte
+	// (memory address or message offset).
+	// Everything in mem_param_map overlaps some watchpoint, but each watchpoint is a contiguous region
 
 	// Memory address => config/behavior values that taint it
 	// Don't need PC to disambiguate - if memory is reused,
 	// old entry will have gone OOS and been removed
 	mem_param_map map[uint64]TaintingVals
+
+	// Behavior value => config/behavior values that taint it
+	behavior_map map[BehaviorValue]TaintingVals
 }
 
 // Handle syscall with tainted arg - server returns it to us as wp hit
 func (tc *TaintCheck) handleSyscallHit(syscall_name string) {
-	// TODO handle other syscalls that do network send and file open
+	// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
 	if syscall_name == "syscall.write" {
-		// TODO find tainted region of msg - i.e. region of send buf that overlaps watched region.
-		// (Server needs to put send buf addr and sz in watchpoint.)
-		// For now assume full overlap
-		watch_addr := tc.hit.hit_bp.Addr
-		tainting_vals := tc.mem_param_map[watch_addr]
+		// Send tainted message => add to behavior map its tainted offsets,
+		// i.e. region of send buf that overlaps watched region
+		regs, err := tc.client.ListThreadRegisters(tc.thread.ID, false)
+		if err != nil {
+			log.Panicf("get regs to find overlapping region of syscall.write buf")
+		}
+		bufsz := reg("Rdi", regs)
+		bufstart := reg("Rcx", regs)
+		watchsz := watchSize(tc.hit.hit_bp)
+		watchstart := tc.hit.hit_bp.Addr
 
-		// log for test
-		fmt.Printf("SendTaintedMessage %+v\n", tainting_vals.params)
+		taintedstart := max(bufstart, watchstart)
+		taintedend := min(bufstart+bufsz, watchstart+watchsz)
+		for buf_addr := taintedstart; buf_addr < taintedend; buf_addr++ {
+			tainting_vals := *tc.taintingVals(buf_addr)
+			msg_offset := buf_addr - bufstart
+			behavior := BehaviorValue{offset: msg_offset, behavior_key: "network"}
+			tc.behavior_map[behavior] = tainting_vals
+			// log for test
+			fmt.Printf("\tBehavior map: 0x%x => %+v\n", behavior.offset, tainting_vals)
+		}
 	}
 }
 
@@ -94,8 +126,9 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 				frame.File, frame.Line, fn, frame.PC)
 			fmt.Println(loc)
 
-			// TODO skip all hits from go runtime threads (sw wp commit may hv a test for sysmon?)
+			// TODO skip all hits from go runtime goroutines (sw wp commit may hv a test for sysmon?)
 			// (but not hits in go runtime from program thread)
+			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
 			if fn == "runtime.newstack" {
 				return nil, false
 			} else if fn == "runtime/internal/syscall.Syscall6" {
@@ -181,14 +214,8 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 	if tc.hit.hit_bp != nil {
 		// hit watchpoint
 		hit_wp_addr := tc.hit.hit_bp.Addrs[0]
-		tainting_vals, ok := tc.mem_param_map[hit_wp_addr]
-		if !ok {
-			if tainting_vals_ := tc.updateMovedWps(hit_wp_addr); tainting_vals_ == nil {
-				log.Fatalf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
-			} else {
-				tainting_vals = *tainting_vals_
-			}
-		}
+		tainting_vals := *tc.taintingVals(hit_wp_addr)
+
 		// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
 		// Note that wp for tainted array can hit for append to empty slice (first call to packUint16) - need to investigate
 		// Also think abt packUint16 in xenon: passes in a ptr midway thru an alrdy-tainted slice
@@ -232,7 +259,8 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// We really want a read-only wp, but not supported
-	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, true)
+	// XXX once update tests, change move arg accordingly
+	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, false)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
 	}
