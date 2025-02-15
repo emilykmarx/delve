@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -17,6 +18,21 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 	"github.com/hashicorp/go-set"
 )
+
+// Return value of register reg_name
+func reg(reg_name string, regs api.Registers) uint64 {
+	for _, reg := range regs {
+		if reg.Name == reg_name {
+			val, err := strconv.ParseUint(reg.Value, 0, 64)
+			if err != nil {
+				log.Panicf("convert reg %v to int", reg.Value)
+			}
+			return val
+		}
+	}
+	log.Panicf("reg %v not found", reg_name)
+	return 0
+}
 
 // Add taint in pendingWp state to any existing entry in m-p map
 // If new entry, insert it
@@ -28,9 +44,23 @@ func (tc *TaintCheck) updateTaintingVals(bp_addr uint64, watchaddr uint64) {
 	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr].params)
 }
 
+// Assuming a watchpoint has hit overlapping watchaddr, get its tainting values from the mem-param map
+func (tc *TaintCheck) taintingVals(watchaddr uint64) *TaintingVals {
+	tainting_vals, ok := tc.mem_param_map[watchaddr]
+	if !ok {
+		if tainting_vals := tc.updateMovedWps(watchaddr); tainting_vals == nil {
+			log.Fatalf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
+		} else {
+			return tainting_vals
+		}
+	}
+	return &tainting_vals
+}
+
 // If wp hits for an addr not in the mem-param map,
 // may be because that wp was moved => if so, update mem-param map entry to new addr
 // and return entry's vals
+// XXX need to check for overlap here
 func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) *TaintingVals {
 	// TODO: add a test for this - works in xenon when it's needed, but not needed deterministically
 	bps, list_err := tc.client.ListBreakpoints(true)

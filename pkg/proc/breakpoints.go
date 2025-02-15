@@ -646,11 +646,14 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	bp.WatchExpr = expr
 
 	if StackAddr(scope, watchaddr) {
+		fmt.Printf("%#x is on stack\n", watchaddr)
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
 		err := t.setStackWatchBreakpoints(scope, bp)
 		if err != nil {
 			return bp, err
 		}
+	} else {
+		fmt.Printf("%#x not on stack\n", watchaddr)
 	}
 	return bp, nil
 }

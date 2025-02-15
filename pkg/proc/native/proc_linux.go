@@ -483,11 +483,13 @@ func handleSyscallEntry(th *nativeThread) {
 	}
 	amd_regs := raw_regs.(*linutil.AMD64Registers)
 	regs := amd_regs.Regs
+	// At syscall entry, regs are the Go ABI, e.g. a1 = Rbx
 	arg_regs := []uint64{regs.Rbx, regs.Rcx, regs.Rdi, regs.Rsi, regs.R8, regs.R9}
 	for _, arg := range arg_regs {
-		// TODO handle multiple faulting args (either bc a single syscall faults on multiple, or
+		// TODO handle multiple faulting args (either bc a single syscall faults on multiple -
+		// via one arg overlapping multiple watchpoints, or multiple args - or bc
 		// multiple goroutines on same thread enter a faulting syscall)
-		// TODO check whole region, not just start address
+		// TODO handle multi-page args
 		// TODO handle vector read/write (region won't be contiguous)
 		fake_wp := proc.Breakpoint{Addr: arg}
 		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
@@ -1009,7 +1011,6 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 	}
 
 	// wait for all threads to stop
-	fmt.Println("about to wait for all threads to stop")
 	for {
 		allstopped := true
 		for _, dbp := range procgrp.procs {
@@ -1031,7 +1032,6 @@ func (procgrp *processGroup) stop(cctx *proc.ContinueOnceContext, trapthread *na
 			return nil, err
 		}
 	}
-	fmt.Println("done waiting for all threads to stop")
 
 	switchTrapthread := false
 

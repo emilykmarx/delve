@@ -160,8 +160,7 @@ func TestCasts(t *testing.T) {
 
 func TestNetworkSend(t *testing.T) {
 	expected_logs := []expectedLog{
-		{kind: CreateWatchpoint, lineno: 11, watchexpr: "buf"},
-		{kind: TaintedMsg},
+		{kind: CreateWatchpoint, lineno: 23, watchexpr: "config[1]"},
 	}
 
 	run(t, "network_send.go", expected_logs, nil)
@@ -362,7 +361,6 @@ type LogType string
 
 const (
 	CreateWatchpoint LogType = "CreateWatchpoint"
-	TaintedMsg       LogType = "SendTaintedMessage"
 )
 
 // A log message about a watchpoint
@@ -374,12 +372,15 @@ type expectedLog struct {
 	watchaddr uint64
 }
 
+// TODO (minor): This would be cleaner if client wrote out e.g. a csv of map updates.
+// To make graph, may want to write maps to file anyway, at least the final versions
 func checkStdout(t *testing.T, stdout []byte, expected_logs []expectedLog, initial_watchexpr string) {
 	watchexpr_fmt := "%s lineno %d watchexpr %s watchaddr 0x%x"
 	next_wp_log := 0         // index of the next log we expect to see
 	expect_memparam := false // whether we expect to see a memory-parameter update next
+	behavior_fmt := "Behavior map: 0x%x => {params:{items:map[{param:%s flow:1}:{}]} behaviors:{items:map[]}}\n"
+	// m-c map doesn't have behaviors yet (need to impl network recv bp)
 	mem_param_fmt := "\tMemory-parameter map: 0x%x => {items:map[{param:%s flow:1}:{}]}\n"
-	tainted_msg_fmt := string(TaintedMsg) + " {items:map[{param:%s flow:1}:{}]}"
 	for _, line := range strings.Split(string(stdout), "\n") {
 		var lineno int
 		var watchexpr string
@@ -387,7 +388,7 @@ func checkStdout(t *testing.T, stdout []byte, expected_logs []expectedLog, initi
 		var kind string
 		expected_log := expected_logs[next_wp_log]
 
-		// Check for creating wps and updating mem-param map, in expected order
+		// Check for creating wps and updating maps, in expected order
 		if _, err := fmt.Sscanf(line, watchexpr_fmt, &kind, &lineno, &watchexpr, &watchaddr); err == nil {
 			// CreateWatchpoint
 			if expect_memparam {
@@ -406,7 +407,7 @@ func checkStdout(t *testing.T, stdout []byte, expected_logs []expectedLog, initi
 			assertEqual(t, expected_logs[next_wp_log-1].watchaddr, watchaddr, expected_log)
 			assertEqual(t, initial_watchexpr, watchexpr, expected_log) // all are tainted by initial_watchexpr
 			expect_memparam = false
-		} else if _, err := fmt.Sscanf(line, tainted_msg_fmt, &watchexpr); err == nil {
+		} else if _, err := fmt.Sscanf(line, behavior_fmt, &watchexpr); err == nil {
 			// Tainted msg
 			assertEqual(t, initial_watchexpr, watchexpr, expected_logs[next_wp_log]) // all are tainted by initial_watchexpr
 			next_wp_log++
@@ -421,7 +422,7 @@ func checkStdout(t *testing.T, stdout []byte, expected_logs []expectedLog, initi
 	assertEqual(t, len(expected_logs), next_wp_log, "not enough wp logs")
 
 	// Check no unexpected wps were created
-	n_logs := strings.Count(string(stdout), string(CreateWatchpoint)) + strings.Count(string(stdout), string(TaintedMsg))
+	n_logs := strings.Count(string(stdout), string(CreateWatchpoint))
 	assertEqual(t, len(expected_logs), n_logs, "too many wp logs")
 
 }

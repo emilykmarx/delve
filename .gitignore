@@ -16,4 +16,3 @@ cmd/dlv/dlv_config_client/xenon_out
 cmd/dlv/dlv_config_client/xenon_trace
 cmd/dlv/dlv_config_client/lingering_logs
 init.txt
-LEFT_OFF.md
