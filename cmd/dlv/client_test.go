@@ -160,7 +160,12 @@ func TestCasts(t *testing.T) {
 
 func TestNetworkSend(t *testing.T) {
 	expected_logs := []expectedLog{
-		{kind: CreateWatchpoint, lineno: 23, watchexpr: "config[1]"},
+		{kind: CreateWatchpoint, lineno: 23, watchexpr: "config"},
+		{kind: UpdateBehaviorMap, lineno: 0},
+		{kind: UpdateBehaviorMap, lineno: 1},
+		{kind: UpdateBehaviorMap, lineno: 2},
+		{kind: UpdateBehaviorMap, lineno: 3},
+		{kind: UpdateBehaviorMap, lineno: 4},
 	}
 
 	run(t, "network_send.go", expected_logs, nil)
@@ -360,13 +365,14 @@ func checkStderr(t *testing.T, client_err []byte, server_err []byte) {
 type LogType string
 
 const (
-	CreateWatchpoint LogType = "CreateWatchpoint"
+	CreateWatchpoint  LogType = "CreateWatchpoint"
+	UpdateBehaviorMap LogType = "Update behavior map"
 )
 
 // A log message about a watchpoint
 type expectedLog struct {
 	kind      LogType
-	lineno    int
+	lineno    int // lineno for CreateWatchpoint, offset for UpdateBehaviorMap
 	watchexpr string
 	// to be filled in
 	watchaddr uint64
@@ -407,8 +413,10 @@ func checkStdout(t *testing.T, stdout []byte, expected_logs []expectedLog, initi
 			assertEqual(t, expected_logs[next_wp_log-1].watchaddr, watchaddr, expected_log)
 			assertEqual(t, initial_watchexpr, watchexpr, expected_log) // all are tainted by initial_watchexpr
 			expect_memparam = false
-		} else if _, err := fmt.Sscanf(line, behavior_fmt, &watchexpr); err == nil {
+		} else if _, err := fmt.Sscanf(line, behavior_fmt, &lineno, &watchexpr); err == nil {
+			// XXX this is untested - considering revamping tests...
 			// Tainted msg
+			assertEqual(t, expected_log.lineno, lineno, expected_log)
 			assertEqual(t, initial_watchexpr, watchexpr, expected_logs[next_wp_log]) // all are tainted by initial_watchexpr
 			next_wp_log++
 		}
@@ -422,6 +430,7 @@ func checkStdout(t *testing.T, stdout []byte, expected_logs []expectedLog, initi
 	assertEqual(t, len(expected_logs), next_wp_log, "not enough wp logs")
 
 	// Check no unexpected wps were created
+	// TODO also check for unexpected map updates
 	n_logs := strings.Count(string(stdout), string(CreateWatchpoint))
 	assertEqual(t, len(expected_logs), n_logs, "too many wp logs")
 

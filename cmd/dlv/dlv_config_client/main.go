@@ -36,7 +36,10 @@ func (tc *TaintCheck) run() {
 			loc := state.SelectedGoroutine.CurrentLoc
 			fmt.Printf("Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x) \n",
 				wp_oos.WatchExpr, loc.File, loc.Line, loc.PC)
-			delete(tc.mem_param_map, wp_oos.Addrs[0])
+			tc.forEachWatchaddr(wp_oos, func(watchaddr uint64) bool {
+				delete(tc.mem_param_map, watchaddr)
+				return true // unused
+			})
 		}
 	}
 

@@ -18,7 +18,7 @@ func main() {
 	// wait for server to start (so Dial will succeed)
 	time.Sleep(1 * time.Second)
 
-	config := []byte("config") // config[1] initially tainted
+	config := []byte("config") // config initially tainted
 
 	nd := net.Dialer{
 		//Timeout: 5 * time.Second, # makes manual debugging annoying, but likely want for automated test
@@ -27,11 +27,11 @@ func main() {
 	if err != nil {
 		log.Panicf("Dial: %v", err)
 	}
-	_, err = conn.Write(config)
+	_, err = conn.Write(config[1:]) // Case 2: beginning of watch region < beginning of msg (XXX add test for opposite)
 	if err != nil {
 		log.Panicf("Write: %v", err)
 	}
-	// behavior map should record message offset 1 is tainted by config[1]
+	// behavior map should record message offsets 0-4 are tainted by config
 	// (when dial tcp, msgs are raw tcp not http)
 	fmt.Println("target exit")
 }
