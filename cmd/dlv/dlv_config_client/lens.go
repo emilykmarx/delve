@@ -42,14 +42,15 @@ type Hit struct {
 	frame int
 }
 
+// Exprs/args we will set a wp on, once they're in scope.
 // If add any fields, update String()
 type PendingWp struct {
 	watchexprs set.Set[string]
 	// Arg index => Expression to append to callee's copy, if any
 	watchargs map[int]string
 	// Values that tainted these
-	// (With current taint policy, I think will always be same for all).
-	// On wp hit: Copy from mem_param_map[hit], so we have them even if orig wp goes OOS
+	// On wp hit: Copy from mem_param_map[hitting addrs], so we have them even if orig wp goes OOS
+	// (e.g. hit for return of function local - will set wp after function returns)
 	tainting_vals TaintingVals
 }
 
@@ -58,9 +59,7 @@ type TaintCheck struct {
 	client *rpc2.RPCClient
 	thread *api.Thread
 
-	// "Pending" = waiting for var to be in scope
 	// Key: Bp addr where exprs go in scope
-	// Value: Before hit corresp bp in any round, expr info. After, watch addr
 	pending_wps map[uint64]PendingWp
 
 	// Note for both mem_param_map and behavior_map, each entry is for a single byte
@@ -214,6 +213,9 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 	if tc.hit.hit_bp != nil {
 		// hit watchpoint
 		hit_wp_addr := tc.hit.hit_bp.Addrs[0]
+		// XXX (when handle partial tainting): handle wp where m-p map entries
+		// differ across the watched region. For now, using entry of starting addr
+
 		tainting_vals := *tc.taintingVals(hit_wp_addr)
 
 		// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
@@ -266,7 +268,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 	}
 
 	for _, watchpoint := range watchpoints {
-		// For each created or existing watchpoint: update map (tainting vals, and later sz), log
+		// For each created or existing watchpoint: update mem-config map, log
 		// TODO test for adding new taint to existing addr
 
 		// Log for testing (will also log dups)
@@ -274,7 +276,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
 		fmt.Printf("CreateWatchpoint lineno %d watchexpr %s watchaddr 0x%x\n",
 			tc.hit.hit_bp.Line, watchpoint.WatchExpr, watchpoint.Addr)
-		tc.updateTaintingVals(bp_addr, watchpoint.Addr)
+		tc.updateTaintingVals(bp_addr, watchpoint)
 	}
 }
 

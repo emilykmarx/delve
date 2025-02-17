@@ -34,24 +34,40 @@ func reg(reg_name string, regs api.Registers) uint64 {
 	return 0
 }
 
-// Add taint in pendingWp state to any existing entry in m-p map
+// Call `f` for each addr in watchpoint's region.
+// Return true if f returned true for any addr.
+func (tc *TaintCheck) forEachWatchaddr(watchpoint *api.Breakpoint, f func(watchaddr uint64) bool) bool {
+	ret := false
+	watch_end := watchpoint.Addrs[0] + watchSize(watchpoint)
+	for watchaddr := watchpoint.Addrs[0]; watchaddr < watch_end; watchaddr++ {
+		if f(watchaddr) {
+			ret = true
+		}
+	}
+	return ret
+}
+
+// For each addr in watchpoint's region, add taint in pendingWp state to any existing entry in m-p map
 // If new entry, insert it
-func (tc *TaintCheck) updateTaintingVals(bp_addr uint64, watchaddr uint64) {
+func (tc *TaintCheck) updateTaintingVals(bp_addr uint64, watchpoint *api.Breakpoint) {
 	added_taint := tc.pending_wps[bp_addr].tainting_vals.params
-	existing_taint := tc.mem_param_map[watchaddr].params
-	new_taint := added_taint.Union(&existing_taint)
-	tc.mem_param_map[watchaddr] = TaintingVals{params: *set.From(new_taint.Slice())}
-	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr].params)
+	tc.forEachWatchaddr(watchpoint, func(watchaddr uint64) bool {
+		existing_taint := tc.mem_param_map[watchaddr].params
+		new_taint := added_taint.Union(&existing_taint)
+		tc.mem_param_map[watchaddr] = TaintingVals{params: *set.From(new_taint.Slice())}
+		fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr].params)
+		return true // unused
+	})
 }
 
 // Assuming a watchpoint has hit overlapping watchaddr, get its tainting values from the mem-param map
 func (tc *TaintCheck) taintingVals(watchaddr uint64) *TaintingVals {
 	tainting_vals, ok := tc.mem_param_map[watchaddr]
 	if !ok {
-		if tainting_vals := tc.updateMovedWps(watchaddr); tainting_vals == nil {
+		tc.updateMovedWps(watchaddr)
+		tainting_vals, ok = tc.mem_param_map[watchaddr]
+		if !ok {
 			log.Fatalf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
-		} else {
-			return tainting_vals
 		}
 	}
 	return &tainting_vals
@@ -59,26 +75,39 @@ func (tc *TaintCheck) taintingVals(watchaddr uint64) *TaintingVals {
 
 // If wp hits for an addr not in the mem-param map,
 // may be because that wp was moved => if so, update mem-param map entry to new addr
-// and return entry's vals
-// XXX need to check for overlap here
-func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) *TaintingVals {
-	// TODO: add a test for this - works in xenon when it's needed, but not needed deterministically
+func (tc *TaintCheck) updateMovedWps(hit_wp_addr uint64) {
+	// TODO: add a test for this - works in xenon when it's needed, but
+	// not needed deterministically. Also think through if it works if old wp is coalesced
+	// with another between moving and now
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
 		log.Fatalf("Error listing breakpoints: %v\n", list_err)
 	}
 	for _, bp := range bps {
-		if bp.Addrs[0] == hit_wp_addr {
-			for _, prev_addr := range bp.PreviousAddrs {
-				if tainting_vals, ok := tc.mem_param_map[prev_addr]; ok {
-					delete(tc.mem_param_map, prev_addr)
-					tc.mem_param_map[hit_wp_addr] = tainting_vals
-					return &tainting_vals
+		if bp.WatchType != 0 {
+			overlap := tc.forEachWatchaddr(bp, func(watchaddr uint64) bool {
+				return memOverlap(bp.Addrs[0], watchSize(bp), hit_wp_addr, 1)
+			})
+			// If a current wp overlaps hit_wp_addr, assume wp moved and update m-p entries for each of its addrs
+			// TODO should also remove previous addrs on wp OOS -
+			// may be cleaner for delve to return to client when it moves a wp
+			if overlap {
+				fmt.Printf("updating m-c map entry to %x\n", hit_wp_addr)
+				for _, prev_addr := range bp.PreviousAddrs {
+					i := uint64(0)
+					new_end := bp.Addrs[0] + watchSize(bp)
+					for new_addr := bp.Addrs[0]; new_addr < new_end; new_addr++ {
+						old_addr := prev_addr + i
+						if tainting_vals, ok := tc.mem_param_map[old_addr]; ok {
+							delete(tc.mem_param_map, old_addr)
+							tc.mem_param_map[new_addr] = tainting_vals
+						}
+						i++
+					}
 				}
 			}
 		}
 	}
-	return nil
 }
 
 // pretty-print
