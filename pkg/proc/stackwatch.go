@@ -158,7 +158,11 @@ func adjustStackWatchpoint(t *Target, th Thread, watchpoint *Breakpoint) {
 		return
 	}
 	delete(t.Breakpoints().M, watchpoint.Addr)
-	watchpoint.PreviousAddrs = append(watchpoint.PreviousAddrs, watchpoint.Addr)
+	var old_addrs []uint64
+	for addr := watchpoint.Addr; addr < watchpoint.Addr+uint64(watchpoint.WatchType.Size()); addr++ {
+		old_addrs = append(old_addrs, addr)
+	}
+	watchpoint.PreviousAddrs = append(watchpoint.PreviousAddrs, old_addrs)
 	watchpoint.Addr = uint64(int64(g.stack.hi) + watchpoint.watchStackOff)
 	fmt.Printf("new addr 0x%x\n", watchpoint.Addr)
 	err = t.Proc.WriteBreakpoint(watchpoint)

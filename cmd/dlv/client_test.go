@@ -13,6 +13,12 @@ import (
 	protest "github.com/go-delve/delve/pkg/proc/test"
 )
 
+// Notes:
+// Need to build target with fork of go that has allocator changes, so:
+// - If run from IDE, IDE needs to be set to use that fork
+// - Will build delve, client, and target with that fork of go, so they need to be compatible with it
+// (e.g. go 1.20.1 doesn't have max/min builtins)
+
 // Build client
 func getClientBin(t *testing.T) string {
 	clientbin := filepath.Join(t.TempDir(), "client.exe")
@@ -183,6 +189,15 @@ func TestStructs(t *testing.T) {
 		{kind: CreateWatchpoint, lineno: 44, watchexpr: "nested2.name.Data"},
 	}
 	run(t, "structs.go", expected_logs, nil)
+}
+
+func TestAllocatorHTTP(t *testing.T) {
+	expected_logs := []expectedLog{
+		{kind: CreateWatchpoint, lineno: 27, watchexpr: "*ptr"},
+		{kind: CreateWatchpoint, lineno: 31, watchexpr: "x"},
+	}
+
+	run(t, "allocator_http.go", expected_logs, nil)
 }
 
 /* TODO need to investigate this - per asm, doesn't seem like should be fake...

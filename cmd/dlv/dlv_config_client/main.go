@@ -16,6 +16,7 @@ func (tc *TaintCheck) run() {
 		if state.Err != nil {
 			log.Fatalf("Error in debugger state: %v\n", state.Err)
 		}
+		tc.updateMovedWps()
 
 		for _, thread := range state.Threads {
 			hit_bp := thread.Breakpoint
@@ -32,6 +33,7 @@ func (tc *TaintCheck) run() {
 			}
 		}
 
+		// TODO also need to remove any PreviousAddrs?
 		for _, wp_oos := range state.WatchOutOfScope {
 			loc := state.SelectedGoroutine.CurrentLoc
 			fmt.Printf("Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x) \n",

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math"
 	"reflect"
 	"strings"
 
@@ -90,10 +91,10 @@ func (tc *TaintCheck) handleSyscallHit(syscall_name string) {
 		watchsz := watchSize(tc.hit.hit_bp)
 		watchstart := tc.hit.hit_bp.Addr
 
-		taintedstart := max(bufstart, watchstart)
-		taintedend := min(bufstart+bufsz, watchstart+watchsz)
+		taintedstart := uint64(math.Max(float64(bufstart), float64(watchstart)))
+		taintedend := uint64(math.Min(float64(bufstart+bufsz), float64(watchstart+watchsz)))
 		for buf_addr := taintedstart; buf_addr < taintedend; buf_addr++ {
-			tainting_vals := *tc.taintingVals(buf_addr)
+			tainting_vals := tc.taintingVals(buf_addr)
 			msg_offset := buf_addr - bufstart
 			behavior := BehaviorValue{offset: msg_offset, behavior_key: "network"}
 			tc.behavior_map[behavior] = tainting_vals
@@ -216,7 +217,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 		// XXX (when handle partial tainting): handle wp where m-p map entries
 		// differ across the watched region. For now, using entry of starting addr
 
-		tainting_vals := *tc.taintingVals(hit_wp_addr)
+		tainting_vals := tc.taintingVals(hit_wp_addr)
 
 		// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
 		// Note that wp for tainted array can hit for append to empty slice (first call to packUint16) - need to investigate
@@ -261,12 +262,14 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// We really want a read-only wp, but not supported
-	// XXX once update tests, change move arg accordingly
-	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, false)
+	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, true)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
+	} else if len(watchpoints) == 0 {
+		log.Fatalf("Debugger returned no watchpoints for %v\n", watchexpr)
 	}
 
+	// Add pre-move addresses to m-c - will update after next Continue()
 	for _, watchpoint := range watchpoints {
 		// For each created or existing watchpoint: update mem-config map, log
 		// TODO test for adding new taint to existing addr
@@ -326,4 +329,28 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 
 	// cleanup
 	tc.onPendingWpBpHitDone(bp_addr)
+}
+
+// Update mem-param map for any watchpoints that moved since last Continue
+// (either due to stack adjust or allocator move)
+func (tc *TaintCheck) updateMovedWps() {
+	// TODO: add a test for stack adjust - happens in xenon, but not deterministically
+	bps, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps {
+		new_addr := bp.Addr
+		for _, prev_addrs := range bp.PreviousAddrs {
+			for _, prev_addr := range prev_addrs {
+				if prev_addr > 0 {
+					if tainting_vals, ok := tc.mem_param_map[prev_addr]; ok {
+						delete(tc.mem_param_map, prev_addr)
+						tc.mem_param_map[new_addr] = tainting_vals
+					}
+				}
+				new_addr++
+			}
+		}
+	}
 }

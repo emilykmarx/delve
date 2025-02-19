@@ -1112,6 +1112,7 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 // If already existed, don't return error (this is for ConfLens - may
 // break some existing delve tests).
 // If `move` (and not on stack): don't set it yet - record state to set it upon continue (so we can reach target http server)
+// (but still return info for client)
 // PERF: Can also set normally for globals
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
@@ -1150,6 +1151,8 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 		if !write {
 			pendingwp := proc.PendingWp{Scope: s, Expr: expr, LogicalID: d.breakpointIDCounter}
 			d.Target().Process.AddPendingWatchpoint(pendingwp)
+			watchpoints = append(watchpoints, &api.Breakpoint{
+				Addr: bp.Addr, Addrs: []uint64{bp.Addr}, WatchExpr: bp.WatchExpr, WatchType: api.WatchType(bp.WatchType)})
 		} else {
 			if d.findBreakpointByName(expr) == nil {
 				bp.Logical.Name = expr

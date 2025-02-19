@@ -49,9 +49,11 @@ type Breakpoint struct {
 	File         string
 	Line         int
 
-	Addr          uint64   // Address breakpoint is set for.
-	PreviousAddrs []uint64 // Any addrs overwritten by stack resize
-	OriginalData  []byte   // If software breakpoint, the data we replace with breakpoint instruction.
+	Addr uint64 // Address breakpoint is set for.
+	// If watchpoint, old addrs (from before stack adjust, or allocator move).
+	// Inner lists are indexed by offset in watched region (may be multiple if stack adjust)
+	PreviousAddrs [][]uint64
+	OriginalData  []byte // If software breakpoint, the data we replace with breakpoint instruction.
 
 	WatchExpr string
 	// Includes a size as well as read/write
@@ -646,14 +648,14 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	bp.WatchExpr = expr
 
 	if StackAddr(scope, watchaddr) {
-		fmt.Printf("%#x is on stack\n", watchaddr)
+		fmt.Printf("wp set for %#x - on stack\n", watchaddr)
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
 		err := t.setStackWatchBreakpoints(scope, bp)
 		if err != nil {
 			return bp, err
 		}
 	} else {
-		fmt.Printf("%#x not on stack\n", watchaddr)
+		fmt.Printf("wp set for %#x - not on stack\n", watchaddr)
 	}
 	return bp, nil
 }
@@ -799,7 +801,13 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		*write = true // no need to move stack objects
 	}
 	if !*write {
-		return nil, nil
+		// Return fields the client will use
+		fake_wp := Breakpoint{
+			Addr:      xv.Addr,
+			WatchExpr: expr,
+			WatchType: wtype.withSize(uint8(xv.Watchsz)),
+		}
+		return &fake_wp, nil
 	}
 
 	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
