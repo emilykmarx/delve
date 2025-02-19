@@ -67,6 +67,10 @@ func (grp *TargetGroup) Continue() error {
 		}
 		dbp.Breakpoints().WatchOutOfScope = nil
 		dbp.clearHardcodedBreakpoints()
+		// We've just returned from client, who should have handled any moves
+		for _, wp := range dbp.Breakpoints().M {
+			wp.PreviousAddrs = nil
+		}
 	}
 	grp.cctx.CheckAndClearManualStopRequest()
 	defer func() {

@@ -314,7 +314,6 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 	for {
 		// XXX check if any of these functions will use a thread besides trapthread to do ptrace
 		// XXX if any hits were non-spurious, return to client
-		// XXX test both versions of target (one that would hang, and conn refused)
 
 		select {
 		// Two ways to exit this loop:
@@ -376,6 +375,9 @@ func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch ch
 	i := 0
 	// XXX run this a bunch of times - unsure if this combo of n_retries and 5ms sleep will always work
 	// Need to check both that server can respond, and allocator can update pointers
+	// Run with both versions of target (see comment in allocator_http.go): w/ regular bp, conn refused vs hang.
+	// W/ regular bp, check if hang can happen even w/ timeout in http client -
+	// if so, add timeout to MoveObject call to make any hang here easier to debug
 	n_retries := 100
 	defer func() {
 		// Ensure that main goroutine's trapWait will return
@@ -455,11 +457,17 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 
 				// 4. Set watchpoint on new location
 				// XXX set on old location in CreateWatchpoint, un-set here
-				_, err = cctx.Target.SetWatchpointNoEval(wp.LogicalID, wp.Scope, wp.Expr, watchaddr, xv.Watchsz,
+				wp, err := cctx.Target.SetWatchpointNoEval(wp.LogicalID, wp.Scope, wp.Expr, watchaddr, xv.Watchsz,
 					proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
 				if err != nil {
 					log.Panicf("SetWatchpointNoEval in setPendingWatchpoints: %v\n", err)
 				}
+				// Record old addr for client
+				var old_addrs []uint64
+				for addr := xv.Addr; addr < xv.Addr+uint64(xv.Watchsz); addr++ {
+					old_addrs = append(old_addrs, addr)
+				}
+				wp.PreviousAddrs = append(wp.PreviousAddrs, old_addrs)
 			}
 			dbp.pendingWatchpoints = nil
 		}

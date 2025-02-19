@@ -96,9 +96,8 @@ type Breakpoint struct {
 	// Addr is deprecated, use Addrs.
 	Addr uint64 `json:"addr"`
 	// Addrs is the list of addresses for this breakpoint.
-	Addrs []uint64 `json:"addrs"`
-	// Any addrs overwritten by stack resize
-	PreviousAddrs []uint64
+	Addrs         []uint64 `json:"addrs"`
+	PreviousAddrs [][]uint64
 	// AddrPid[i] is the PID associated with by Addrs[i], when debugging a
 	// single target process this is optional, otherwise it is mandatory.
 	AddrPid []int `json:"addrpid"`
