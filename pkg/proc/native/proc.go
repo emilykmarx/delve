@@ -387,7 +387,7 @@ func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch ch
 				fmt.Printf("sent stop() to thread %v\n", th.ThreadID())
 				break
 			} else {
-				fmt.Printf("failed to send stop() to thread %v\n", th.ThreadID())
+				fmt.Printf("failed to send stop() to thread %v: %v\n", th.ThreadID(), err)
 			}
 		}
 	}()
@@ -428,9 +428,10 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 
 				// 1. Resume all threads to reach HTTP server (may also be needed for pointer updates to avoid hang in GC)
 				if err := procgrp.resume(); err != nil {
-					if _, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
+					if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
 						// thread was stopped at a breakpoint, now stopped at a software watchpoint
 						// XXX think abt if this can happen/what to do
+						fmt.Printf("SoftwareWatchpointAtBreakpoint in setPendingWatchpoints, thread %v\n", th.trapthread.ID)
 					} else {
 						log.Panicf("resume in setPendingWatchpoints: %v", err)
 					}
@@ -583,11 +584,14 @@ func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
 // If none, return placeholder ("spurious") wp.
 func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 	var faultingAddr uint64
+	check_overlap := true
 	faultingSize := uint64(1)
 	if t.faultingSyscallArg != nil {
+		faultingAddr = *t.faultingSyscallArg
 		if *t.faultingSyscall == "syscall.write" {
-			faultingAddr = *t.faultingSyscallArg
-			// Need to check if any part of buffer overlaps any watchpoint
+			fmt.Printf("FAULTING MESSAGE SEND\n")
+			// Case 1: message send
+			// Need to check if any part of send buffer overlaps any watchpoint
 			// (since we haven't actually faulted, we don't know which part overlaps)
 			raw_regs, err := t.Registers()
 			if err != nil {
@@ -597,25 +601,33 @@ func (t *nativeThread) FindSoftwareWatchpoint() *proc.Breakpoint {
 			regs := amd_regs.Regs
 			faultingSize = regs.Rdi // buffer size
 		} else {
-			faultingAddr = 0 // ignore
+			fmt.Printf("FAULTING OTHER SYSCALL\n")
+			// Case 2: other syscall
+			// All other syscalls don't propagate taint of passed-in args => never return to client
+			check_overlap = false
 		}
 	} else {
+		// Case 3: non-syscall
+		// Check if overlaps a real watchpoint
+		fmt.Printf("FAULTING NON-SYSCALL\n")
 		faultingAddr = uint64(t.faultingAddr())
 	}
-
-	for _, bp := range t.dbp.Breakpoints().M {
-		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
-			if memOverlap(faultingAddr, faultingSize, bp.Addr, uint64(bp.WatchType.Size())) {
-				// TODO handle access that overlaps multiple wp (client checks for overlap between
-				// expressions on the line and the watchpoint addr).
-				return bp
+	if check_overlap {
+		for _, bp := range t.dbp.Breakpoints().M {
+			if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
+				if memOverlap(faultingAddr, faultingSize, bp.Addr, uint64(bp.WatchType.Size())) {
+					fmt.Printf("ret real bp from FindSoftwareWatchpoint: %+v\n", bp)
+					return bp
+				}
 			}
 		}
 	}
 
 	// Not active, so Continue() won't return it to client
-	return &proc.Breakpoint{WatchType: proc.WatchWrite, WatchImpl: proc.WatchSoftware,
+	ret := &proc.Breakpoint{WatchType: proc.WatchWrite, WatchImpl: proc.WatchSoftware,
 		Addr: faultingAddr, SpuriousPageFault: true}
+	fmt.Printf("ret fake bp from FindSoftwareWatchpoint: %+v\n", *ret)
+	return ret
 }
 
 // FindBreakpoint finds the software breakpoint (not watchpoint) for the given pc.

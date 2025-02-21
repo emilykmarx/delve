@@ -9,7 +9,9 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -33,9 +35,14 @@ const (
 	// example: calls to runtime.Breakpoint)
 	HardcodedBreakpoint = "hardcoded-breakpoint"
 
-	unrecoveredPanicID    = -1
-	fatalThrowID          = -2
-	hardcodedBreakpointID = -3
+	SyscallEntryBreakpoint = "syscall-entry"
+	SyscallExitBreakpoint  = "syscall-exit"
+
+	unrecoveredPanicID       = -1
+	fatalThrowID             = -2
+	hardcodedBreakpointID    = -3
+	SyscallEntryBreakpointID = -4
+	SyscallExitBreakpointID  = -5
 
 	NoLogicalID = -1000 // Logical breakpoint ID for breakpoints internal breakpoints.
 )
@@ -285,11 +292,63 @@ type returnBreakpointInfo struct {
 	spOffset     int64
 }
 
+// whether bp is the entry to a syscall.read for a socket
+func (bp *Breakpoint) enteringSyscallRead(tgt *Target, thread Thread) bool {
+	// Check if syscall.read entry
+	if bp.Logical == nil || bp.Logical.Name != SyscallEntryBreakpoint {
+		return false
+	}
+	syscall_read := false
+	stack, err := ThreadStacktrace(tgt, thread, 50)
+	if err != nil {
+		log.Panicf("Failed to get stacktrace in checkCondition: %v\n", err)
+	}
+	if len(stack) >= 3 {
+		syscall_read = stack[3].Call.Fn.Name == "syscall.read"
+	}
+	if !syscall_read {
+		return false
+	}
+	// Check if network read
+	raw_regs, err := thread.Registers()
+	if err != nil {
+		log.Panicf("getting raw regs to check for syscall.read fd: %v\n", err.Error())
+	}
+	regs, err := raw_regs.Slice(false)
+	if err != nil {
+		log.Panicf("getting regs slice to check for syscall.read fd: %v\n", err.Error())
+	}
+	fd := uint64(0)
+	// can't import linutil or native here
+	for _, reg := range regs {
+		if reg.Name == "Rbx" {
+			fd = reg.Reg.Uint64Val
+		}
+	}
+	if fd == 0 {
+		log.Panicf("getting Rbx; regs %v\n", regs)
+	}
+
+	fdinfo, err := os.Readlink(fmt.Sprintf("/proc/%v/fd/%v", tgt.pid, fd))
+	if err != nil {
+		log.Panicf("getting fd info: %v", err)
+	}
+	_, socket := strings.CutPrefix(fdinfo, "socket:")
+	return socket
+}
+
 // CheckCondition evaluates bp's condition on thread.
 func (bp *Breakpoint) checkCondition(tgt *Target, thread Thread, bpstate *BreakpointState) {
 	*bpstate = BreakpointState{Breakpoint: bp, Active: false, Stepping: false, SteppingInto: false, CondError: nil}
 	for _, breaklet := range bp.Breaklets {
 		bpstate.checkCond(tgt, breaklet, thread)
+	}
+	// Network receive entry always return to client, even though syscall entry bp is inactive
+	// (eventually want to taint other message receives too, but network only is more convenient for testing).
+	// Socket => return to client
+	if bp.enteringSyscallRead(tgt, thread) {
+		fmt.Println("ENTERING SYSCALL READ => ret to client")
+		bpstate.Active = true
 	}
 }
 

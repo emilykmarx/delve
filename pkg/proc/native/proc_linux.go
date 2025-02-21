@@ -172,8 +172,10 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 		// Break on syscall entry (use cond that always evaluates false so Continue() doesn't return to client)
 		false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
 		target := proc.Target{Process: dbp, Proc: dbp}
-		if _, err := target.SetBreakpoint(-1, dbp.syscallPCs[0], proc.UserBreakpoint, false_cond); err != nil {
+		if entry_bp, err := target.SetBreakpoint(proc.SyscallEntryBreakpointID, dbp.syscallPCs[0], proc.UserBreakpoint, false_cond); err != nil {
 			return nil, fmt.Errorf("set breakpoint on syscall entry: %v", err)
+		} else {
+			entry_bp.Logical.Name = proc.SyscallEntryBreakpoint
 		}
 	} else {
 		runtime_s := time.Since(Start_time).Seconds()
@@ -463,6 +465,8 @@ var (
 
 // If this syscall would fault on one of its args (spuriously or not):
 // un-mprotect arg's page, set thread status to segfault, set a breakpoint on its exit, and save the arg.
+// Else, we'll step over the bp, since it was set with a false cond
+// (unless syscall.write)
 func handleSyscallEntry(th *nativeThread) {
 	syscall, err := threadStacktrace(th, false, true)
 	if noSuchProcess(th, err) {
@@ -487,7 +491,7 @@ func handleSyscallEntry(th *nativeThread) {
 	arg_regs := []uint64{regs.Rbx, regs.Rcx, regs.Rdi, regs.Rsi, regs.R8, regs.R9}
 	for _, arg := range arg_regs {
 		// TODO handle multiple faulting args (either bc a single syscall faults on multiple -
-		// via one arg overlapping multiple watchpoints, or multiple args - or bc
+		// via one arg overlapping multiple watchpoints (impossible if coalesce them), or multiple args - or bc
 		// multiple goroutines on same thread enter a faulting syscall)
 		// TODO handle multi-page args
 		// TODO handle vector read/write (region won't be contiguous)
@@ -514,11 +518,13 @@ func handleSyscallEntry(th *nativeThread) {
 				// Setting it this way won't update state in the Debugger - ok?
 				target := proc.Target{Process: th.dbp, Proc: th.dbp}
 				false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
-				if _, err := target.SetBreakpoint(-1, th.dbp.syscallPCs[2], proc.UserBreakpoint, false_cond); err != nil {
+				if exit_bp, err := target.SetBreakpoint(proc.SyscallExitBreakpointID, th.dbp.syscallPCs[2], proc.UserBreakpoint, false_cond); err != nil {
 					if noSuchProcess(th, err) {
 						return
 					}
 					log.Panicf("set syscall exit breakpoint: %v\n", err.Error())
+				} else {
+					exit_bp.Logical.Name = proc.SyscallExitBreakpoint
 				}
 			} else {
 				fmt.Printf("Found buddy faulting syscall (thread %v, syscall %v, arg %#x) - won't set exit bp\n",

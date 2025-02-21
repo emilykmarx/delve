@@ -12,15 +12,19 @@ import (
 	"strconv"
 	"strings"
 
+	linuxproc "github.com/c9s/goprocinfo/linux"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
-	"github.com/hashicorp/go-set"
 )
 
 // Return value of register reg_name
-func reg(reg_name string, regs api.Registers) uint64 {
+func (tc *TaintCheck) register(reg_name string) uint64 {
+	regs, err := tc.client.ListThreadRegisters(tc.thread.ID, false)
+	if err != nil {
+		log.Panicf("get regs to find overlapping region of syscall.write buf")
+	}
 	for _, reg := range regs {
 		if reg.Name == reg_name {
 			val, err := strconv.ParseUint(reg.Value, 0, 64)
@@ -47,17 +51,16 @@ func (tc *TaintCheck) forEachWatchaddr(watchpoint *api.Breakpoint, f func(watcha
 	return ret
 }
 
-// For each addr in watchpoint's region, add taint in pendingWp state to any existing entry in m-p map
+// Add tainting_vals to any existing entry in m-p map
 // If new entry, insert it
-func (tc *TaintCheck) updateTaintingVals(bp_addr uint64, watchpoint *api.Breakpoint) {
-	added_taint := tc.pending_wps[bp_addr].tainting_vals.params
-	tc.forEachWatchaddr(watchpoint, func(watchaddr uint64) bool {
-		existing_taint := tc.mem_param_map[watchaddr].params
-		new_taint := added_taint.Union(&existing_taint)
-		tc.mem_param_map[watchaddr] = TaintingVals{params: *set.From(new_taint.Slice())}
-		fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr].params)
-		return true // unused
-	})
+func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals) {
+	existing_taint := tc.mem_param_map[watchaddr]
+	new_taint := TaintingVals{
+		params:    *tainting_vals.params.Union(&existing_taint.params),
+		behaviors: *tainting_vals.behaviors.Union(&existing_taint.behaviors),
+	}
+	tc.mem_param_map[watchaddr] = new_taint
+	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr])
 }
 
 // Assuming a watchpoint has hit overlapping watchaddr, get its tainting values from the mem-param map
@@ -236,6 +239,7 @@ func watchSize(wp *api.Breakpoint) uint64 {
 // Find the next line on or after this one with a statement, so we can set a bp.
 // TODO May want to consider doing this with PC when handle the non-linear stuff
 func (tc *TaintCheck) lineWithStmt(call_expr *string, file string, lineno int, frame int) api.Location {
+	fmt.Println("linewithStmt")
 	var loc string
 	if call_expr != nil {
 		decl_loc := tc.fnDecl(*call_expr, frame)
@@ -272,4 +276,52 @@ func (tc *TaintCheck) setBp(addr uint64) {
 			log.Fatalf("Failed to create breakpoint at %v: %v\n", addr, err)
 		}
 	}
+}
+
+// Assumes currently at syscall entry,
+// and syscall args are fd, buf, bufsz (e.g. read/write)
+// Return local, remote endpoints, transport protocol
+func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
+	// 1. fd => inode: cat /proc/<pid>/<fd>
+	fd := tc.register("Rbx")
+	state, err := tc.client.GetState()
+	if err != nil {
+		log.Panicf("GetState: %v", err)
+	}
+
+	fdinfo, err := os.Readlink(fmt.Sprintf("/proc/%v/fd/%v", state.Pid, fd))
+	if err != nil {
+		log.Panicf("Readlink: %v", err)
+	}
+	inode := uint64(0)
+	if suffix, socket := strings.CutPrefix(fdinfo, "socket:"); socket {
+		inode_str := suffix[1 : len(suffix)-1]
+		inode, err = strconv.ParseUint(inode_str, 0, 64)
+		if err != nil {
+			log.Panicf("ParseUint: %v", err)
+		}
+		fmt.Println(inode)
+	}
+
+	// 2. Get socket endpoints
+	// XXX ipv6 too
+	tcp_socks, err := linuxproc.ReadNetTCPSockets("/proc/net/tcp", linuxproc.NetIPv4Decoder)
+	if err != nil {
+		log.Panicf("ReadNetTCPSockets: %v", err)
+	}
+	for _, sock := range tcp_socks.Sockets {
+		if sock.Inode == inode {
+			fmt.Printf("5-tuple: %v=>%v\n", sock.LocalAddress, sock.RemoteAddress)
+			return sock.LocalAddress, sock.RemoteAddress, "tcp"
+		}
+	}
+	log.Panicf("missing tcp socket info for fd %v", fd)
+	return "", "", ""
+}
+
+// Same assumptions as getSocketEndpoints
+func (tc *TaintCheck) syscallBuf() (uint64, uint64) {
+	bufstart := tc.register("Rcx")
+	bufsz := tc.register("Rdi")
+	return bufstart, bufsz
 }

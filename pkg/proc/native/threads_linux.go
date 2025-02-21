@@ -82,7 +82,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 				pc, _ := t.PC()
 				sw_wp := t.FindSoftwareWatchpoint()
 				if !sw_wp.SpuriousPageFault {
-					// will return this thread to client
+					// will return this thread to client (propagates to resume() retval - ContinueOnce() will return)
 					t.CurrentBreakpoint.Breakpoint = sw_wp
 				} else {
 					// ignore

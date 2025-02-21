@@ -20,11 +20,13 @@ type TaintingParam struct {
 }
 
 type BehaviorValue struct {
-	offset       uint64 // for network msgs: offset in message
-	behavior_key string // XXX for network msgs: 5-tuple, protocol, request vs response
+	offset          uint64 // offset in message
+	local_endpoint  string // IP:port
+	remote_endpoint string // IP:port
+	transport       string // transport protocol
+	// XXX protocol, request vs response
 }
 
-// XXX unused until we support network receives
 type TaintingBehavior struct {
 	behavior BehaviorValue
 	flow     TaintFlow
@@ -56,9 +58,10 @@ type PendingWp struct {
 }
 
 type TaintCheck struct {
-	hit    Hit
-	client *rpc2.RPCClient
-	thread *api.Thread
+	hit      Hit
+	client   *rpc2.RPCClient
+	thread   *api.Thread
+	move_wps bool
 
 	// Key: Bp addr where exprs go in scope
 	pending_wps map[uint64]PendingWp
@@ -77,17 +80,13 @@ type TaintCheck struct {
 }
 
 // Handle syscall with tainted arg - server returns it to us as wp hit
-func (tc *TaintCheck) handleSyscallHit(syscall_name string) {
+func (tc *TaintCheck) handleSyscallWpHit(syscall_name string) {
 	// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
 	if syscall_name == "syscall.write" {
 		// Send tainted message => add to behavior map its tainted offsets,
 		// i.e. region of send buf that overlaps watched region
-		regs, err := tc.client.ListThreadRegisters(tc.thread.ID, false)
-		if err != nil {
-			log.Panicf("get regs to find overlapping region of syscall.write buf")
-		}
-		bufsz := reg("Rdi", regs)
-		bufstart := reg("Rcx", regs)
+		local, remote, transport := tc.getSocketEndpoints()
+		bufstart, bufsz := tc.syscallBuf()
 		watchsz := watchSize(tc.hit.hit_bp)
 		watchstart := tc.hit.hit_bp.Addr
 
@@ -96,12 +95,33 @@ func (tc *TaintCheck) handleSyscallHit(syscall_name string) {
 		for buf_addr := taintedstart; buf_addr < taintedend; buf_addr++ {
 			tainting_vals := tc.taintingVals(buf_addr)
 			msg_offset := buf_addr - bufstart
-			behavior := BehaviorValue{offset: msg_offset, behavior_key: "network"}
-			tc.behavior_map[behavior] = tainting_vals
+			sent_msg := BehaviorValue{
+				offset:         msg_offset,
+				local_endpoint: local, remote_endpoint: remote, transport: transport,
+			}
+			tc.behavior_map[sent_msg] = tainting_vals
 			// log for test
-			fmt.Printf("\tBehavior map: 0x%x => %+v\n", behavior.offset, tainting_vals)
+			fmt.Printf("\tBehavior map: 0x%x => %+v\n", sent_msg.offset, tainting_vals)
 		}
 	}
+}
+
+// Handle syscall entry bp hit - server returns it to us for message receives
+func (tc *TaintCheck) onSyscallEntryBpHit() {
+	fmt.Println("onSyscallEntryBpHit")
+	// Set watchpoint on entire receive buffer
+	local, remote, transport := tc.getSocketEndpoints()
+	_, bufsz := tc.syscallBuf()
+	recvd_msg := BehaviorValue{
+		offset:         bufsz,
+		local_endpoint: local, remote_endpoint: remote, transport: transport,
+	}
+	tainting_msg := TaintingBehavior{
+		behavior: recvd_msg,
+		flow:     DataFlow,
+	}
+	tc.hit.frame = 3 // syscall.read: buffer is `p` argument
+	tc.setWatchpoint("p", TaintingVals{behaviors: *set.From([]TaintingBehavior{tainting_msg})}, true)
 }
 
 /* If hit was in runtime, either ignore (e.g. newstack), or
@@ -132,7 +152,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 			if fn == "runtime.newstack" {
 				return nil, false
 			} else if fn == "runtime/internal/syscall.Syscall6" {
-				tc.handleSyscallHit(stack[3].Function.Name())
+				tc.handleSyscallWpHit(stack[3].Function.Name())
 				return nil, false
 			}
 			if !strings.HasPrefix(fn, "runtime") {
@@ -259,14 +279,21 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 }
 
 // Move watchexpr to tainted page, and set any watchpoint(s) corresponding to watchexpr
-func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
+// Update m-c map:
+// If !message, add tainting_vals to each addr in resulting watched region(s)
+// Else, we're tainting a message recv buf =>
+// record each byte of message as tainting corresponding byte of buf (tainting_vals.offset is buffer size)
+func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals, message bool) {
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// We really want a read-only wp, but not supported
-	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, true)
+	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.move_wps)
 	if err != nil {
 		log.Fatalf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
 	} else if len(watchpoints) == 0 {
 		log.Fatalf("Debugger returned no watchpoints for %v\n", watchexpr)
+	}
+	if message && len(watchpoints) > 1 {
+		log.Fatalf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals.behaviors.Slice()[0])
 	}
 
 	// Add pre-move addresses to m-c - will update after next Continue()
@@ -279,7 +306,23 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, bp_addr uint64) {
 		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
 		fmt.Printf("CreateWatchpoint lineno %d watchexpr %s watchaddr 0x%x\n",
 			tc.hit.hit_bp.Line, watchpoint.WatchExpr, watchpoint.Addr)
-		tc.updateTaintingVals(bp_addr, watchpoint)
+
+		if !message {
+			tc.forEachWatchaddr(watchpoint, func(watchaddr uint64) bool {
+				tc.updateTaintingVals(watchaddr, tainting_vals)
+				return true // unused
+			})
+		}
+	}
+
+	if message {
+		tainting_val := tainting_vals.behaviors.Slice()[0]
+		bufstart := watchpoints[0].Addr
+		bufsz := tainting_val.behavior.offset
+		for offset := uint64(0); offset < bufsz; offset++ {
+			tainting_val.behavior.offset = offset
+			tc.updateTaintingVals(bufstart+offset, TaintingVals{behaviors: *set.From([]TaintingBehavior{tainting_val})})
+		}
 	}
 }
 
@@ -313,7 +356,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 	}
 
 	info.watchexprs.ForEach(func(watchexpr string) bool {
-		tc.setWatchpoint(watchexpr, bp_addr)
+		tc.setWatchpoint(watchexpr, info.tainting_vals, false)
 		return true
 	})
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
@@ -324,7 +367,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
 		watchexpr := args[argno].Name + overlap_expr
-		tc.setWatchpoint(watchexpr, bp_addr)
+		tc.setWatchpoint(watchexpr, info.tainting_vals, false)
 	}
 
 	// cleanup
