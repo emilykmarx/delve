@@ -84,7 +84,7 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			return
 		}
 		// Software watchpoint (spurious or not)
-		// turn on toggling for duration of stepInstruction
+		// turn on toggling for duration of stepInstruction (see comment on AlwaysToggleMprotect - not just an optimization)
 		bp.AlwaysToggleMprotect = true
 		err = t.clearSoftwareWatchpoint(bp)
 		// PERF: If multiple threads segfaulted simultaneously, only call mprotect once for all
@@ -159,7 +159,7 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 	}
 	if bp == nil && t.stopSignal() == syscall.SIGSEGV {
 		// Software watchpoint (spurious or not)
-		bp = t.FindSoftwareWatchpoint()
+		bp = t.FindSoftwareWatchpoint(nil, 1)
 	} else if bp == nil {
 		// Software breakpoint
 		pc, err := t.PC()

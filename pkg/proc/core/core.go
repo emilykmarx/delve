@@ -365,6 +365,9 @@ func (t *thread) BinInfo() *proc.BinaryInfo {
 func (t *thread) SetCurrentBreakpoint(adjustPC bool) error {
 	return nil
 }
+func (t *thread) FindSoftwareWatchpoint(faultingAddr_ *uint64, faultingSize uint64) *proc.Breakpoint {
+	return nil
+}
 
 // SoftExc returns true if this thread received a software exception during the last resume.
 func (t *thread) SoftExc() bool {

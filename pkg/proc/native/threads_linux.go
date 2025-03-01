@@ -39,6 +39,21 @@ func (t *nativeThread) Stopped() bool {
 	return state == statusTraceStop || state == statusTraceStopT
 }
 
+// Whether thread has exited, without using its status
+// (status is only accurate if hasn't changed since last wait)
+func (t *nativeThread) Exited() bool {
+	err := sys.Tgkill(t.dbp.pid, t.ID, 0)
+	if err != nil {
+		if err == sys.ESRCH {
+			return true
+		} else {
+			// shouldn't happen - bad ID or perms
+			log.Panicf("non-ESRCH error from kill on thread %v with signal 0: %v", t.ID, err)
+		}
+	}
+	return false
+}
+
 func (t *nativeThread) resume() error {
 	sig := t.os.delayedSignal
 	t.os.delayedSignal = 0
@@ -80,7 +95,7 @@ func (procgrp *processGroup) singleStep(t *nativeThread) (err error) {
 				// Trying to step over a software breakpoint at an instr that also faults =>
 				// Step over the faulting instr, then return to client if non-spurious.
 				pc, _ := t.PC()
-				sw_wp := t.FindSoftwareWatchpoint()
+				sw_wp := t.FindSoftwareWatchpoint(nil, 1)
 				if !sw_wp.SpuriousPageFault {
 					// will return this thread to client (propagates to resume() retval - ContinueOnce() will return)
 					t.CurrentBreakpoint.Breakpoint = sw_wp

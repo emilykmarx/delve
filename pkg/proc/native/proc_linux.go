@@ -463,158 +463,6 @@ var (
 	Start_time                  = time.Now()
 )
 
-// If this syscall would fault on one of its args (spuriously or not):
-// un-mprotect arg's page, set thread status to segfault, set a breakpoint on its exit, and save the arg.
-// Else, we'll step over the bp, since it was set with a false cond
-// (unless syscall.write)
-func handleSyscallEntry(th *nativeThread) {
-	syscall, err := threadStacktrace(th, false, true)
-	if noSuchProcess(th, err) {
-		return
-	}
-	if err != nil {
-		log.Panicf("getting stacktrace in handleSyscallEntry: %v\n", err.Error())
-	}
-	// PERF for common syscalls we know won't fault, could just resume
-
-	// Syscall6 just moves args from go ABI regs to kernel ABI regs
-	raw_regs, err := th.Registers()
-	if noSuchProcess(th, err) {
-		return
-	}
-	if err != nil {
-		log.Panicf("getting regs in handleSyscallEntry: %v\n", err.Error())
-	}
-	amd_regs := raw_regs.(*linutil.AMD64Registers)
-	regs := amd_regs.Regs
-	// At syscall entry, regs are the Go ABI, e.g. a1 = Rbx
-	arg_regs := []uint64{regs.Rbx, regs.Rcx, regs.Rdi, regs.Rsi, regs.R8, regs.R9}
-	for _, arg := range arg_regs {
-		// TODO handle multiple faulting args (either bc a single syscall faults on multiple -
-		// via one arg overlapping multiple watchpoints (impossible if coalesce them), or multiple args - or bc
-		// multiple goroutines on same thread enter a faulting syscall)
-		// TODO handle multi-page args
-		// TODO handle vector read/write (region won't be contiguous)
-		fake_wp := proc.Breakpoint{Addr: arg}
-		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
-			// Arg is on same page as a software watchpoint => syscall would fail with "bad address"
-			fmt.Printf("ENTER FAULTING SYSCALL %v - arg: %#x\n", syscall, arg)
-			threadStacktrace(th, true, false)
-			// Un-mprotect the page (unless another thread is currently in a faulting syscall on this page, so already has)
-			// Will re-mprotect on corresponding exit
-			if buddy := th.dbp.buddyFaultingSyscall(&arg); buddy == nil {
-				if err := th.toggleMprotect(arg, false); err != nil {
-					if noSuchProcess(th, err) {
-						return
-					}
-					log.Panicf("un-mprotect in handleSyscallEntry\n")
-				}
-			} else {
-				fmt.Printf("Found buddy faulting syscall on same page as %#x (thread %v, syscall %v, arg %#x) - won't un-mprotect\n",
-					arg, buddy.ThreadID(), *buddy.faultingSyscall, *buddy.faultingSyscallArg)
-			}
-			// Set bp just after syscall instruction done (unless another thread already has)
-			if buddy := th.dbp.buddyFaultingSyscall(nil); buddy == nil {
-				// Setting it this way won't update state in the Debugger - ok?
-				target := proc.Target{Process: th.dbp, Proc: th.dbp}
-				false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
-				if exit_bp, err := target.SetBreakpoint(proc.SyscallExitBreakpointID, th.dbp.syscallPCs[2], proc.UserBreakpoint, false_cond); err != nil {
-					if noSuchProcess(th, err) {
-						return
-					}
-					log.Panicf("set syscall exit breakpoint: %v\n", err.Error())
-				} else {
-					exit_bp.Logical.Name = proc.SyscallExitBreakpoint
-				}
-			} else {
-				fmt.Printf("Found buddy faulting syscall (thread %v, syscall %v, arg %#x) - won't set exit bp\n",
-					buddy.ThreadID(), *buddy.faultingSyscall, *buddy.faultingSyscallArg)
-			}
-
-			// If don't copy arg (even if do copy regs), *th.faultingSyscallArg = 0 by the time we get to resume() - no idea why
-			arg_copy := uint64(arg)
-			th.faultingSyscallArg = &arg_copy // set after check buddies
-			th.faultingSyscall = &syscall
-			// Set status as if segfaulted
-			*th.Status = SIGSEGV_STATUS
-		}
-	}
-}
-
-// If this syscall exit corresponds to an entry that would fault,
-// undo what the entry did.
-func handleSyscallExit(th *nativeThread) {
-	fmt.Printf("handleSyscallExit\n")
-	syscall, err := threadStacktrace(th, true, true)
-
-	if noSuchProcess(th, err) {
-		return
-	}
-	if err != nil {
-		log.Panicf("getting stacktrace in handleSyscallExit: %v\n", err.Error())
-	}
-	if th.faultingSyscall == nil || *th.faultingSyscall != syscall {
-		// Exit for a non-faulting syscall (e.g. another thread set the exit bp)
-		// TODO unsure how to check if this exit corresponds to a faulting entry -
-		// have seen a thread enter multiple syscalls with no exit between.
-		// On different goroutines? But getG() can return nil, so may not be able to use goroutine ID.
-		// For now, use name of syscall (won't handle this sequence - unsure if possible:
-		// "enter faulting syscallX, exit non-faulting syscallX, exit faulting syscallX").
-		// Maybe get local vars on exit and see if any would fault.
-		if th.faultingSyscall == nil {
-			fmt.Printf("th.faultingSyscall nil - won't handle exit\n")
-		} else if *th.faultingSyscall != syscall {
-			fmt.Printf("*th.faultingSyscall %v != syscall %v - won't handle exit\n", *th.faultingSyscall, syscall)
-		}
-
-		return
-	}
-
-	fmt.Printf("EXIT FAULTING SYSCALL %v - arg: %#x\n", *th.faultingSyscall, *th.faultingSyscallArg)
-
-	faultingAddr := *th.faultingSyscallArg
-	th.faultingSyscallArg = nil // must unset before check buddies
-	th.faultingSyscall = nil
-
-	// Re-mprotect (unless another thread is still faulting on this page)
-	// Is it possible for the sw wp that caused the fault to be deleted during syscall? Check just in case
-	fake_wp := proc.Breakpoint{Addr: faultingAddr}
-	buddy := th.dbp.buddyFaultingSyscall(&faultingAddr)
-	if th.dbp.buddySoftwareWatchpoint(&fake_wp) && buddy == nil {
-		if err := th.toggleMprotect(faultingAddr, true); err != nil {
-			if noSuchProcess(th, err) {
-				return
-			}
-			log.Panicf("re-mprotect in handleSyscallExit: %v\n", err.Error())
-		}
-	}
-	if !th.dbp.buddySoftwareWatchpoint(&fake_wp) {
-		fmt.Printf("No buddy sw wp for %#x - won't re-mprotect. Current bps:\n", faultingAddr)
-		for _, bp := range th.dbp.Breakpoints().M {
-			fmt.Printf("watchType %v, watchImpl %v, logicalID %v, addr %#x\n",
-				bp.WatchType, bp.WatchImpl, bp.LogicalID(), bp.Addr)
-		}
-	}
-	if buddy != nil {
-		fmt.Printf("Found buddy faulting syscall on same page as %#x (thread %v, syscall %v, arg %#x) - won't re-mprotect\n",
-			faultingAddr, buddy.ThreadID(), *buddy.faultingSyscall, *buddy.faultingSyscallArg)
-	}
-	// Clear the bp for syscall exit
-	// (unless another thread is still faulting on any syscall)
-	target := proc.Target{Process: th.dbp, Proc: th.dbp}
-	if buddy := th.dbp.buddyFaultingSyscall(nil); buddy == nil {
-		if err := target.ClearBreakpoint(th.dbp.syscallPCs[2]); err != nil {
-			if noSuchProcess(th, err) {
-				return
-			}
-			log.Panicf("clear syscall exit breakpoint: %v\n", err.Error())
-		}
-	} else {
-		fmt.Printf("Found buddy faulting syscall (thread %v, syscall %v, arg %#x) - won't clear exit bp\n",
-			buddy.ThreadID(), *buddy.faultingSyscall, *buddy.faultingSyscallArg)
-	}
-}
-
 const (
 	SIGSEGV_STATUS = 0xb7f
 	SIGTRAP_STATUS = 0x57f
@@ -766,13 +614,8 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			continue
 		}
 
-		pc, _ := th.PC()
-		// TODO if cgo, may not end up in Syscall6 - may need another bp for syscall entry
-		// where args are already allocated but still in user space (look for `syscall` instr?)
-		if status.StopSignal() == sys.SIGTRAP && pc == dbp.syscallPCs[0]+1 {
-			handleSyscallEntry(th)
-		}
-		// Set bp if thread segfaulted (or would segfault in a syscall), whether spuriously or not
+		// Will set wp if thread segfaulted, whether spuriously or not,
+		// so we'll step over it
 		if (halt && status.StopSignal() == sys.SIGSTOP) ||
 			(status.StopSignal() == sys.SIGTRAP) ||
 			(status.StopSignal() == sys.SIGSEGV) {
@@ -907,51 +750,189 @@ func (e SoftwareWatchpointAtBreakpoint) Error() string {
 	return "non-spurious segfault during step over software breakpoint"
 }
 
-func (procgrp *processGroup) stepOverBreakpoint(thread *nativeThread, dbp *nativeProcess) error {
+func (procgrp *processGroup) stepOverBreakpoint(thread *nativeThread) error {
 	prev_bp := thread.CurrentBreakpoint.Breakpoint
 	if thread.CurrentBreakpoint.Breakpoint != nil {
-		if thread.stopSignal() == sys.SIGSEGV && thread.faultingSyscallArg != nil {
-			// Just hit syscall entry bp => CurrentBreakpoint is the sw wp we set for it.
-			// (If segv while in faulting syscall, should only be bc we explicitly set status.)
-			// Reset status so SetCurrentBreakpoint will set the sw bp and adjust PC,
-			// and stepInstruction will step over the sw bp
-			fmt.Printf("thread %v has faultingSyscallArg %#x - will step over entry bp\n",
-				thread.ThreadID(), *thread.faultingSyscallArg)
-
-			*thread.Status = SIGTRAP_STATUS
-			if err := thread.SetCurrentBreakpoint(true); err != nil {
-				log.Panicf("failed to find syscall entry breakpoint in stepOverBreakpoint()")
-			}
-			// so we don't think it's a SoftwareWatchpointAtBreakpoint
-			prev_bp = thread.CurrentBreakpoint.Breakpoint
-			if prev_bp == nil {
-				log.Panicf("failed to find syscall entry breakpoint in stepOverBreakpoint()")
-			}
-		}
-
 		if err := procgrp.stepInstruction(thread); err != nil {
 			return err
 		}
 		if thread.CurrentBreakpoint.Breakpoint != prev_bp {
+			fmt.Printf("SoftwareWatchpointAtBreakpoint during resume(); thread %v\n", thread.ThreadID())
 			// Non-spurious segfault during step over sw bp
 			// (stepInstruction segfaulted and set bp to sw wp)
 			return SoftwareWatchpointAtBreakpoint{thread}
 		}
 
 		thread.CurrentBreakpoint.Clear()
-		if prev_bp.Addr == dbp.syscallPCs[2] {
-			handleSyscallExit(thread)
-		}
 	}
 	return nil
 }
 
+// If th is about to enter a syscall that would fault on one of its args (spuriously or not):
+// save the arg and syscall name
+func handleSyscallEntry(th *nativeThread) {
+	syscall, err := threadStacktrace(th, false, true)
+	if err != nil {
+		log.Panicf("getting stacktrace in handleSyscallEntry: %v\n", err.Error())
+	}
+	// PERF for common syscalls we know won't fault, could just resume
+
+	// Syscall6 just moves args from go ABI regs to kernel ABI regs
+	raw_regs, err := th.Registers()
+	if err != nil {
+		log.Panicf("getting regs in handleSyscallEntry: %v\n", err.Error())
+	}
+	amd_regs := raw_regs.(*linutil.AMD64Registers)
+	regs := amd_regs.Regs
+	// At syscall entry, regs are the Go ABI, e.g. a1 = Rbx
+	arg_regs := []uint64{regs.Rbx, regs.Rcx, regs.Rdi, regs.Rsi, regs.R8, regs.R9}
+	for _, arg := range arg_regs {
+		// TODO handle multiple faulting args (either bc a single syscall faults on multiple -
+		// via one arg overlapping multiple watchpoints (impossible if coalesce them), or multiple args - or bc
+		// multiple goroutines on same thread enter a faulting syscall)
+		// TODO handle multi-page args
+		// TODO handle vector read/write (region won't be contiguous)
+		fake_wp := proc.Breakpoint{Addr: arg}
+		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
+			// Arg is on same page as a software watchpoint => syscall would fail with "bad address"
+			fmt.Printf("ENTER FAULTING SYSCALL %v - arg: %#x\n", syscall, arg)
+			threadStacktrace(th, true, false)
+			arg_copy := uint64(arg) // was needed at one point - may not be anymore
+			th.faultingSyscallArg = &arg_copy
+			th.faultingSyscall = &syscall
+		}
+	}
+}
+
+// If this syscall exit corresponds to an entry that would have faulted,
+// clear saved arg and name.
+func handleSyscallExit(th *nativeThread) {
+	fmt.Printf("handleSyscallExit\n")
+	syscall, err := threadStacktrace(th, true, true)
+
+	if err != nil {
+		log.Panicf("getting stacktrace in handleSyscallExit: %v\n", err.Error())
+	}
+	if th.faultingSyscall == nil || *th.faultingSyscall != syscall {
+		// Exit for a non-faulting syscall (e.g. another thread set the exit bp)
+		// TODO unsure how to check if this exit corresponds to a faulting entry -
+		// have seen a thread enter multiple syscalls with no exit between.
+		// On different goroutines? But getG() can return nil, so may not be able to use goroutine ID.
+		// For now, use name of syscall (won't handle this sequence - unsure if possible:
+		// "enter faulting syscallX, exit non-faulting syscallX, exit faulting syscallX").
+		// Maybe get local vars on exit and see if any would fault.
+		if th.faultingSyscall == nil {
+			fmt.Printf("th.faultingSyscall nil - won't handle exit\n")
+		} else if *th.faultingSyscall != syscall {
+			fmt.Printf("*th.faultingSyscall %v != syscall %v - won't handle exit\n", *th.faultingSyscall, syscall)
+		}
+
+		return
+	}
+
+	fmt.Printf("EXIT FAULTING SYSCALL %v - arg: %#x\n", *th.faultingSyscall, *th.faultingSyscallArg)
+
+	th.faultingSyscallArg = nil
+	th.faultingSyscall = nil
+}
+
+// Handle any threads that hit a syscall entry/exit bp.
+// Should be called after we have set any pending watchpoints just before resume.
+// Thus watchpoints are up-to-date to check for syscall faults
+// (won't be any new watchpoint requests or object moves before resuming),
+// and all threads are stopped (so we can make ptrace calls)
+// (May need to update for HTTP server monitoring)
+func (procgrp *processGroup) handleSyscallBreakpoints() {
+	for _, dbp := range procgrp.procs {
+		if valid, _ := dbp.Valid(); !valid {
+			continue
+		}
+		target := proc.Target{Process: dbp, Proc: dbp}
+
+		// 1. Determine which threads are currently in which faulting syscalls
+		// (i.e. set thread.faultingSyscall and faultingSyscallArg)
+		exited_syscall_args := []uint64{}
+		for _, thread := range dbp.threads {
+			bp := thread.CurrentBreakpoint.Breakpoint
+			if bp != nil {
+				if bp.Addr == dbp.syscallPCs[0] {
+					// Syscall entry bp
+					// TODO if cgo, may not end up in Syscall6 - may need another bp for syscall entry
+					// where args are already allocated but still in user space (look for `syscall` instr?)
+					handleSyscallEntry(thread)
+				} else if bp.Addr == dbp.syscallPCs[2] {
+					// Syscall exit bp
+					prev_arg := thread.faultingSyscallArg
+					handleSyscallExit(thread)
+					if thread.faultingSyscallArg == nil && prev_arg != nil {
+						// just exited a syscall
+						exited_syscall_args = append(exited_syscall_args, *prev_arg)
+					}
+				}
+			}
+		}
+
+		// 2. Update things shared across threads accordingly, i.e.
+		// page bits and presence of syscall exit breakpoint.
+
+		// 2a. If any thread is in a faulting syscall, set exit breakpoint - else clear it
+		if buddy := dbp.buddyFaultingSyscall(nil); buddy != nil {
+			fmt.Printf("Thread %v in faulting syscall %v (arg %#x) - setting syscall exit bp (if not exists)\n",
+				buddy.ID, *buddy.faultingSyscall, *buddy.faultingSyscallArg)
+
+			// cond always false => will never return bp to client
+			false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
+			exit_bp, err := target.SetBreakpoint(proc.SyscallExitBreakpointID, dbp.syscallPCs[2], proc.UserBreakpoint, false_cond)
+			if err != nil {
+				if _, exists := err.(proc.BreakpointExistsError); !exists {
+					log.Panicf("set syscall exit breakpoint: %v\n", err.Error())
+				}
+			} else {
+				exit_bp.Logical.Name = proc.SyscallExitBreakpoint
+			}
+		} else {
+			err := target.ClearBreakpoint(dbp.syscallPCs[2])
+			if err != nil {
+				if _, notexists := err.(proc.NoBreakpointError); !notexists {
+					log.Panicf("clear syscall exit breakpoint: %v\n", err.Error())
+				}
+			}
+		}
+
+		// 2b. For each page causing a faulting syscall, un-mprotect
+		for _, thread := range dbp.threads {
+			if thread.faultingSyscallArg != nil {
+				faultingAddr := *thread.faultingSyscallArg
+				fmt.Printf("Un-mprotecting page causing faulting syscall (if wasn't already): thread %v, syscall %v (arg %#x)\n",
+					thread.ID, *thread.faultingSyscall, faultingAddr)
+				if err := thread.toggleMprotect(faultingAddr, false); err != nil {
+					log.Panicf("un-mprotect in handleSyscallBreakpoints: %v\n", err.Error())
+				}
+			}
+		}
+
+		// 2c. For each page no longer causing a faulting syscall on any thread, re-mprotect
+		// (Some thread stopped faulting on it, and no other thread still faulting on it)
+		for _, exited_syscall_arg := range exited_syscall_args {
+			if dbp.buddyFaultingSyscall(&exited_syscall_arg) == nil {
+				// No other thread still faulting on that page
+				fmt.Printf("Re-mprotecting page for arg %#x no longer causing faulting syscall\n", exited_syscall_arg)
+				if err := dbp.memthread.toggleMprotect(exited_syscall_arg, true); err != nil {
+					log.Panicf("re-mprotect in handleSyscallBreakpoints: %v\n", err.Error())
+				}
+			}
+		}
+	}
+}
+
 func (procgrp *processGroup) resume() error {
+	procgrp.handleSyscallBreakpoints()
+
 	// for all threads stopped at a breakpoint, step over it
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {
 			for _, thread := range dbp.threads {
-				if err := procgrp.stepOverBreakpoint(thread, dbp); err != nil {
+				if err := procgrp.stepOverBreakpoint(thread); err != nil {
 					return err
 				}
 			}
@@ -1087,13 +1068,16 @@ func printFaultingSyscall(th *nativeThread) {
 	fmt.Printf("thread %v (goroutine %v), syscall %v, arg %v\n", th.ThreadID(), goroutine, syscall, arg)
 }
 
-// Functions called from syscall entry/exit can return this error
-// when process is about to exit - can just return from handling
-func noSuchProcess(th *nativeThread, err error) bool {
+// If err indicates ESRCH and th hasn't exited, panic.
+// (Implies we tried to do a ptrace op on a running thread, which is a bug)
+// Else if exited, return true.
+func checkESRCH(th *nativeThread, err error) bool {
 	if err != nil && strings.Contains(err.Error(), "no such process") {
-		printFaultingSyscall(th)
-		fmt.Println(err.Error())
-		return true
+		// Don't do any ptrace calls here (they'll give ESRCH)
+		if th.Exited() {
+			return true
+		}
+		log.Panicf("ESRCH error on non-exited thread %v: %v", th.ThreadID(), err.Error())
 	}
 	return false
 }

@@ -42,6 +42,10 @@ import (
 var normalLoadConfig = proc.LoadConfig{true, 1, 64, 64, -1, 0}
 var testBackend, buildMode string
 
+// won't move sw wps. Would need to change server/test to do so, since test
+// calls Target's SetWatchpoint() but not Debugger's CreateWatchpoint() which is what stores wps to be moved
+var writeSwWps = true
+
 func init() {
 	runtime.GOMAXPROCS(4)
 	os.Setenv("GOMAXPROCS", "4")
@@ -5466,8 +5470,7 @@ func assertWpOOS(t *testing.T, p *proc.Target, grp *proc.TargetGroup, wp_oos_pc 
 // Pass build flags via withTestProcessArgs().
 
 // Tests instruction that hits sw bp and (spuriously) segfaults
-// TODO add test for non-spurious equivalent (tested manually)
-func TestWatchpointsSoftwarePrint(t *testing.T) {
+func TestWatchpointsSoftwareSpuriousSwWpAtBp(t *testing.T) {
 	withTestProcessArgs("dlv_config_client/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 			// Get to bp
@@ -5478,15 +5481,56 @@ func TestWatchpointsSoftwarePrint(t *testing.T) {
 			// Set wp
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware)
+			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			wp_oos_pc := getWpOOSPC(p)
 			assertNoError(err, t, "SetWatchpoint")
+			// Continue => first instr in line 11 hits bp and spuriously faults => step over it, don't return to client
 			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
-			// wp hit
+			// wp hit (on instr later in line 11 - one before call runtime.convT64), i.e. non-spurious fault => return to client
 			assertLineNumber(p, t, 11, "Continue to first wp hit")
 			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
 				t.Fatal("breakpoint not set")
+			}
+
+			assertWpOOS(t, p, grp, wp_oos_pc)
+		})
+}
+
+// Tests instruction that hits sw bp and non-spuriously segfaults
+// Instruction is hardcoded - need to run with go 1.20.1 to pass
+// (tried to get it properly by modifying FindFileLocation, but wasn't obvious how (`pcs` only has first 2 in line))
+func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
+	withTestProcessArgs("dlv_config_client/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
+		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
+			// Get to where x in scope
+			setFileBreakpoint(p, t, fixture.Source, 11)
+			assertNoError(grp.Continue(), t, "Continue to bp")
+			assertLineNumber(p, t, 11, "Continue to bp")
+
+			// Set wp, and bp on exact instr that accesses x - movups,lea,mov,mov one before call runtime.convT64
+			scope, err := proc.GoroutineScope(p, p.CurrentThread())
+			assertNoError(err, t, "GoroutineScope")
+			watchpoint, err := p.SetWatchpoint(100, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
+			wp_oos_pc := getWpOOSPC(p)
+			assertNoError(err, t, "SetWatchpoint")
+			access_instr := 0x49d4b1
+			breakpoint, err := p.SetBreakpoint(101, uint64(access_instr), proc.UserBreakpoint, nil)
+			assertNoError(err, t, "Set bp at access instr")
+			// continue to bp hit
+			assertNoError(grp.Continue(), t, "Continue to bp hit")
+
+			// instr hits bp => return to client
+			assertLineNumber(p, t, 11, "Continue to bp hit")
+			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != breakpoint.LogicalID()) {
+				t.Fatal("not at breakpoint")
+			}
+
+			// continue from bp hit => instr also non-spuriously hits wp => return to client again
+			assertNoError(grp.Continue(), t, "Continue to wp hit")
+			assertLineNumber(p, t, 11, "Continue to wp hit")
+			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != watchpoint.LogicalID()) {
+				t.Fatalf("not at watchpoint - instead at %+v\n", *curbp)
 			}
 
 			assertWpOOS(t, p, grp, wp_oos_pc)
@@ -5504,7 +5548,7 @@ func TestWatchpointsSoftwareNoPrints(t *testing.T) {
 			// Set wp
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
+			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			wp_oos_pc := getWpOOSPC(p)
 			assertNoError(err, t, "SetWatchpoint")
 			assertNoError(grp.Continue(), t, "Continue to first wp hit")
@@ -5542,6 +5586,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 	protest.AllowRecording(t)
 
 	position1 := []int{18, 19}
+	writeWps := wimpl == proc.WatchHardware || writeSwWps
 	if wimpl == proc.WatchSoftware {
 		// Sw wp don't support write-only
 		position1 = []int{16}
@@ -5560,7 +5605,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set globalvar1, write
-			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
+			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
 			assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
 			// Hit globalvar1 at position1
@@ -5579,7 +5624,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 			assertLineNumber(p, t, 21, "Continue 2") // Position 2
 
 			// Set globalvar1, read/write
-			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl)
+			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl, &writeWps)
 			assertNoError(err, t, "SetDataBreakpoint(read-write)")
 
 			// Hit globalvar1 at 22
@@ -5595,7 +5640,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 
 			// Set globalvar1, write
 			t.Logf("setting final breakpoint")
-			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
+			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
 			assertNoError(err, t, "SetDataBreakpoint(write-only, again)")
 
 			// Hit globalvar1 at position5
@@ -5621,6 +5666,7 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 		skipOn(t, "CI is running a version of macOS that is too old (11.2)", "darwin", "arm64")
 	}
 	protest.AllowRecording(t)
+	writeWps := wimpl == proc.WatchHardware || writeSwWps
 
 	withTestProcessArgs("databpcountstest", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
@@ -5631,7 +5677,7 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set globalvar1, write (only hits once for line 14)
-			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl)
+			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
 			assertNoError(err, t, "SetWatchpoint(write-only)")
 
 			// Continue until exited
@@ -5663,8 +5709,9 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 }
 
 // Syscall should succeed even though one of its arguments is on the same page as a software watchpoint,
-// Entry to non-spuriously faulting syscall (here open) should return to client as a wp hit.
-// Entry to spuriously faulting syscall (here write) should be treated as a spurious segv.
+// Entry to non-spuriously faulting open syscall should not return to client.
+// Entry to spuriously faulting write syscall should also not return.
+// (write returns only if non-spurious, read returns always, other syscalls never return).
 // Page should be re-mprotected once syscall finishes.
 func TestWatchpointsSyscallArgFault(t *testing.T) {
 	withTestProcessArgs("dlv_config_client/syscall_arg_fault", t, ".", []string{}, protest.AllNonOptimized,
@@ -5675,25 +5722,17 @@ func TestWatchpointsSyscallArgFault(t *testing.T) {
 
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			_, err = p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware)
+			_, err = p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			assertNoError(err, t, "SetWatchpoint")
-			assertNoError(grp.Continue(), t, "Continue to hit wp in entry to open")
+			assertNoError(grp.Continue(), t, "Continue to hit wp after open")
 
 			// 2. Hit bp for open syscall entry => arg will non-spuriously fault =>
-			// return to client as wp hit (stack won't directly indicate open, since we called Syscall6 directly)
-			stack, err := proc.ThreadStacktrace(p, p.CurrentThread(), 50)
-			assertNoError(err, t, "Stacktrace")
-			// Syscall6, RawSyscall6, Syscall6, main.main
+			// un-mprotect to let the syscall through, but don't return to client
+			// (note stack won't directly indicate open, since we called Syscall6 directly)
 
-			main_frame := stack[3].Call
-			// assertLineNumber doesn't work here, since main is in the middle of stack
-			if main_frame.Fn.Name != "main.main" || main_frame.Line != 18 {
-				t.Fatalf("Stopped at %+v, not at wp hit\n", main_frame)
-			}
-
-			// 3. Open succeeds (no "bad address").
-			// Then, access syscall arg after syscall arg => regular wp hit (i.e. re-mprotected the page after syscall)
-			assertNoError(grp.Continue(), t, "Continue to hit wp after open")
+			// 3. Open succeeds (no "bad address"), i.e. didn't panic
+			// Printf spuriously faults on write syscall => don't return to client
+			// Then, access syscall arg after write syscall => regular wp hit (i.e. re-mprotected the page after syscall)
 			assertLineNumber(p, t, 25, "Hit wp after open")
 
 			// 4. No more accesses
@@ -5790,6 +5829,7 @@ func WatchpointsStack(t *testing.T, wimpl proc.WatchImpl) {
 		skipOn(t, "CI is running a version of macOS that is too old (11.2)", "darwin", "arm64")
 	}
 	protest.AllowRecording(t)
+	writeWps := wimpl == proc.WatchHardware || writeSwWps
 
 	position1 := []int{16, 17}
 
@@ -5812,7 +5852,7 @@ func WatchpointsStack(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set w, write
-			_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, wimpl)
+			_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, wimpl, &writeWps)
 			assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
 			watchbpnum := 3
@@ -5898,7 +5938,8 @@ func TestWatchpointsStackBackwardsOutOfScope(t *testing.T) {
 		assertNoError(err, t, "GoroutineScope")
 
 		// no sw wp support for rr
-		_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, proc.WatchHardware)
+		write := true
+		_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, proc.WatchHardware, &write)
 		assertNoError(err, t, "SetDataBreakpoint(write-only)")
 
 		assertNoError(grp.Continue(), t, "Continue 1")
@@ -7547,7 +7588,8 @@ func TestStackwatchClearBug(t *testing.T) {
 
 		for _, s := range []string{"vars[0]", "vars[3]", "vars[2]", "vars[1]"} {
 			// bug is wimpl-agnostic
-			_, err := p.SetWatchpoint(0, scope, s, proc.WatchWrite, nil, proc.WatchHardware)
+			write := true
+			_, err := p.SetWatchpoint(0, scope, s, proc.WatchWrite, nil, proc.WatchHardware, &write)
 			assertNoError(err, t, "SetWatchpoint(write-only)")
 		}
 

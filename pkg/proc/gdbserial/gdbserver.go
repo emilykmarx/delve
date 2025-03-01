@@ -2005,6 +2005,10 @@ func (t *gdbThread) SetCurrentBreakpoint(adjustPC bool) error {
 	return nil
 }
 
+func (t *gdbThread) FindSoftwareWatchpoint(faultingAddr_ *uint64, faultingSize uint64) *proc.Breakpoint {
+	return nil
+}
+
 func (regs *gdbRegisters) PC() uint64 {
 	return binary.LittleEndian.Uint64(regs.regs[regs.regnames.PC].value)
 }

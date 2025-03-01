@@ -21,6 +21,7 @@ require (
 	golang.org/x/sys v0.17.0
 	golang.org/x/tools v0.14.0
 	gopkg.in/yaml.v2 v2.4.0
+	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
 )
 
 require (

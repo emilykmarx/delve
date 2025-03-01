@@ -292,24 +292,27 @@ type returnBreakpointInfo struct {
 	spOffset     int64
 }
 
-// whether bp is the entry to a syscall.read for a socket
-func (bp *Breakpoint) enteringSyscallRead(tgt *Target, thread Thread) bool {
-	// Check if syscall.read entry
+// Whether bp is the entry of a tainted syscall,
+// i.e. any network recv, or network send of tainted data
+// All other syscalls don't propagate taint of passed-in args =>
+// never return to client even if they would fault
+func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) bool {
+	// Check if syscall.read/write entry
 	if bp.Logical == nil || bp.Logical.Name != SyscallEntryBreakpoint {
 		return false
 	}
-	syscall_read := false
+	syscall := ""
 	stack, err := ThreadStacktrace(tgt, thread, 50)
 	if err != nil {
 		log.Panicf("Failed to get stacktrace in checkCondition: %v\n", err)
 	}
-	if len(stack) >= 3 {
-		syscall_read = stack[3].Call.Fn.Name == "syscall.read"
+	if len(stack) > 3 {
+		syscall = stack[3].Call.Fn.Name
 	}
-	if !syscall_read {
+	if !(syscall == "syscall.read" || syscall == "syscall.write") {
 		return false
 	}
-	// Check if network read
+	// Check if network read/write
 	raw_regs, err := thread.Registers()
 	if err != nil {
 		log.Panicf("getting raw regs to check for syscall.read fd: %v\n", err.Error())
@@ -318,11 +321,15 @@ func (bp *Breakpoint) enteringSyscallRead(tgt *Target, thread Thread) bool {
 	if err != nil {
 		log.Panicf("getting regs slice to check for syscall.read fd: %v\n", err.Error())
 	}
-	fd := uint64(0)
-	// can't import linutil or native here
+	var fd, buf_addr, bufsz uint64
+	// can't import linutil or native in proc
 	for _, reg := range regs {
 		if reg.Name == "Rbx" {
 			fd = reg.Reg.Uint64Val
+		} else if reg.Name == "Rdi" {
+			bufsz = reg.Reg.Uint64Val
+		} else if reg.Name == "Rcx" {
+			buf_addr = reg.Reg.Uint64Val
 		}
 	}
 	if fd == 0 {
@@ -333,8 +340,27 @@ func (bp *Breakpoint) enteringSyscallRead(tgt *Target, thread Thread) bool {
 	if err != nil {
 		log.Panicf("getting fd info: %v", err)
 	}
-	_, socket := strings.CutPrefix(fdinfo, "socket:")
-	return socket
+	// TODO also ignore if dest is local (not visible outside module)
+	if _, socket := strings.CutPrefix(fdinfo, "socket:"); !socket {
+		return false
+	}
+	if syscall == "syscall.write" {
+		fmt.Printf("Message send\n")
+		// Message send
+		// Return to client if any part of send buffer overlaps any watchpoint
+		// (since we haven't actually faulted, we don't know which part overlaps)
+		if wp := thread.FindSoftwareWatchpoint(&buf_addr, bufsz); !wp.SpuriousPageFault {
+			fmt.Printf("Non-spuriously faulting send - will return to client\n")
+			return true
+		} else {
+			fmt.Printf("Non-faulting or spuriously faulting send - no return to client\n")
+		}
+	} else {
+		// network recv
+		fmt.Printf("Message receive - will return to client\n")
+		return true
+	}
+	return false
 }
 
 // CheckCondition evaluates bp's condition on thread.
@@ -343,13 +369,12 @@ func (bp *Breakpoint) checkCondition(tgt *Target, thread Thread, bpstate *Breakp
 	for _, breaklet := range bp.Breaklets {
 		bpstate.checkCond(tgt, breaklet, thread)
 	}
-	// Network receive entry always return to client, even though syscall entry bp is inactive
-	// (eventually want to taint other message receives too, but network only is more convenient for testing).
-	// Socket => return to client
-	if bp.enteringSyscallRead(tgt, thread) {
-		fmt.Println("ENTERING SYSCALL READ => ret to client")
+	// Activate syscall entry bp to return it to client, if applicable
+	if bp.taintedSyscallEntry(tgt, thread) {
 		bpstate.Active = true
 	}
+	// Inactive bps: Untainted syscall entry, syscall exit, spurious wp
+	// Active bps: Tainted syscall entry, regular bp, non-spurious wp
 }
 
 func (bpstate *BreakpointState) checkCond(tgt *Target, breaklet *Breaklet, thread Thread) {
