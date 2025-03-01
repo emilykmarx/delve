@@ -59,6 +59,7 @@ func main() {
 	initial_bp_file := flag.String("initial_bp_file", "", "File to set initial breakpoint")
 	initial_bp_line := flag.Int("initial_bp_line", 0, "Line number to set initial breakpoint")
 	initial_watchexpr := flag.String("initial_watchexpr", "", "Expression to set initial watchpoint")
+	module := flag.String("module", "", "Target module name")
 	move_wps := flag.Bool("move_wps", true, "Whether to request move object on setting software watchpoint")
 	flag.Parse()
 
@@ -70,6 +71,7 @@ func main() {
 	// This includes when a struct is initialized just before using it as a recvr (i.e. recvr := Recvr{X: x} recvr.f())
 
 	tc := TaintCheck{client: client,
+		module:        *module,
 		move_wps:      *move_wps,
 		pending_wps:   make(map[uint64]PendingWp),
 		mem_param_map: make(map[uint64]TaintingVals),

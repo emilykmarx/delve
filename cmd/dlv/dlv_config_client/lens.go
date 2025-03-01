@@ -14,8 +14,9 @@ import (
 // Data structures used to create the configuration lens
 
 type TaintingParam struct {
-	param string
-	flow  TaintFlow
+	module string
+	param  string
+	flow   TaintFlow
 }
 
 type BehaviorValue struct {
@@ -23,6 +24,7 @@ type BehaviorValue struct {
 	send_endpoint string // IP:port
 	recv_endpoint string // IP:port
 	transport     string // transport protocol
+	send_module   string
 	// XXX protocol, request vs response
 }
 
@@ -61,6 +63,7 @@ type TaintCheck struct {
 	client   *rpc2.RPCClient
 	thread   *api.Thread
 	move_wps bool
+	module   string
 
 	// Key: Bp addr where exprs go in scope
 	pending_wps map[uint64]PendingWp
@@ -103,13 +106,14 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 			sent_msg := BehaviorValue{
 				offset:        msg_offset,
 				send_endpoint: local, recv_endpoint: remote, transport: transport,
+				send_module: tc.module,
 			}
 			tc.behavior_map[sent_msg] = tainting_vals
 			// log for test
 			fmt.Printf("\tBehavior map: %+v => %+v\n", sent_msg, tainting_vals)
 		}
 	} else if syscall_name == "syscall.read" {
-		// Set watchpoint on entire receive buffer
+		// Receive message => set watchpoint on entire receive buffer
 		recvd_msg := BehaviorValue{
 			offset:        bufsz,
 			send_endpoint: remote, recv_endpoint: local, transport: transport,
@@ -250,7 +254,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 		existing_info.tainting_vals = tainting_vals
 	} else {
 		// config variable
-		tainting_param := []TaintingParam{{param: expr, flow: DataFlow}}
+		tainting_param := []TaintingParam{{module: tc.module, param: expr, flow: DataFlow}}
 		existing_info.tainting_vals = TaintingVals{params: *set.From(tainting_param)}
 	}
 
