@@ -56,11 +56,9 @@ func (tc *TaintCheck) run() {
 func main() {
 	fmt.Printf("Starting delve config client\n\n")
 	log.SetFlags(log.Lshortfile)
-	/*
-		initial_bp_file := flag.String("initial_bp_file", "", "File to set initial breakpoint")
-		initial_bp_line := flag.Int("initial_bp_line", 0, "Line number to set initial breakpoint")
-		initial_watchexpr := flag.String("initial_watchexpr", "", "Expression to set initial watchpoint")
-	*/
+	initial_bp_file := flag.String("initial_bp_file", "", "File to set initial breakpoint")
+	initial_bp_line := flag.Int("initial_bp_line", 0, "Line number to set initial breakpoint")
+	initial_watchexpr := flag.String("initial_watchexpr", "", "Expression to set initial watchpoint")
 	move_wps := flag.Bool("move_wps", true, "Whether to request move object on setting software watchpoint")
 	flag.Parse()
 
@@ -77,13 +75,11 @@ func main() {
 		mem_param_map: make(map[uint64]TaintingVals),
 		behavior_map:  make(map[BehaviorValue]TaintingVals)}
 
-	/*
-		init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
+	init_loc := tc.lineWithStmt(nil, *initial_bp_file, *initial_bp_line, 0)
 
-		// This will be replaced by a config breakpoint
-		fmt.Printf("Configuration variable: %v\n", *initial_watchexpr)
-		tc.recordPendingWp(*initial_watchexpr, init_loc, nil)
-	*/
+	// This will be replaced by a config breakpoint
+	fmt.Printf("Configuration variable: %v\n", *initial_watchexpr)
+	tc.recordPendingWp(*initial_watchexpr, init_loc, nil)
 
 	tc.run()
 

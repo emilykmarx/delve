@@ -63,15 +63,6 @@ func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals Taintin
 	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr])
 }
 
-// Assuming a watchpoint has hit overlapping watchaddr, get its tainting values from the mem-param map
-func (tc *TaintCheck) taintingVals(watchaddr uint64) TaintingVals {
-	tainting_vals, ok := tc.mem_param_map[watchaddr]
-	if !ok {
-		log.Fatalf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
-	}
-	return tainting_vals
-}
-
 // pretty-print
 func (pendingwp PendingWp) String() string {
 	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v}",
@@ -304,7 +295,7 @@ func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
 	}
 
 	// 2. Get socket endpoints
-	// XXX ipv6 too
+	// XXX ipv6 and other transports too
 	tcp_socks, err := linuxproc.ReadNetTCPSockets("/proc/net/tcp", linuxproc.NetIPv4Decoder)
 	if err != nil {
 		log.Panicf("ReadNetTCPSockets: %v", err)

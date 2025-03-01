@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"math"
 	"reflect"
 	"strings"
 
@@ -20,10 +19,10 @@ type TaintingParam struct {
 }
 
 type BehaviorValue struct {
-	offset          uint64 // offset in message
-	local_endpoint  string // IP:port
-	remote_endpoint string // IP:port
-	transport       string // transport protocol
+	offset        uint64 // offset in message
+	send_endpoint string // IP:port
+	recv_endpoint string // IP:port
+	transport     string // transport protocol
 	// XXX protocol, request vs response
 }
 
@@ -79,49 +78,51 @@ type TaintCheck struct {
 	behavior_map map[BehaviorValue]TaintingVals
 }
 
-// Handle syscall with tainted arg - server returns it to us as wp hit
-func (tc *TaintCheck) handleSyscallWpHit(syscall_name string) {
-	// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
+// Handle syscall entry bp hit - server returns it to us for message receives and tainted sends
+func (tc *TaintCheck) onSyscallEntryBpHit() {
+	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
+	// TODO check for partially loaded (in any calls with LoadConfig)
+	if err != nil {
+		log.Fatalf("Error getting stacktrace: %v\n", err)
+	}
+
+	syscall_name := stack[3].Function.Name()
+	local, remote, transport := tc.getSocketEndpoints()
+	bufstart, bufsz := tc.syscallBuf()
 	if syscall_name == "syscall.write" {
+		// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
 		// Send tainted message => add to behavior map its tainted offsets,
 		// i.e. region of send buf that overlaps watched region
-		local, remote, transport := tc.getSocketEndpoints()
-		bufstart, bufsz := tc.syscallBuf()
-		watchsz := watchSize(tc.hit.hit_bp)
-		watchstart := tc.hit.hit_bp.Addr
 
-		taintedstart := uint64(math.Max(float64(bufstart), float64(watchstart)))
-		taintedend := uint64(math.Min(float64(bufstart+bufsz), float64(watchstart+watchsz)))
-		for buf_addr := taintedstart; buf_addr < taintedend; buf_addr++ {
-			tainting_vals := tc.taintingVals(buf_addr)
+		for buf_addr := bufstart; buf_addr < bufstart+bufsz; buf_addr++ {
+			tainting_vals, ok := tc.mem_param_map[buf_addr]
+			if !ok {
+				continue
+			}
 			msg_offset := buf_addr - bufstart
 			sent_msg := BehaviorValue{
-				offset:         msg_offset,
-				local_endpoint: local, remote_endpoint: remote, transport: transport,
+				offset:        msg_offset,
+				send_endpoint: local, recv_endpoint: remote, transport: transport,
 			}
 			tc.behavior_map[sent_msg] = tainting_vals
 			// log for test
-			fmt.Printf("\tBehavior map: 0x%x => %+v\n", sent_msg.offset, tainting_vals)
+			fmt.Printf("\tBehavior map: %+v => %+v\n", sent_msg, tainting_vals)
 		}
+	} else if syscall_name == "syscall.read" {
+		// Set watchpoint on entire receive buffer
+		recvd_msg := BehaviorValue{
+			offset:        bufsz,
+			send_endpoint: remote, recv_endpoint: local, transport: transport,
+		}
+		tainting_msg := TaintingBehavior{
+			behavior: recvd_msg,
+			flow:     DataFlow,
+		}
+		tc.hit.frame = 3 // syscall.read: buffer is `p` argument
+		tc.setWatchpoint("p", TaintingVals{behaviors: *set.From([]TaintingBehavior{tainting_msg})}, true)
+	} else {
+		fmt.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", syscall_name)
 	}
-}
-
-// Handle syscall entry bp hit - server returns it to us for message receives
-func (tc *TaintCheck) onSyscallEntryBpHit() {
-	fmt.Println("onSyscallEntryBpHit")
-	// Set watchpoint on entire receive buffer
-	local, remote, transport := tc.getSocketEndpoints()
-	_, bufsz := tc.syscallBuf()
-	recvd_msg := BehaviorValue{
-		offset:         bufsz,
-		local_endpoint: local, remote_endpoint: remote, transport: transport,
-	}
-	tainting_msg := TaintingBehavior{
-		behavior: recvd_msg,
-		flow:     DataFlow,
-	}
-	tc.hit.frame = 3 // syscall.read: buffer is `p` argument
-	tc.setWatchpoint("p", TaintingVals{behaviors: *set.From([]TaintingBehavior{tainting_msg})}, true)
 }
 
 /* If hit was in runtime, either ignore (e.g. newstack), or
@@ -150,9 +151,6 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 			// (but not hits in go runtime from program thread)
 			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
 			if fn == "runtime.newstack" {
-				return nil, false
-			} else if fn == "runtime/internal/syscall.Syscall6" {
-				tc.handleSyscallWpHit(stack[3].Function.Name())
 				return nil, false
 			}
 			if !strings.HasPrefix(fn, "runtime") {
@@ -237,7 +235,10 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 		// XXX (when handle partial tainting): handle wp where m-p map entries
 		// differ across the watched region. For now, using entry of starting addr
 
-		tainting_vals := tc.taintingVals(hit_wp_addr)
+		tainting_vals, ok := tc.mem_param_map[hit_wp_addr]
+		if !ok {
+			log.Fatalf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
+		}
 
 		// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
 		// Note that wp for tainted array can hit for append to empty slice (first call to packUint16) - need to investigate
