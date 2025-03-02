@@ -6,11 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-delve/delve/conftamer"
 	protest "github.com/go-delve/delve/pkg/proc/test"
+	set "github.com/hashicorp/go-set"
 )
 
 // Notes:
@@ -31,6 +34,28 @@ func getClientBin(t *testing.T) string {
 	}
 
 	return clientbin
+}
+
+func TestReadWriteBehaviorMap(t *testing.T) {
+	param := conftamer.TaintingParam{Module: "param_module", Param: "param", Flow: conftamer.ControlFlow}
+	behavior := conftamer.BehaviorValue{Offset: 1, Send_endpoint: "send_endpoint", Recv_endpoint: "recv_endpoint", Transport: "tcp", Send_module: "send_module"}
+	tainting_behavior := conftamer.TaintingBehavior{
+		Behavior: behavior,
+		Flow:     conftamer.DataFlow,
+	}
+	behavior_map := make(map[conftamer.BehaviorValue]conftamer.TaintingVals)
+	tainting_vals := conftamer.TaintingVals{
+		Params:    set.From([]conftamer.TaintingParam{param}),
+		Behaviors: set.From([]conftamer.TaintingBehavior{tainting_behavior})}
+	behavior_map[behavior] = tainting_vals
+
+	file := filepath.Join(t.TempDir(), "behavior_map.csv")
+	assertNoError(conftamer.WriteBehaviorMap(file, behavior_map), t, "write")
+	behavior_map_2, err := conftamer.ReadBehaviorMap(file)
+	assertNoError(err, t, "read")
+	if !reflect.DeepEqual(behavior_map, behavior_map_2) {
+		t.Fatalf("Map before read %v != after %v\n", behavior_map, behavior_map_2)
+	}
 }
 
 // Tests clear when another sw wp still exists on same page

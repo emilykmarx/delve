@@ -1,4 +1,4 @@
-package main
+package conftamer
 
 import (
 	"go/ast"
@@ -172,7 +172,7 @@ func (tc *TaintCheck) taintedField(name string, xv *api.Variable, watch_addr uin
 }
 
 // TODO handle the rest that do propagate
-var builtinFcts = *set.From([]string{
+var builtinFcts = set.From([]string{
 	// Propagate taint
 	"append", "copy",
 	"min", "max",
@@ -185,7 +185,7 @@ var builtinFcts = *set.From([]string{
 	"print", "println",
 })
 
-var casts = *set.From([]string{
+var casts = set.From([]string{
 	"bool",
 	"string",
 	"int", "int8", "int16", "int32", "int64",

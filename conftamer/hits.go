@@ -1,4 +1,4 @@
-package main
+package conftamer
 
 import (
 	"fmt"
@@ -6,36 +6,37 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
 	set "github.com/hashicorp/go-set"
 )
 
-// Data structures used to create the configuration lens
+// Data structures used to create the configuration tamer
 
 type TaintingParam struct {
-	module string
-	param  string
-	flow   TaintFlow
+	Module string
+	Param  string
+	Flow   TaintFlow
 }
 
 type BehaviorValue struct {
-	offset        uint64 // offset in message
-	send_endpoint string // IP:port
-	recv_endpoint string // IP:port
-	transport     string // transport protocol
-	send_module   string
+	Offset        uint64 // offset in message
+	Send_endpoint string // IP:port
+	Recv_endpoint string // IP:port
+	Transport     string // transport protocol
+	Send_module   string
 	// XXX protocol, request vs response
 }
 
 type TaintingBehavior struct {
-	behavior BehaviorValue
-	flow     TaintFlow
+	Behavior BehaviorValue
+	Flow     TaintFlow
 }
 
 type TaintingVals struct {
-	params    set.Set[TaintingParam]
-	behaviors set.Set[TaintingBehavior]
+	Params    *set.Set[TaintingParam]
+	Behaviors *set.Set[TaintingBehavior]
 }
 
 // Things that should be reset for each hit
@@ -49,7 +50,7 @@ type Hit struct {
 // Exprs/args we will set a wp on, once they're in scope.
 // If add any fields, update String()
 type PendingWp struct {
-	watchexprs set.Set[string]
+	watchexprs *set.Set[string]
 	// Arg index => Expression to append to callee's copy, if any
 	watchargs map[int]string
 	// Values that tainted these
@@ -93,10 +94,10 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 	local, remote, transport := tc.getSocketEndpoints()
 	bufstart, bufsz := tc.syscallBuf()
 	if syscall_name == "syscall.write" {
-		// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
 		// Send tainted message => add to behavior map its tainted offsets,
 		// i.e. region of send buf that overlaps watched region
 
+		// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
 		for buf_addr := bufstart; buf_addr < bufstart+bufsz; buf_addr++ {
 			tainting_vals, ok := tc.mem_param_map[buf_addr]
 			if !ok {
@@ -104,28 +105,28 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 			}
 			msg_offset := buf_addr - bufstart
 			sent_msg := BehaviorValue{
-				offset:        msg_offset,
-				send_endpoint: local, recv_endpoint: remote, transport: transport,
-				send_module: tc.module,
+				Offset:        msg_offset,
+				Send_endpoint: local, Recv_endpoint: remote, Transport: transport,
+				Send_module: tc.module,
 			}
 			tc.behavior_map[sent_msg] = tainting_vals
 			// log for test
-			fmt.Printf("\tBehavior map: %+v => %+v\n", sent_msg, tainting_vals)
+			log.Printf("\tBehavior map: %+v => %+v\n", sent_msg, tainting_vals)
 		}
 	} else if syscall_name == "syscall.read" {
 		// Receive message => set watchpoint on entire receive buffer
 		recvd_msg := BehaviorValue{
-			offset:        bufsz,
-			send_endpoint: remote, recv_endpoint: local, transport: transport,
+			Offset:        bufsz,
+			Send_endpoint: remote, Recv_endpoint: local, Transport: transport,
 		}
 		tainting_msg := TaintingBehavior{
-			behavior: recvd_msg,
-			flow:     DataFlow,
+			Behavior: recvd_msg,
+			Flow:     DataFlow,
 		}
 		tc.hit.frame = 3 // syscall.read: buffer is `p` argument
-		tc.setWatchpoint("p", TaintingVals{behaviors: *set.From([]TaintingBehavior{tainting_msg})}, true)
+		tc.setWatchpoint("p", TaintingVals{Behaviors: set.From([]TaintingBehavior{tainting_msg})}, true)
 	} else {
-		fmt.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", syscall_name)
+		log.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", syscall_name)
 	}
 }
 
@@ -144,12 +145,12 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	}
 
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
-		fmt.Println("Runtime watchpoint hit - partial stack (including first non-runtime frame, whose PC is one after call instr)")
+		log.Println("Runtime watchpoint hit - partial stack (including first non-runtime frame, whose PC is one after call instr)")
 		for i, frame := range stack {
 			fn := frame.Function.Name()
 			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 				frame.File, frame.Line, fn, frame.PC)
-			fmt.Println(loc)
+			log.Println(loc)
 
 			// TODO skip all hits from go runtime goroutines (sw wp commit may hv a test for sysmon?)
 			// (but not hits in go runtime from program thread)
@@ -215,11 +216,11 @@ func (tc *TaintCheck) hittingLine() bool {
 		log.Fatalf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
 	}
 
-	fmt.Printf("Location:\n %v:%v (0x%x)\n",
+	log.Printf("Location:\n %v:%v (0x%x)\n",
 		tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line, tc.hit.hit_instr.Loc.PC)
-	fmt.Println(tc.hit.hit_instr.Loc.Function.Name())
-	fmt.Println(src_line)
-	fmt.Println(tc.hit.hit_instr.Text)
+	log.Println(tc.hit.hit_instr.Loc.Function.Name())
+	log.Println(src_line)
+	log.Println(tc.hit.hit_instr.Text)
 	return true
 }
 
@@ -254,8 +255,8 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 		existing_info.tainting_vals = tainting_vals
 	} else {
 		// config variable
-		tainting_param := []TaintingParam{{module: tc.module, param: expr, flow: DataFlow}}
-		existing_info.tainting_vals = TaintingVals{params: *set.From(tainting_param)}
+		tainting_param := []TaintingParam{{Module: tc.module, Param: expr, Flow: DataFlow}}
+		existing_info.tainting_vals = TaintingVals{Params: set.From(tainting_param)}
 	}
 
 	if argno != nil {
@@ -263,13 +264,13 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int)
 			existing_info.watchargs = make(map[int]string)
 		}
 		existing_info.watchargs[*argno] = expr
-		fmt.Printf("recordPendingWp: line %v, argno %v, info %+v, bp addr 0x%x\n", loc.Line, *argno, existing_info, bp_addr)
+		log.Printf("recordPendingWp: line %v, argno %v, info %+v, bp addr 0x%x\n", loc.Line, *argno, existing_info, bp_addr)
 	} else {
 		if existing_info.watchexprs.Empty() {
-			existing_info.watchexprs = *set.New[string](1)
+			existing_info.watchexprs = set.New[string](1)
 		}
 		existing_info.watchexprs.Insert(expr)
-		fmt.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
+		log.Printf("recordPendingWp: line %v, watchexpr %v, info %+v, bp addr 0x%x\n", loc.Line, expr, existing_info, bp_addr)
 	}
 
 	tc.pending_wps[bp_addr] = existing_info
@@ -298,7 +299,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 		log.Fatalf("Debugger returned no watchpoints for %v\n", watchexpr)
 	}
 	if message && len(watchpoints) > 1 {
-		log.Fatalf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals.behaviors.Slice()[0])
+		log.Fatalf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals.Behaviors.Slice()[0])
 	}
 
 	// Add pre-move addresses to m-c - will update after next Continue()
@@ -307,9 +308,8 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 		// TODO test for adding new taint to existing addr
 
 		// Log for testing (will also log dups)
-		// TODO (minor): Move logic in this file to its own package, so can import it for testing
-		// Also put test logging in a log separate from stdout which can be turned off for non-testing purposes
-		fmt.Printf("CreateWatchpoint lineno %d watchexpr %s watchaddr 0x%x\n",
+		// XXX add watchsz
+		log.Printf("CreateWatchpoint lineno %d watchexpr %s watchaddr 0x%x\n",
 			tc.hit.hit_bp.Line, watchpoint.WatchExpr, watchpoint.Addr)
 
 		if !message {
@@ -321,21 +321,21 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 	}
 
 	if message {
-		tainting_val := tainting_vals.behaviors.Slice()[0]
+		tainting_val := tainting_vals.Behaviors.Slice()[0]
 		bufstart := watchpoints[0].Addr
-		bufsz := tainting_val.behavior.offset
+		bufsz := tainting_val.Behavior.Offset
 		for offset := uint64(0); offset < bufsz; offset++ {
-			tainting_val.behavior.offset = offset
-			tc.updateTaintingVals(bufstart+offset, TaintingVals{behaviors: *set.From([]TaintingBehavior{tainting_val})})
+			tainting_val.Behavior.Offset = offset
+			tc.updateTaintingVals(bufstart+offset, TaintingVals{Behaviors: set.From([]TaintingBehavior{tainting_val})})
 		}
 	}
 }
 
 // Watchpoint hit => record any new pending watchpoints
 func (tc *TaintCheck) onWatchpointHit() {
-	fmt.Printf("\n\n*** Hit watchpoint for %v\n", tc.hit.hit_bp.WatchExpr)
+	log.Printf("\n\n*** Hit watchpoint for %v\n", tc.hit.hit_bp.WatchExpr)
 	if !tc.hittingLine() {
-		fmt.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
+		log.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
 		return
 	}
 	tc.propagateTaint()
@@ -349,7 +349,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 
 	bp_addr := tc.hit.hit_bp.Addrs[0]
 	info := tc.pending_wps[bp_addr]
-	fmt.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
+	log.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
 	if info.watchexprs.Empty() && len(info.watchargs) == 0 {
 		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}
@@ -401,4 +401,70 @@ func (tc *TaintCheck) updateMovedWps() {
 			}
 		}
 	}
+}
+
+// Run the target until exit
+func (tc *TaintCheck) Run() {
+	log.Printf("Starting CT-Scan\n\n")
+	state := <-tc.client.Continue()
+
+	for ; !state.Exited; state = <-tc.client.Continue() {
+		if state.Err != nil {
+			log.Fatalf("Error in debugger state: %v\n", state.Err)
+		}
+		tc.updateMovedWps()
+
+		for _, thread := range state.Threads {
+			hit_bp := thread.Breakpoint
+			if hit_bp != nil {
+				tc.hit = Hit{hit_bp: hit_bp}
+				tc.thread = thread
+				// TODO see gdoc (Instr that would hit multiple*) - may need more logic here for multiple hits
+				fmt.Printf("CLIENT bp: %+v\n", hit_bp)
+				if hit_bp.Name == proc.SyscallEntryBreakpoint {
+					tc.onSyscallEntryBpHit()
+				} else if hit_bp.WatchExpr != "" {
+					tc.onWatchpointHit()
+				} else {
+					// Assumes the hit bp is for a pending wp (but could instead be e.g. fatalpanic)
+					fmt.Printf("thread at bp, line %v\n", thread.Line)
+					tc.onPendingWpBpHit()
+				}
+			}
+		}
+
+		// TODO also need to remove any PreviousAddrs?
+		for _, wp_oos := range state.WatchOutOfScope {
+			loc := state.SelectedGoroutine.CurrentLoc
+			fmt.Printf("Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x) \n",
+				wp_oos.WatchExpr, loc.File, loc.Line, loc.PC)
+			tc.forEachWatchaddr(wp_oos, func(watchaddr uint64) bool {
+				delete(tc.mem_param_map, watchaddr)
+				return true // unused
+			})
+		}
+	}
+
+	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
+	log.Println("Finished CT-Scan")
+	tc.client.Detach(false) // Also kills server, despite function doc (even on unmodified dlv)
+}
+
+func New(initial_bp_file string, initial_bp_line int, initial_watchexpr string, module string, move_wps bool) TaintCheck {
+	listenAddr := "localhost:4040"
+	client := rpc2.NewClient(listenAddr)
+
+	tc := TaintCheck{client: client,
+		module:        module,
+		move_wps:      move_wps,
+		pending_wps:   make(map[uint64]PendingWp),
+		mem_param_map: make(map[uint64]TaintingVals),
+		behavior_map:  make(map[BehaviorValue]TaintingVals)}
+
+	init_loc := tc.lineWithStmt(nil, initial_bp_file, initial_bp_line, 0)
+
+	// This will be replaced by a config breakpoint
+	log.Printf("Configuration variable: %v\n", initial_watchexpr)
+	tc.recordPendingWp(initial_watchexpr, init_loc, nil)
+	return tc
 }

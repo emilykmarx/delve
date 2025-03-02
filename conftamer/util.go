@@ -1,11 +1,14 @@
-package main
+package conftamer
 
 import (
 	"bytes"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"io"
 	"log"
 	"os"
 	"regexp"
@@ -17,6 +20,7 @@ import (
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
+	set "github.com/hashicorp/go-set"
 )
 
 // Return value of register reg_name
@@ -56,11 +60,11 @@ func (tc *TaintCheck) forEachWatchaddr(watchpoint *api.Breakpoint, f func(watcha
 func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals) {
 	existing_taint := tc.mem_param_map[watchaddr]
 	new_taint := TaintingVals{
-		params:    *tainting_vals.params.Union(&existing_taint.params),
-		behaviors: *tainting_vals.behaviors.Union(&existing_taint.behaviors),
+		Params:    tainting_vals.Params.Union(existing_taint.Params),
+		Behaviors: tainting_vals.Behaviors.Union(existing_taint.Behaviors),
 	}
 	tc.mem_param_map[watchaddr] = new_taint
-	fmt.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr])
+	log.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr])
 }
 
 // pretty-print
@@ -123,18 +127,18 @@ func (tc *TaintCheck) printBps() {
 	}
 	for _, bp := range bps {
 		if bp.WatchExpr != "" {
-			fmt.Printf("Watchpoint at %x\n", bp.Addr)
+			log.Printf("Watchpoint at %x\n", bp.Addr)
 		} else {
-			fmt.Printf("Breakpoint at %x\n", bp.Addr)
+			log.Printf("Breakpoint at %x\n", bp.Addr)
 		}
 	}
 
 }
 
 func printThreads(state *api.DebuggerState) {
-	fmt.Println("Threads:")
+	log.Println("Threads:")
 	for _, th := range state.Threads {
-		fmt.Printf("%v at %v\n", th.ID, th.Function.Name_)
+		log.Printf("%v at %v\n", th.ID, th.Function.Name_)
 	}
 }
 
@@ -147,7 +151,7 @@ func (tc *TaintCheck) printStacktrace() {
 		loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 			frame.File, frame.Line, frame.Function.Name(),
 			frame.PC)
-		fmt.Println(loc)
+		log.Println(loc)
 	}
 }
 
@@ -230,7 +234,7 @@ func watchSize(wp *api.Breakpoint) uint64 {
 // Find the next line on or after this one with a statement, so we can set a bp.
 // TODO May want to consider doing this with PC when handle the non-linear stuff
 func (tc *TaintCheck) lineWithStmt(call_expr *string, file string, lineno int, frame int) api.Location {
-	fmt.Println("linewithStmt")
+	log.Println("linewithStmt")
 	var loc string
 	if call_expr != nil {
 		decl_loc := tc.fnDecl(*call_expr, frame)
@@ -291,7 +295,7 @@ func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
 		if err != nil {
 			log.Panicf("ParseUint: %v", err)
 		}
-		fmt.Println(inode)
+		log.Println(inode)
 	}
 
 	// 2. Get socket endpoints
@@ -302,7 +306,7 @@ func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
 	}
 	for _, sock := range tcp_socks.Sockets {
 		if sock.Inode == inode {
-			fmt.Printf("5-tuple: %v=>%v\n", sock.LocalAddress, sock.RemoteAddress)
+			log.Printf("5-tuple: %v=>%v\n", sock.LocalAddress, sock.RemoteAddress)
 			return sock.LocalAddress, sock.RemoteAddress, "tcp"
 		}
 	}
@@ -315,4 +319,79 @@ func (tc *TaintCheck) syscallBuf() (uint64, uint64) {
 	bufstart := tc.register("Rcx")
 	bufsz := tc.register("Rdi")
 	return bufstart, bufsz
+}
+
+// Write behavior map to csv - unsure how to get rid of extra quotes (part of the RFC)
+func WriteBehaviorMap(filename string, behavior_map map[BehaviorValue]TaintingVals) error {
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	w := csv.NewWriter(file)
+	w.Write([]string{"Behavior", "Tainting Values"})
+
+	for key, value := range behavior_map {
+		key_bytes, err := json.Marshal(key)
+		if err != nil {
+			return err
+		}
+
+		value_bytes, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		err = w.Write([]string{string(key_bytes), string(value_bytes)})
+		if err != nil {
+			return err
+		}
+	}
+
+	w.Flush()
+	return nil
+}
+
+// Read behavior map from csv
+func ReadBehaviorMap(filename string) (map[BehaviorValue]TaintingVals, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	r := csv.NewReader(file)
+
+	if _, err := r.Read(); err != nil { // read header
+		return nil, err
+	}
+	behavior_map := make(map[BehaviorValue]TaintingVals)
+
+	for {
+		row, err := r.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return nil, err
+			}
+		}
+		behavior_value := BehaviorValue{}
+		tainting_vals := TaintingVals{Params: set.New[TaintingParam](0), Behaviors: set.New[TaintingBehavior](0)}
+
+		for i, col := range row {
+			if i == 0 {
+				err := json.Unmarshal([]byte(col), &behavior_value)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				err := json.Unmarshal([]byte(col), &tainting_vals)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+
+		behavior_map[behavior_value] = tainting_vals
+	}
+	return behavior_map, nil
 }

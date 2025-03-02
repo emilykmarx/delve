@@ -1109,7 +1109,7 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 // (May create multiple, e.g. for an array of strings).
 // Returns all relevant watchpoints, even if some existed,
 // unless some other error occurs along the way.
-// If already existed, don't return error (this is for ConfLens - may
+// If already existed, don't return error (this is for ConfTamer - may
 // break some existing delve tests).
 // If `move` (and not on stack): don't set it yet - record state to set it upon continue (so we can reach target http server)
 // (but still return info for client)
