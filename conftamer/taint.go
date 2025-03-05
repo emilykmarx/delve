@@ -1,6 +1,7 @@
 package conftamer
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -19,7 +20,6 @@ type TaintFlow uint8
 const (
 	DataFlow TaintFlow = 1 << iota
 	ControlFlow
-	DataAndControlFlow
 )
 
 // Get the ith lhs of an assignment on lineno
@@ -81,8 +81,16 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
  * ignoring function args (except builtins),
  * return the expression for the overlapping region, or "" if the entire region overlaps
  * (e.g. .field for struct, "" for int)
- * Requires expr to be in scope. */
+ * Requires expr to be in scope.
+ * If in branch body, always overlap. */
 func (tc *TaintCheck) isTainted(expr ast.Expr) *string {
+	if tc.hit.hit_bp.WatchType == 0 {
+		// We've been called for a bp hit in a branch body (not a wp hit)
+		overlap_expr := ""
+		println("isTainted blindly return true")
+		return &overlap_expr
+	}
+
 	var overlap_expr *string
 	found_overlap := ""
 	composite_lit := false
@@ -211,13 +219,25 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) bool {
 	return false
 }
 
-/* Assuming this line hits a watchpoint, record pending watchpoints for newly tainted exprs on line.
+/* Assuming this line hits a watchpoint (or we're in a branch body),
+ * record pending watchpoints for newly tainted exprs on line.
  * Accounts for aliased reads (i.e. those that don't match hit_bp.WatchExpr). */
 func (tc *TaintCheck) propagateTaint() {
+	// Don't use tc.thread's location since doesn't work for e.g. runtime hits
+	file := ""
+	line := 0
+	if tc.hit.hit_bp.WatchType != 0 {
+		file = tc.hit.hit_instr.Loc.File
+		line = tc.hit.hit_instr.Loc.Line
+	} else {
+		file = tc.hit.hit_bp.File
+		line = tc.hit.hit_bp.Line
+	}
+
 	fset := token.NewFileSet()
-	root, err := parser.ParseFile(fset, tc.hit.hit_instr.Loc.File, nil, parser.SkipObjectResolution)
+	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
-		log.Fatalf("Failed to parse source file %v: %v\n", tc.hit.hit_instr.Loc.File, err)
+		log.Fatalf("Failed to parse source file %v: %v\n", file, err)
 	}
 
 	// DFS of file's AST
@@ -229,13 +249,31 @@ func (tc *TaintCheck) propagateTaint() {
 			start = fset.Position(node.Pos())
 			end = fset.Position(node.End())
 		}
-		hit_line := tc.hit.hit_instr.Loc.Line
-		if !(start.Line <= hit_line && hit_line <= end.Line) {
+		if !(start.Line <= line && line <= end.Line) {
 			return true
 		}
 		// hit line is part of node
 
 		switch typed_node := node.(type) {
+		case *ast.IfStmt:
+			if start.Line == line {
+				else_start := 0
+				// Enter if[else] => record pending wp for beginning of both if and else branch bodies
+				body_end := fset.Position(typed_node.Body.Rbrace).Line - 1
+				if typed_node.Else != nil {
+					else_node := typed_node.Else.(*ast.BlockStmt)
+					body_end = fset.Position(else_node.Rbrace).Line - 1
+					else_start = fset.Position(else_node.Pos()).Line + 1
+				}
+				body_start := line + 1
+				fmt.Printf("IF STMT; if start %v, else start %v, body end %v\n", body_start, else_start, body_end)
+				pending_loc := tc.lineWithStmt(nil, start.Filename, body_start, tc.hit.frame)
+				tc.recordPendingWp("", pending_loc, nil, body_start, body_end)
+				if else_start != 0 {
+					pending_loc := tc.lineWithStmt(nil, start.Filename, else_start, tc.hit.frame)
+					tc.recordPendingWp("", pending_loc, nil, body_start, body_end)
+				}
+			}
 
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
@@ -245,7 +283,7 @@ func (tc *TaintCheck) propagateTaint() {
 					// Expr will be in scope, but can't set wp yet if runtime hit (often is, in memmove) -
 					// wps set from a newer frame will go OOS when exit that frame
 					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
-					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil)
+					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil, 0, 0)
 				}
 			} else if builtinFcts.Contains(call_expr) || casts.Contains(call_expr) || call_expr == "runtime.KeepAlive" {
 				// builtins will be handled in assign/range
@@ -257,7 +295,7 @@ func (tc *TaintCheck) propagateTaint() {
 					if overlap_expr := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
 						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 						// First line of function body (params are "fake" at declaration line)
-						tc.recordPendingWp(*overlap_expr, pending_loc, &i)
+						tc.recordPendingWp(*overlap_expr, pending_loc, &i, 0, 0)
 					}
 				}
 			}
@@ -271,13 +309,13 @@ func (tc *TaintCheck) propagateTaint() {
 					caller_lhs, caller_loc := tc.callerLhs(i)
 					// Line after calling line
 					watchexpr := exprToString(*caller_lhs) + *overlap_expr
-					tc.recordPendingWp(watchexpr, caller_loc, nil)
+					tc.recordPendingWp(watchexpr, caller_loc, nil, 0, 0)
 				}
 			}
 
 		// May not be next line linearly for := in flow control statement
 		// but if not, var immediately went out of scope so we don't need a wp anyway
-		// TODO except for if/else, maybe others
+		// TODO except for if/else (e.g. if{x=1}else{x=2}), maybe others
 		// And Range: If next line is }, set on next iter
 		// Need to handle case where never enter loop (never hit bp => main never terminates)
 		// ^ When fix this - keep in mind that wps go OOS when exit frame they're set in -
@@ -290,7 +328,7 @@ func (tc *TaintCheck) propagateTaint() {
 					pending_loc := tc.lineWithStmt(nil, end.Filename, end.Line+1, tc.hit.frame)
 					for _, lhs := range typed_node.Lhs {
 						watchexpr := exprToString(lhs) + *overlap_expr
-						tc.recordPendingWp(watchexpr, pending_loc, nil)
+						tc.recordPendingWp(watchexpr, pending_loc, nil, 0, 0)
 					}
 				}
 			}
@@ -301,7 +339,7 @@ func (tc *TaintCheck) propagateTaint() {
 				// Watched location is read on the rhs =>
 				// taint value expr
 				pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
-				tc.recordPendingWp(exprToString(typed_node.Value), pending_loc, nil)
+				tc.recordPendingWp(exprToString(typed_node.Value), pending_loc, nil, 0, 0)
 			}
 		} // end switch
 

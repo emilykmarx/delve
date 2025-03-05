@@ -60,17 +60,26 @@ func (tc *TaintCheck) forEachWatchaddr(watchpoint *api.Breakpoint, f func(watcha
 func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals) {
 	existing_taint := tc.mem_param_map[watchaddr]
 	new_taint := TaintingVals{
-		Params:    tainting_vals.Params.Union(existing_taint.Params),
-		Behaviors: tainting_vals.Behaviors.Union(existing_taint.Behaviors),
+		Params:    *tainting_vals.Params.Union(&existing_taint.Params),
+		Behaviors: *tainting_vals.Behaviors.Union(&existing_taint.Behaviors),
 	}
 	tc.mem_param_map[watchaddr] = new_taint
 	log.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr])
 }
 
+// Union together tainting vals in a pending wp
+func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals) {
+	new_taint := TaintingVals{
+		Params:    *tainting_vals.Params.Union(&pending_wp.tainting_vals.Params),
+		Behaviors: *tainting_vals.Behaviors.Union(&pending_wp.tainting_vals.Behaviors),
+	}
+	pending_wp.tainting_vals = new_taint
+}
+
 // pretty-print
 func (pendingwp PendingWp) String() string {
-	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v}",
-		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals)
+	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v branch body %v:%v}",
+		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals, pendingwp.body_start, pendingwp.body_end)
 }
 
 // Get line of source (as string)
@@ -234,7 +243,6 @@ func watchSize(wp *api.Breakpoint) uint64 {
 // Find the next line on or after this one with a statement, so we can set a bp.
 // TODO May want to consider doing this with PC when handle the non-linear stuff
 func (tc *TaintCheck) lineWithStmt(call_expr *string, file string, lineno int, frame int) api.Location {
-	log.Println("linewithStmt")
 	var loc string
 	if call_expr != nil {
 		decl_loc := tc.fnDecl(*call_expr, frame)
@@ -322,7 +330,7 @@ func (tc *TaintCheck) syscallBuf() (uint64, uint64) {
 }
 
 // Write behavior map to csv - unsure how to get rid of extra quotes (part of the RFC)
-func WriteBehaviorMap(filename string, behavior_map map[BehaviorValue]TaintingVals) error {
+func WriteBehaviorMap(filename string, behavior_map BehaviorMap) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -337,7 +345,7 @@ func WriteBehaviorMap(filename string, behavior_map map[BehaviorValue]TaintingVa
 			return err
 		}
 
-		value_bytes, err := json.Marshal(value)
+		value_bytes, err := json.Marshal(&value)
 		if err != nil {
 			return err
 		}
@@ -352,7 +360,7 @@ func WriteBehaviorMap(filename string, behavior_map map[BehaviorValue]TaintingVa
 }
 
 // Read behavior map from csv
-func ReadBehaviorMap(filename string) (map[BehaviorValue]TaintingVals, error) {
+func ReadBehaviorMap(filename string) (BehaviorMap, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -363,7 +371,7 @@ func ReadBehaviorMap(filename string) (map[BehaviorValue]TaintingVals, error) {
 	if _, err := r.Read(); err != nil { // read header
 		return nil, err
 	}
-	behavior_map := make(map[BehaviorValue]TaintingVals)
+	behavior_map := make(BehaviorMap)
 
 	for {
 		row, err := r.Read()
@@ -375,7 +383,7 @@ func ReadBehaviorMap(filename string) (map[BehaviorValue]TaintingVals, error) {
 			}
 		}
 		behavior_value := BehaviorValue{}
-		tainting_vals := TaintingVals{Params: set.New[TaintingParam](0), Behaviors: set.New[TaintingBehavior](0)}
+		tainting_vals := TaintingVals{Params: *set.New[TaintingParam](0), Behaviors: *set.New[TaintingBehavior](0)}
 
 		for i, col := range row {
 			if i == 0 {

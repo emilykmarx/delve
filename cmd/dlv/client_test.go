@@ -6,13 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-delve/delve/conftamer"
 	protest "github.com/go-delve/delve/pkg/proc/test"
+	"github.com/google/go-cmp/cmp"
 	set "github.com/hashicorp/go-set"
 )
 
@@ -36,25 +36,41 @@ func getClientBin(t *testing.T) string {
 	return clientbin
 }
 
+// Check behavior map read/write to file, and equality operations on it
 func TestReadWriteBehaviorMap(t *testing.T) {
-	param := conftamer.TaintingParam{Module: "param_module", Param: "param", Flow: conftamer.ControlFlow}
 	behavior := conftamer.BehaviorValue{Offset: 1, Send_endpoint: "send_endpoint", Recv_endpoint: "recv_endpoint", Transport: "tcp", Send_module: "send_module"}
 	tainting_behavior := conftamer.TaintingBehavior{
 		Behavior: behavior,
 		Flow:     conftamer.DataFlow,
 	}
-	behavior_map := make(map[conftamer.BehaviorValue]conftamer.TaintingVals)
 	tainting_vals := conftamer.TaintingVals{
-		Params:    set.From([]conftamer.TaintingParam{param}),
-		Behaviors: set.From([]conftamer.TaintingBehavior{tainting_behavior})}
+		// params empty to check empty sets can still marshal/unmarshal
+		Behaviors: *set.From([]conftamer.TaintingBehavior{tainting_behavior}),
+	}
+	behavior_map := make(conftamer.BehaviorMap)
 	behavior_map[behavior] = tainting_vals
 
 	file := filepath.Join(t.TempDir(), "behavior_map.csv")
 	assertNoError(conftamer.WriteBehaviorMap(file, behavior_map), t, "write")
 	behavior_map_2, err := conftamer.ReadBehaviorMap(file)
 	assertNoError(err, t, "read")
-	if !reflect.DeepEqual(behavior_map, behavior_map_2) {
-		t.Fatalf("Map before read %v != after %v\n", behavior_map, behavior_map_2)
+
+	// Check equality (and that read/write worked)
+	if diff := cmp.Diff(behavior_map, behavior_map_2); diff != "" {
+		t.Fatalf("Map before read != after\nDiff: %v\nBefore: %v\nAfter: %v",
+			diff, behavior_map, behavior_map_2)
+	}
+
+	// Check inequality
+	tainting_behavior.Flow = conftamer.ControlFlow
+	tainting_vals = conftamer.TaintingVals{
+		Behaviors: *set.From([]conftamer.TaintingBehavior{tainting_behavior}),
+	}
+	behavior_map[behavior] = tainting_vals
+
+	if diff := cmp.Diff(behavior_map, behavior_map_2); diff == "" {
+		t.Fatalf("Failed to detect inequality: %v vs %v\n",
+			behavior_map, behavior_map_2)
 	}
 }
 

@@ -3,11 +3,13 @@ module github.com/go-delve/delve
 go 1.21
 
 require (
+	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
 	github.com/cilium/ebpf v0.11.0
 	github.com/cosiner/argv v0.1.0
 	github.com/creack/pty v1.1.20
 	github.com/derekparker/trie v0.0.0-20230829180723-39f4de51ef7d
 	github.com/go-delve/liner v1.2.3-0.20231231155935-4726ab1d7f62
+	github.com/google/go-cmp v0.7.0
 	github.com/google/go-dap v0.12.0
 	github.com/hashicorp/go-set v0.1.13
 	github.com/hashicorp/golang-lru v1.0.2
@@ -21,7 +23,6 @@ require (
 	golang.org/x/sys v0.17.0
 	golang.org/x/tools v0.14.0
 	gopkg.in/yaml.v2 v2.4.0
-	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
 )
 
 require (
@@ -35,3 +36,5 @@ require (
 	golang.org/x/mod v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/hashicorp/go-set => ../go-set

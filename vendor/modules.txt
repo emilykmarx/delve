@@ -30,10 +30,17 @@ github.com/derekparker/trie
 # github.com/go-delve/liner v1.2.3-0.20231231155935-4726ab1d7f62
 ## explicit
 github.com/go-delve/liner
+# github.com/google/go-cmp v0.7.0
+## explicit; go 1.21
+github.com/google/go-cmp/cmp
+github.com/google/go-cmp/cmp/internal/diff
+github.com/google/go-cmp/cmp/internal/flags
+github.com/google/go-cmp/cmp/internal/function
+github.com/google/go-cmp/cmp/internal/value
 # github.com/google/go-dap v0.12.0
 ## explicit; go 1.18
 github.com/google/go-dap
-# github.com/hashicorp/go-set v0.1.13
+# github.com/hashicorp/go-set v0.1.13 => ../go-set
 ## explicit; go 1.18
 github.com/hashicorp/go-set
 # github.com/hashicorp/golang-lru v1.0.2
@@ -120,3 +127,4 @@ gopkg.in/yaml.v2
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
+# github.com/hashicorp/go-set => ../go-set
