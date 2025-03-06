@@ -1,8 +1,10 @@
 package conftamer
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -86,6 +88,9 @@ type TaintCheck struct {
 
 	// Behavior value => config/behavior values that taint it
 	behavior_map BehaviorMap
+
+	event_log             *csv.Writer
+	behavior_map_filename string
 }
 
 // Handle syscall entry bp hit - server returns it to us for message receives and tainted sends
@@ -102,6 +107,13 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 	if syscall_name == "syscall.write" {
 		// Send tainted message => add to behavior map its tainted offsets,
 		// i.e. region of send buf that overlaps watched region
+		sent_msg := BehaviorValue{
+			Offset:        0,
+			Send_endpoint: local, Recv_endpoint: remote, Transport: transport,
+			Send_module: tc.module,
+		}
+		event := Event{EventType: MessageSend, Address: bufstart, Size: bufsz, Expression: "", Behavior: &sent_msg}
+		WriteEvent(tc, tc.event_log, event)
 
 		// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
 		for buf_addr := bufstart; buf_addr < bufstart+bufsz; buf_addr++ {
@@ -109,12 +121,7 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 			if !ok {
 				continue
 			}
-			msg_offset := buf_addr - bufstart
-			sent_msg := BehaviorValue{
-				Offset:        msg_offset,
-				Send_endpoint: local, Recv_endpoint: remote, Transport: transport,
-				Send_module: tc.module,
-			}
+			sent_msg.Offset = buf_addr - bufstart
 			tc.behavior_map[sent_msg] = tainting_vals
 			// log for test
 			log.Printf("\tBehavior map: %+v => %+v\n", sent_msg, tainting_vals)
@@ -345,10 +352,8 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 		// For each created or existing watchpoint: update mem-config map, log
 		// TODO test for adding new taint to existing addr
 
-		// Log for testing (will also log dups)
-		// XXX add watchsz
-		log.Printf("CreateWatchpoint lineno %d watchexpr %s watchaddr 0x%x\n",
-			tc.hit.hit_bp.Line, watchpoint.WatchExpr, watchpoint.Addr)
+		event := Event{EventType: WatchpointSet, Address: watchpoint.Addr, Size: watchSize(watchpoint), Expression: watchexpr}
+		WriteEvent(tc, tc.event_log, event)
 
 		if !message {
 			tc.forEachWatchaddr(watchpoint, func(watchaddr uint64) bool {
@@ -371,11 +376,12 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 
 // Watchpoint hit => record any new pending watchpoints
 func (tc *TaintCheck) onWatchpointHit() {
-	log.Printf("\n\n*** Hit watchpoint for %v\n", tc.hit.hit_bp.WatchExpr)
 	if !tc.hittingLine() {
 		log.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
 		return
 	}
+	event := Event{EventType: WatchpointHit, Address: tc.hit.hit_bp.Addr, Size: watchSize(tc.hit.hit_bp), Expression: tc.hit.hit_bp.WatchExpr}
+	WriteEvent(tc, tc.event_log, event)
 	tc.propagateTaint()
 }
 
@@ -455,6 +461,8 @@ func (tc *TaintCheck) updateMovedWps() {
 // Run the target until exit
 func (tc *TaintCheck) Run() {
 	log.Printf("Starting CT-Scan\n\n")
+	defer WriteBehaviorMap(tc.behavior_map_filename, tc.behavior_map)
+
 	state := <-tc.client.Continue()
 
 	for ; !state.Exited; state = <-tc.client.Continue() {
@@ -497,21 +505,33 @@ func (tc *TaintCheck) Run() {
 	tc.client.Detach(false) // Also kills server, despite function doc (even on unmodified dlv)
 }
 
-func New(initial_bp_file string, initial_bp_line int, initial_watchexpr string, module string, move_wps bool) TaintCheck {
+func New(initial_bp_file string, initial_bp_line int, initial_watchexpr string, module string, move_wps bool,
+	event_log_filename string, behavior_map_filename string) (*TaintCheck, error) {
 	listenAddr := "localhost:4040"
 	client := rpc2.NewClient(listenAddr)
 
+	event_log_file, err := os.Create(event_log_filename)
+	if err != nil {
+		return nil, err
+	}
+
 	tc := TaintCheck{client: client,
-		module:        module,
-		move_wps:      move_wps,
-		pending_wps:   make(map[uint64]PendingWp),
-		mem_param_map: make(map[uint64]TaintingVals),
-		behavior_map:  make(BehaviorMap)}
+		module:                module,
+		move_wps:              move_wps,
+		pending_wps:           make(map[uint64]PendingWp),
+		mem_param_map:         make(map[uint64]TaintingVals),
+		behavior_map:          make(BehaviorMap),
+		event_log:             csv.NewWriter(event_log_file),
+		behavior_map_filename: behavior_map_filename,
+	}
+
+	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
+		"Timestamp", "Breakpoint/Watchpoint Hit Location (File Line PC)", "Thread"})
 
 	init_loc := tc.lineWithStmt(nil, initial_bp_file, initial_bp_line, 0)
 
 	// This will be replaced by a config breakpoint
 	log.Printf("Configuration variable: %v\n", initial_watchexpr)
 	tc.recordPendingWp(initial_watchexpr, init_loc, nil, 0, 0)
-	return tc
+	return &tc, nil
 }

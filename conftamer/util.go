@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	linuxproc "github.com/c9s/goprocinfo/linux"
 	"github.com/go-delve/delve/pkg/proc"
@@ -64,7 +65,9 @@ func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals Taintin
 		Behaviors: *tainting_vals.Behaviors.Union(&existing_taint.Behaviors),
 	}
 	tc.mem_param_map[watchaddr] = new_taint
-	log.Printf("\tMemory-parameter map: 0x%x => %+v\n", watchaddr, tc.mem_param_map[watchaddr])
+
+	event := Event{EventType: MemParamMapUpdate, Address: watchaddr, TaintingVals: &new_taint}
+	WriteEvent(tc, tc.event_log, event)
 }
 
 // Union together tainting vals in a pending wp
@@ -303,7 +306,6 @@ func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
 		if err != nil {
 			log.Panicf("ParseUint: %v", err)
 		}
-		log.Println(inode)
 	}
 
 	// 2. Get socket endpoints
@@ -314,7 +316,6 @@ func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
 	}
 	for _, sock := range tcp_socks.Sockets {
 		if sock.Inode == inode {
-			log.Printf("5-tuple: %v=>%v\n", sock.LocalAddress, sock.RemoteAddress)
 			return sock.LocalAddress, sock.RemoteAddress, "tcp"
 		}
 	}
@@ -327,6 +328,137 @@ func (tc *TaintCheck) syscallBuf() (uint64, uint64) {
 	bufstart := tc.register("Rcx")
 	bufsz := tc.register("Rdi")
 	return bufstart, bufsz
+}
+
+// Location assuming hit a wp or bp (tc.hit.hit_instr is only set for wp)
+func (tc *TaintCheck) hitLocation() (string, int, uint64) {
+	// Don't use tc.thread's location since doesn't work for e.g. runtime hits
+	if tc.hit.hit_bp.WatchType != 0 {
+		return tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line, tc.hit.hit_instr.Loc.PC
+	} else {
+		return tc.hit.hit_bp.File, tc.hit.hit_bp.Line, tc.hit.hit_bp.Addr
+	}
+}
+
+type EventType string
+
+const (
+	MessageSend       EventType = "Message send"
+	MessageRecv       EventType = "Message receive"
+	WatchpointHit     EventType = "Watchpoint hit"
+	WatchpointSet     EventType = "Watchpoint set"
+	MemParamMapUpdate EventType = "Mem-param map update"
+	BehaviorMapUpdate EventType = "Behavior map update"
+)
+
+// A row of the event log, for the columns that test will check
+// (so excludes e.g. timestamp)
+type Event struct {
+	EventType    EventType
+	Address      uint64
+	Size         uint64
+	Expression   string
+	Behavior     *BehaviorValue
+	TaintingVals *TaintingVals
+	Line         int // Filled in on read from csv
+}
+
+// Also used in test to print events
+func WriteEvent(tc *TaintCheck, w *csv.Writer, e Event) {
+	behavior := []byte{}
+	var err error
+	if e.Behavior != nil {
+		behavior, err = json.Marshal(e.Behavior)
+		if err != nil {
+			log.Fatalf("marshaling %v: %v\n", behavior, err.Error())
+		}
+	}
+	tainting_vals := []byte{}
+	if e.TaintingVals != nil {
+		tainting_vals, err = json.Marshal(e.TaintingVals)
+		if err != nil {
+			log.Fatalf("marshaling %v: %v\n", e.TaintingVals, err.Error())
+		}
+	}
+	var loc, goroutine string
+	if tc != nil {
+		file, line, addr := tc.hitLocation()
+		loc = fmt.Sprintf("%v %v %#x", file, line, addr)
+		goroutine = fmt.Sprintf("thread %v goroutine %v", tc.thread.GoroutineID, tc.thread.ID)
+	}
+	row := []string{string(e.EventType), fmt.Sprintf("%#x", e.Address), fmt.Sprintf("%#x", e.Size), e.Expression,
+		string(behavior), string(tainting_vals), time.Now().String(), loc, goroutine}
+
+	if err := w.WriteAll([][]string{row}); err != nil {
+		log.Fatalf("writing event %v: %v\n", row, err.Error())
+	}
+}
+
+func ReadEventLog(filename string) ([]Event, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	r := csv.NewReader(file)
+
+	if _, err := r.Read(); err != nil { // read header
+		return nil, err
+	}
+	events := []Event{}
+
+	for {
+		row, err := r.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				return nil, err
+			}
+		}
+		e := Event{}
+		e.EventType = EventType(row[0])
+		behavior_value := BehaviorValue{}
+		tainting_vals := TaintingVals{Params: *set.New[TaintingParam](0), Behaviors: *set.New[TaintingBehavior](0)}
+
+		for i, col := range row[1:3] {
+			num, err := strconv.ParseUint(col, 0, 64)
+			if err != nil {
+				return events, err
+			}
+			if i == 0 {
+				e.Address = num
+			} else {
+				e.Size = num
+			}
+		}
+		e.Expression = row[3]
+
+		if row[4] != "" {
+			err := json.Unmarshal([]byte(row[4]), &behavior_value)
+			if err != nil {
+				return events, err
+			}
+			e.Behavior = &behavior_value
+		}
+		if row[5] != "" {
+			err := json.Unmarshal([]byte(row[5]), &tainting_vals)
+			if err != nil {
+				return events, err
+			}
+			e.TaintingVals = &tainting_vals
+		}
+
+		line, err := strconv.Atoi(strings.Split(row[7], " ")[1])
+		if err != nil {
+			return events, err
+		}
+		e.Line = line
+
+		events = append(events, e)
+		// ignore timestamp for now
+	}
+	return events, nil
 }
 
 // Write behavior map to csv - unsure how to get rid of extra quotes (part of the RFC)

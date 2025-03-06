@@ -223,16 +223,7 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) bool {
  * record pending watchpoints for newly tainted exprs on line.
  * Accounts for aliased reads (i.e. those that don't match hit_bp.WatchExpr). */
 func (tc *TaintCheck) propagateTaint() {
-	// Don't use tc.thread's location since doesn't work for e.g. runtime hits
-	file := ""
-	line := 0
-	if tc.hit.hit_bp.WatchType != 0 {
-		file = tc.hit.hit_instr.Loc.File
-		line = tc.hit.hit_instr.Loc.Line
-	} else {
-		file = tc.hit.hit_bp.File
-		line = tc.hit.hit_bp.Line
-	}
+	file, line, _ := tc.hitLocation()
 
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
