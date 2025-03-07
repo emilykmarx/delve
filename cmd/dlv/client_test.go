@@ -19,13 +19,17 @@ import (
 	set "github.com/hashicorp/go-set"
 )
 
-const module = "test_module"
+const (
+	module   = "test_module"
+	move_wps = false // for tests other than the one specific to moving wps
+)
 
 // Notes:
 // Need to build target with fork of go that has allocator changes, so:
 // - If run from IDE, IDE needs to be set to use that fork
 // - Will build delve, client, and target with that fork of go, so they need to be compatible with it
 // (e.g. go 1.20.1 doesn't have max/min builtins)
+// Also, some things compile differently in go 1.20.1 vs 1.22.4 (in ways that matter for tests)
 
 // Build client
 func getClientBin(t *testing.T) string {
@@ -82,7 +86,7 @@ func TestReadWriteBehaviorMap(t *testing.T) {
 
 // Assuming `config` taints the entire watch region, append watchpoint set and
 // corresponding mem-param update events
-func simpleWatchpointSet(config string, watchexpr string, sz uint64, line int, flow ct.TaintFlow) []ct.Event {
+func watchpointSet(config string, watchexpr string, sz uint64, line int, flow ct.TaintFlow) []ct.Event {
 	events := []ct.Event{}
 	events = append(events, ct.Event{
 		EventType:  ct.WatchpointSet,
@@ -111,42 +115,79 @@ func simpleWatchpointSet(config string, watchexpr string, sz uint64, line int, f
 func TestControlFlow(t *testing.T) {
 	// 1. Set wp for config
 	config := "config"
-	expected_events := simpleWatchpointSet(config, config, uint64(len(config)), 10, ct.DataFlow)
+	expected_events :=
+		watchpointSet(config, config, uint64(len(config)), 10, ct.DataFlow)
 
 	// 2. Hit wp in if condition => propagate to maybe_tainted
-	expected_events = append(expected_events, ct.Event{
-		EventType: ct.WatchpointHit, Size: 6, Expression: config, Line: 16,
-	})
-
 	expected_events = append(expected_events,
-		simpleWatchpointSet(config, "maybe_tainted", 3, 22, ct.ControlFlow)...)
+		watchpointSet(config, "maybe_tainted", 3, 22, ct.ControlFlow)...)
 
 	fmt.Printf("initial expected: %v\n", expected_events)
-	run(t, "control_flow.go", expected_events, nil)
+	run(t, "control_flow.go", expected_events, nil, move_wps)
 }
 
 // Tests clear when another sw wp still exists on same page
 func TestCallAndAssign1(t *testing.T) {
 	config := "stack"
-	expected_events := simpleWatchpointSet(config, config, uint64(len(config)), 31, ct.DataFlow)
-	run(t, "call_assign_1.go", expected_events, nil)
+	expected_events :=
+		watchpointSet(config, config, uint64(8), 31, ct.DataFlow)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "spacer", uint64(8), 35, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "tainted_param", uint64(8), 15, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "tainted_param_2", uint64(8), 21, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "y", uint64(8), 42, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "z", uint64(8), 46, ct.DataFlow)...)
+
+	run(t, "call_assign_1.go", expected_events, nil, move_wps)
 }
 
 func TestCallAndAssign2(t *testing.T) {
-	expected_events := []ct.Event{}
-	run(t, "call_assign_2.go", expected_events, nil)
+	config := "stack"
+	expected_events :=
+		watchpointSet(config, config, uint64(8), 19, ct.DataFlow)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "tainted_param_2", uint64(8), 10, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "a", uint64(8), 22, ct.DataFlow)...)
+
+	run(t, "call_assign_2.go", expected_events, nil, move_wps)
 }
 
 func TestStrings(t *testing.T) {
-	expected_events := []ct.Event{}
-	run(t, "strings.go", expected_events, nil)
+	config := "s"
+	expected_events :=
+		watchpointSet(config, config, uint64(2), 15, ct.DataFlow)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "s2", uint64(6), 16, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "i", uint64(1), 19, ct.DataFlow)...)
+
+	run(t, "strings.go", expected_events, nil, move_wps)
 }
 
 func TestSliceRangeBuiltins(t *testing.T) {
-	expected_events := []ct.Event{}
+	config := "s"
+	expected_events :=
+		watchpointSet(config, config, uint64(2), 15, ct.DataFlow)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "s2", uint64(6), 16, ct.DataFlow)...)
 	// Client sets initial watch on conf.search => server sets wp on both strings
 	initial_watchexpr := "conf.search"
-	run(t, "slice_range_builtins.go", expected_events, &initial_watchexpr)
+	run(t, "slice_range_builtins.go", expected_events, &initial_watchexpr, move_wps)
 }
 
 // Slice of slices, array of slices/strings (slice of strings is in TestSliceRangeBuiltins)
@@ -157,76 +198,148 @@ func TestReferenceElems(t *testing.T) {
 	dir := "reference_elems/"
 
 	// Array of strings => set on each string
-	expected_events := []ct.Event{}
-	initial_watchexpr := "arr_strs"
-	run(t, dir+"arr_strs.go", expected_events, &initial_watchexpr)
+	config := "arr_strs"
+	expected_events :=
+		watchpointSet(config, config+"[0]", uint64(2), 10, ct.DataFlow)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[1]", uint64(5), 10, ct.DataFlow)...)
+
+	run(t, dir+"arr_strs.go", expected_events, &config, move_wps)
 
 	// Array of slices => set on each slice's strings
-	expected_events = []ct.Event{}
-	initial_watchexpr = "arr_slices"
-	run(t, dir+"arr_slices.go", expected_events, &initial_watchexpr)
+	config = "arr_slices"
+	expected_events =
+		watchpointSet(config, config+"[0][0]", uint64(2), 12, ct.DataFlow)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[0][1]", uint64(5), 12, ct.DataFlow)...)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[1][0]", uint64(3), 12, ct.DataFlow)...)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[1][1]", uint64(4), 12, ct.DataFlow)...)
+	run(t, dir+"arr_slices.go", expected_events, &config, move_wps)
 
 	// Slice of slices => set on each inner slice's strings
-	expected_events = []ct.Event{}
-	initial_watchexpr = "slice_slices"
-	run(t, dir+"slice_slices.go", expected_events, &initial_watchexpr)
+	config = "slice_slices"
+	expected_events =
+		watchpointSet(config, config+"[0][0]", uint64(2), 12, ct.DataFlow)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[0][1]", uint64(5), 12, ct.DataFlow)...)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[1][0]", uint64(3), 12, ct.DataFlow)...)
+	expected_events = append(expected_events,
+		watchpointSet(config, config+"[1][1]", uint64(4), 12, ct.DataFlow)...)
+
+	run(t, dir+"slice_slices.go", expected_events, &config, move_wps)
 }
 
 func TestMethods(t *testing.T) {
-	expected_events := []ct.Event{}
+	config := "nested.name.Data"
+	expected_events :=
+		watchpointSet(config, config, uint64(2), 39, ct.DataFlow)
 
-	run(t, "methods.go", expected_events, nil)
+	expected_events = append(expected_events,
+		watchpointSet(config, "recvr_callee.Data", uint64(2), 27, ct.DataFlow)...)
+
+	run(t, "methods.go", expected_events, nil, move_wps)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
 	// Compiler uses same memory for chars of both fqdn strings,
 	// so only expect wp for chars on 13
-	expected_events := []ct.Event{}
-	run(t, "funclit_goroutine.go", expected_events, nil)
+	config := "fqdn"
+	expected_events :=
+		watchpointSet(config, config, uint64(4), 14, ct.DataFlow)
+	run(t, "funclit_goroutine.go", expected_events, nil, move_wps)
 }
 
 func TestMultiRound(t *testing.T) {
-	expected_events := []ct.Event{}
+	config := "vars[0]"
+	expected_events :=
+		watchpointSet(config, config, uint64(8), 11, ct.DataFlow)
 
-	run(t, "multiround.go", expected_events, nil)
+	for i := 0; i < 5; i++ {
+		expected_events = append(expected_events,
+			watchpointSet(config, "vars[i]", uint64(8), 16, ct.DataFlow)...)
+	}
+
+	run(t, "multiround.go", expected_events, nil, move_wps)
 }
 
 func TestRuntimeHits(t *testing.T) {
-	expected_events := []ct.Event{
-		// uses same backing array for name and name_callee, but n.Data and n_caller.Data each have their own
-	}
+	config := "name"
+	expected_events :=
+		watchpointSet(config, config, uint64(2), 21, ct.DataFlow)
+	// uses same backing array for name and name_callee, but n.Data and n_caller.Data each have their own
 
-	run(t, "runtime_hits.go", expected_events, nil)
+	expected_events = append(expected_events,
+		watchpointSet(config, "n.Data[:]", uint64(255), 16, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "n_caller.Data", uint64(255), 22, ct.DataFlow)...)
+
+	run(t, "runtime_hits.go", expected_events, nil, move_wps)
 }
 
 func TestCasts(t *testing.T) {
-	expected_events := []ct.Event{}
+	config := "x"
+	expected_events :=
+		watchpointSet(config, config, uint64(8), 11, ct.DataFlow)
 
-	run(t, "casts.go", expected_events, nil)
+	expected_events = append(expected_events,
+		watchpointSet(config, "y", uint64(8), 13, ct.DataFlow)...)
+
+	run(t, "casts.go", expected_events, nil, move_wps)
 }
 
 func TestNetworkSend(t *testing.T) {
-	// XXX I think can replace by splitting network_recv in two
+	// XXX replace by splitting network_recv in two
 	expected_events := []ct.Event{}
 
-	run(t, "network_send.go", expected_events, nil)
+	run(t, "network_send.go", expected_events, nil, move_wps)
 }
 func TestNetworkRecv(t *testing.T) {
-	expected_events := []ct.Event{
-		// XXX need way to test m-c map update that has a behavior as value (not param)
-	}
+	expected_events := []ct.Event{}
 
-	run(t, "network_recv.go", expected_events, nil)
+	run(t, "network_recv.go", expected_events, nil, move_wps)
 }
 func TestStructs(t *testing.T) {
-	expected_events := []ct.Event{}
-	run(t, "structs.go", expected_events, nil)
+	config := "arr"
+	expected_events :=
+		watchpointSet(config, config, uint64(2), 26, ct.DataFlow)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "struct_lit.Data", uint64(2), 27, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "s.Data", uint64(2), 29, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "s_callee.Data", uint64(2), 20, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "s_caller.Data", uint64(2), 31, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "multiline_lit.Data", uint64(2), 36, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "nested.name.Data", uint64(2), 41, ct.DataFlow)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "nested2.name.Data", uint64(2), 44, ct.DataFlow)...)
+
+	run(t, "structs.go", expected_events, nil, move_wps)
 }
 
 func TestAllocatorHTTP(t *testing.T) {
-	expected_events := []ct.Event{}
+	config := "*ptr"
+	expected_events :=
+		watchpointSet(config, config, uint64(8), 27, ct.DataFlow)
 
-	run(t, "allocator_http.go", expected_events, nil)
+	expected_events = append(expected_events,
+		watchpointSet(config, "x", uint64(8), 31, ct.DataFlow)...)
+
+	run(t, "allocator_http.go", expected_events, nil, true)
 }
 
 /* TODO need to investigate this - per asm, doesn't seem like should be fake...
@@ -264,10 +377,9 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 	return os.Stdout.Write(p)
 }
 
-// Expect to set watchpoints for watchexprs on corresponding lines
 // Client's initial watchexpr is one in the first expected_log,
 // unless initial_watchexpr is passed
-func run(t *testing.T, testfile string, expected_events []ct.Event, initial_watchexpr *string) {
+func run(t *testing.T, testfile string, expected_events []ct.Event, initial_watchexpr *string, move_wps bool) {
 	// Start dlv server
 	listenAddr := "localhost:4040"
 	fixturePath := filepath.Join(protest.FindFixturesDir(), "conftamer", testfile)
@@ -312,11 +424,16 @@ func run(t *testing.T, testfile string, expected_events []ct.Event, initial_watc
 	}
 	init_line := expected_events[0].Line
 
-	event_log := filepath.Join(t.TempDir(), "event_log.csv")
-	behavior_map := filepath.Join(t.TempDir(), "behavior_map.csv")
+	event_log := "event_log.csv"
+	behavior_map := "behavior_map.csv"
+	if os.Getenv("CT_KEEP_CSVS") == "" {
+		event_log = filepath.Join(t.TempDir(), event_log)
+		behavior_map = filepath.Join(t.TempDir(), behavior_map)
+	}
+
 	client := exec.CommandContext(ctx, getClientBin(t),
 		"-initial_bp_file="+fixturePath, fmt.Sprintf("-initial_bp_line=%v", init_line),
-		"-initial_watchexpr="+init_watchexpr, "-module="+module, "-move_wps=false",
+		"-initial_watchexpr="+init_watchexpr, "-module="+module, fmt.Sprintf("-move_wps=%t", move_wps),
 		"-event_log_file="+event_log, "-behavior_map_file="+behavior_map)
 	if init_watchexpr == "" {
 		client = exec.CommandContext(ctx, getClientBin(t))
@@ -369,22 +486,27 @@ func checkEvents(t *testing.T, expected []ct.Event, event_log string) {
 
 	events, err := ct.ReadEventLog(event_log)
 	assertNoError(err, t, "read event log")
-	for i, actual := range events {
+	// Hits are present in actual but not expected => indices are not 1:1
+	expected_i := 0
+	for _, actual := range events {
 		if actual.EventType == ct.WatchpointSet {
 			// Don't know what address to expect (and doesn't matter)
-			assertEventsEqual(t, expected[i], actual, fmt.Sprintf("event %v wrong", i), true)
-			// Expect mem-param update next => fill in addresses
+			assertEventsEqual(t, expected[expected_i], actual, fmt.Sprintf("event %v wrong", expected_i), true)
+			// Expect mem-param update next (possibly with hits interspersed) => fill in addresses
 			offset := 0
 			for addr := actual.Address; addr < actual.Address+actual.Size; addr++ {
-				expected[i+offset+1].Address = addr
+				expected[expected_i+offset+1].Address = addr
 				offset++
 			}
 		} else if actual.EventType == ct.MemParamMapUpdate {
-			assertEventsEqual(t, expected[i], actual, fmt.Sprintf("event %v wrong", i), false)
+			assertEventsEqual(t, expected[expected_i], actual, fmt.Sprintf("event %v wrong", expected_i), false)
 		} else if actual.EventType == ct.WatchpointHit {
-			// Don't know what address to expect (and doesn't matter)
-			assertEventsEqual(t, expected[i], actual, fmt.Sprintf("event %v wrong", i), true)
+			// Ignore for now. Might be useful to test in some cases
+			// (i.e. if hit doesn't cause a new wp to be set in this case, but could in other cases), but
+			// annoying to figure out ground truth - whether/how many hits on a line depends on exactly how it compiles.
+			expected_i-- // won't advance in expected
 		}
+		expected_i++
 	}
 }
 func checkBehaviorMap(t *testing.T, expected_events []ct.Event, behavior_map string) {

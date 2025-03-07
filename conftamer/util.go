@@ -384,7 +384,7 @@ func WriteEvent(tc *TaintCheck, w *csv.Writer, e Event) {
 	if tc != nil {
 		file, line, addr := tc.hitLocation()
 		loc = fmt.Sprintf("%v %v %#x", file, line, addr)
-		goroutine = fmt.Sprintf("thread %v goroutine %v", tc.thread.GoroutineID, tc.thread.ID)
+		goroutine = fmt.Sprintf("thread %v goroutine %v", tc.thread.ID, tc.thread.GoroutineID)
 	}
 	row := []string{string(e.EventType), fmt.Sprintf("%#x", e.Address), fmt.Sprintf("%#x", e.Size), e.Expression,
 		string(behavior), string(tainting_vals), time.Now().String(), loc, goroutine}

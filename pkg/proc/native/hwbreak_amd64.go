@@ -7,7 +7,7 @@ import (
 
 func (t *nativeThread) writeHardwareBreakpoint(addr uint64, wtype proc.WatchType, idx uint8) error {
 	return t.withDebugRegisters(func(drs *amd64util.DebugRegisters) error {
-		return drs.SetBreakpoint(idx, addr, wtype.Read(), wtype.Write(), wtype.Size())
+		return drs.SetBreakpoint(idx, addr, wtype.Read(), wtype.Write(), (int)(wtype.Size()))
 	})
 }
 

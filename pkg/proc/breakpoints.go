@@ -173,7 +173,8 @@ const (
 )
 
 // WatchType is the watchpoint type
-type WatchType uint8
+// Type is lower 2 bits, size is the rest
+type WatchType uint64
 
 const (
 	WatchRead  WatchType = 1 << iota // 00000001
@@ -191,13 +192,14 @@ func (wtype WatchType) Write() bool {
 }
 
 // Size returns the size in bytes of the hardware breakpoint.
-func (wtype WatchType) Size() int {
-	return int(wtype >> 4)
+func (wtype WatchType) Size() int64 {
+	return int64(wtype >> 2)
 }
 
 // withSize returns a new HWBreakType with the size set to the specified value
-func (wtype WatchType) withSize(sz uint8) WatchType {
-	return WatchType((sz << 4) | uint8(wtype&0xf))
+func (wtype WatchType) withSize(sz int64) WatchType {
+	sz_ := uint64(sz)
+	return WatchType(sz_<<2 | uint64(wtype))
 }
 
 type WatchImpl int
@@ -725,7 +727,7 @@ func StackAddr(scope *EvalScope, addr uint64) bool {
 func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr string, watchaddr uint64, sz int64, wtype WatchType,
 	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
 
-	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(uint8(sz)), wimpl, cond)
+	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(sz), wimpl, cond)
 	if err != nil {
 		return bp, err
 	}
@@ -889,11 +891,15 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 		fake_wp := Breakpoint{
 			Addr:      xv.Addr,
 			WatchExpr: expr,
-			WatchType: wtype.withSize(uint8(xv.Watchsz)),
+			WatchType: wtype.withSize(xv.Watchsz),
 		}
 		return &fake_wp, nil
 	}
 
+	// xv.Watchsz is int64, but needs to fit in 62 bits due to WatchType format
+	if uint64(xv.Watchsz) > uint64(1)<<62-1 {
+		return nil, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz)
+	}
 	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
 	if err != nil {
 		return bp, err

@@ -760,6 +760,7 @@ func (procgrp *processGroup) stepOverBreakpoint(thread *nativeThread) error {
 			fmt.Printf("SoftwareWatchpointAtBreakpoint during resume(); thread %v\n", thread.ThreadID())
 			// Non-spurious segfault during step over sw bp
 			// (stepInstruction segfaulted and set bp to sw wp)
+			// TODO PC is one after the hitting instr, since we just stepped over it - ok to fix by setting thread.PC? Or could fix on client side
 			return SoftwareWatchpointAtBreakpoint{thread}
 		}
 

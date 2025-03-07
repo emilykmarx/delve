@@ -1326,7 +1326,7 @@ func watchTypeToBreakpointType(wtype proc.WatchType) breakpointType {
 func (p *gdbProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
 	kind := p.breakpointKind
 	if bp.WatchType != 0 {
-		kind = bp.WatchType.Size()
+		kind = int(bp.WatchType.Size())
 	}
 	return p.conn.setBreakpoint(bp.Addr, watchTypeToBreakpointType(bp.WatchType), kind)
 }
@@ -1334,7 +1334,7 @@ func (p *gdbProcess) WriteBreakpoint(bp *proc.Breakpoint) error {
 func (p *gdbProcess) EraseBreakpoint(bp *proc.Breakpoint) error {
 	kind := p.breakpointKind
 	if bp.WatchType != 0 {
-		kind = bp.WatchType.Size()
+		kind = int(bp.WatchType.Size())
 	}
 	return p.conn.clearBreakpoint(bp.Addr, watchTypeToBreakpointType(bp.WatchType), kind)
 }

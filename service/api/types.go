@@ -72,7 +72,7 @@ type TracepointResult struct {
 }
 
 // WatchType is the watchpoint type
-type WatchType uint8
+type WatchType uint64
 
 const (
 	WatchRead WatchType = 1 << iota

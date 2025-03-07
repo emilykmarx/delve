@@ -1135,7 +1135,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 		// Make recursive call for each element
 		for i := 0; i < int(slice.Xv.Len); i++ {
 			string_elem := fmt.Sprintf("%v[%v]", expr, i)
-			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl, write)
+			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl, move)
 			if _, ok := err.(proc.BreakpointExistsError); ok {
 				// If one already existed, add it to the list and continue to the others
 			} else if err != nil {

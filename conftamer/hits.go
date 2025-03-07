@@ -98,7 +98,7 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	// TODO check for partially loaded (in any calls with LoadConfig)
 	if err != nil {
-		log.Fatalf("Error getting stacktrace: %v\n", err)
+		log.Panicf("Error getting stacktrace: %v\n", err)
 	}
 
 	syscall_name := stack[3].Function.Name()
@@ -154,7 +154,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	// TODO check for partially loaded (in any calls with LoadConfig)
 	if err != nil {
-		log.Fatalf("Error getting stacktrace: %v\n", err)
+		log.Panicf("Error getting stacktrace: %v\n", err)
 	}
 
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
@@ -190,7 +190,7 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
 	}
 	fct_instr, err := tc.client.DisassemblePC(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, pc, api.IntelFlavour) // dst, src
 	if err != nil {
-		log.Fatalf("Error disassembling at PC 0x%x: %v\n", pc, err)
+		log.Panicf("Error disassembling at PC 0x%x: %v\n", pc, err)
 	}
 
 	for i, instr := range fct_instr {
@@ -205,7 +205,7 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
 		}
 	}
 
-	log.Fatalf("Failed to find instruction at PC 0x%x: %v\n", pc, err)
+	log.Panicf("Failed to find instruction at PC 0x%x: %v\n", pc, err)
 }
 
 /* Get source line corresponding to hit.
@@ -226,14 +226,9 @@ func (tc *TaintCheck) hittingLine() bool {
 	}
 
 	if src_line == "" {
-		log.Fatalf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
+		log.Panicf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
 	}
 
-	log.Printf("Location:\n %v:%v (0x%x)\n",
-		tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line, tc.hit.hit_instr.Loc.PC)
-	log.Println(tc.hit.hit_instr.Loc.Function.Name())
-	log.Println(src_line)
-	log.Println(tc.hit.hit_instr.Text)
 	return true
 }
 
@@ -256,7 +251,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
 
 			tainting_vals, ok := tc.mem_param_map[hit_wp_addr]
 			if !ok {
-				log.Fatalf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
+				log.Panicf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
 			}
 
 			// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
@@ -293,7 +288,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
 			cur_bp_addr := tc.hit.hit_bp.Addrs[0]
 			cur_info, existed := tc.pending_wps[cur_bp_addr]
 			if !existed {
-				log.Fatalf("Expected to find pending_wp at addr %#x in branch body\n", cur_bp_addr)
+				log.Panicf("Expected to find pending_wp at addr %#x in branch body\n", cur_bp_addr)
 			}
 			existing_info.updateTaintingVals(cur_info.tainting_vals)
 			existing_info.body_start = cur_info.body_start
@@ -324,7 +319,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
 func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 	// Nothing left pending at this bp addr
 	if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
-		log.Fatalf("Failed to clear bp at 0x%x: %v\n", bp_addr, err)
+		log.Panicf("Failed to clear bp at 0x%x: %v\n", bp_addr, err)
 	}
 	delete(tc.pending_wps, bp_addr)
 }
@@ -339,12 +334,12 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 	// We really want a read-only wp, but not supported
 	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.move_wps)
 	if err != nil {
-		log.Fatalf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
+		log.Panicf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
 	} else if len(watchpoints) == 0 {
-		log.Fatalf("Debugger returned no watchpoints for %v\n", watchexpr)
+		log.Panicf("Debugger returned no watchpoints for %v\n", watchexpr)
 	}
 	if message && len(watchpoints) > 1 {
-		log.Fatalf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals.Behaviors.Slice()[0])
+		log.Panicf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals.Behaviors.Slice()[0])
 	}
 
 	// Add pre-move addresses to m-c - will update after next Continue()
@@ -352,7 +347,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 		// For each created or existing watchpoint: update mem-config map, log
 		// TODO test for adding new taint to existing addr
 
-		event := Event{EventType: WatchpointSet, Address: watchpoint.Addr, Size: watchSize(watchpoint), Expression: watchexpr}
+		event := Event{EventType: WatchpointSet, Address: watchpoint.Addr, Size: watchSize(watchpoint), Expression: watchpoint.WatchExpr}
 		WriteEvent(tc, tc.event_log, event)
 
 		if !message {
@@ -388,7 +383,7 @@ func (tc *TaintCheck) onWatchpointHit() {
 // Breakpoint for pending watchpoint hit => try to set the watchpoint
 func (tc *TaintCheck) onPendingWpBpHit() {
 	if len(tc.hit.hit_bp.Addrs) != 1 {
-		log.Fatalf("Wrong number of addrs at pending wp; bp %+v\n", tc.hit.hit_bp)
+		log.Panicf("Wrong number of addrs at pending wp; bp %+v\n", tc.hit.hit_bp)
 	}
 
 	bp_addr := tc.hit.hit_bp.Addrs[0]
@@ -399,7 +394,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 	}()
 
 	if info.watchexprs.Empty() && len(info.watchargs) == 0 {
-		log.Fatalf("No pending watches found after hitting 0x%x\n", bp_addr)
+		log.Panicf("No pending watches found after hitting 0x%x\n", bp_addr)
 	}
 
 	line := tc.hit.hit_bp.Line
@@ -427,7 +422,7 @@ func (tc *TaintCheck) onPendingWpBpHit() {
 		// if method, args include receiver as arg 0 (as we did when recording argno)
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
-			log.Fatalf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
+			log.Panicf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
 		}
 		watchexpr := args[argno].Name + overlap_expr
 		tc.setWatchpoint(watchexpr, info.tainting_vals, false)
@@ -440,7 +435,7 @@ func (tc *TaintCheck) updateMovedWps() {
 	// TODO: add a test for stack adjust - happens in xenon, but not deterministically
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
-		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+		log.Panicf("Error listing breakpoints: %v\n", list_err)
 	}
 	for _, bp := range bps {
 		new_addr := bp.Addr
@@ -467,7 +462,7 @@ func (tc *TaintCheck) Run() {
 
 	for ; !state.Exited; state = <-tc.client.Continue() {
 		if state.Err != nil {
-			log.Fatalf("Error in debugger state: %v\n", state.Err)
+			log.Panicf("Error in debugger state: %v\n", state.Err)
 		}
 		tc.updateMovedWps()
 
