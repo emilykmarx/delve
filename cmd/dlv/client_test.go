@@ -86,7 +86,9 @@ func TestReadWriteBehaviorMap(t *testing.T) {
 
 // Assuming `config` taints the entire watch region, append watchpoint set and
 // corresponding mem-param update events
-func watchpointSet(config string, watchexpr string, sz uint64, line int, flow ct.TaintFlow) []ct.Event {
+// If additional taint is passed, add that
+func watchpointSet(config string, watchexpr string, sz uint64, line int, flow ct.TaintFlow,
+	extra_tainting_param *ct.TaintingParam) []ct.Event {
 	events := []ct.Event{}
 	events = append(events, ct.Event{
 		EventType:  ct.WatchpointSet,
@@ -100,8 +102,12 @@ func watchpointSet(config string, watchexpr string, sz uint64, line int, flow ct
 		Param:  config,
 		Flow:   flow,
 	}
+	tainting_params := set.From([]ct.TaintingParam{tainting_param})
+	if extra_tainting_param != nil {
+		tainting_params.Insert(*extra_tainting_param)
+	}
 	tainting_vals := ct.TaintingVals{
-		Params: *set.From([]ct.TaintingParam{tainting_param}),
+		Params: *tainting_params,
 	}
 	for offset := uint64(0); offset < sz; offset++ {
 		events = append(events, ct.Event{
@@ -116,13 +122,35 @@ func TestControlFlow(t *testing.T) {
 	// 1. Set wp for config
 	config := "config"
 	expected_events :=
-		watchpointSet(config, config, uint64(len(config)), 10, ct.DataFlow)
+		watchpointSet(config, config, uint64(len(config)), 10, ct.DataFlow, nil)
 
 	// 2. Hit wp in if condition => propagate to maybe_tainted
 	expected_events = append(expected_events,
-		watchpointSet(config, "maybe_tainted", 3, 22, ct.ControlFlow)...)
+		watchpointSet(config, "maybe_tainted", 3, 18, ct.ControlFlow, nil)...)
 
-	fmt.Printf("initial expected: %v\n", expected_events)
+	expected_events = append(expected_events,
+		watchpointSet(config, "maybe_tainted_2", 1, 21, ct.ControlFlow, nil)...)
+
+	dataflow_taint := ct.TaintingParam{
+		Module: module,
+		Param:  config,
+		Flow:   ct.DataFlow,
+	}
+	expected_events = append(expected_events,
+		watchpointSet(config, "regular", 1, 22, ct.ControlFlow, &dataflow_taint)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "maybe_tainted_3", 1, 31, ct.ControlFlow, nil)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "maybe_tainted_4", 1, 38, ct.ControlFlow, nil)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "i", 1, 39, ct.ControlFlow, nil)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(config, "j", 1, 40, ct.DataFlow, nil)...)
+
 	run(t, "control_flow.go", expected_events, nil, move_wps)
 }
 
@@ -130,22 +158,22 @@ func TestControlFlow(t *testing.T) {
 func TestCallAndAssign1(t *testing.T) {
 	config := "stack"
 	expected_events :=
-		watchpointSet(config, config, uint64(8), 31, ct.DataFlow)
+		watchpointSet(config, config, uint64(8), 31, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "spacer", uint64(8), 35, ct.DataFlow)...)
+		watchpointSet(config, "spacer", uint64(8), 35, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "tainted_param", uint64(8), 15, ct.DataFlow)...)
+		watchpointSet(config, "tainted_param", uint64(8), 15, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "tainted_param_2", uint64(8), 21, ct.DataFlow)...)
+		watchpointSet(config, "tainted_param_2", uint64(8), 21, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "y", uint64(8), 42, ct.DataFlow)...)
+		watchpointSet(config, "y", uint64(8), 42, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "z", uint64(8), 46, ct.DataFlow)...)
+		watchpointSet(config, "z", uint64(8), 46, ct.DataFlow, nil)...)
 
 	run(t, "call_assign_1.go", expected_events, nil, move_wps)
 }
@@ -153,13 +181,13 @@ func TestCallAndAssign1(t *testing.T) {
 func TestCallAndAssign2(t *testing.T) {
 	config := "stack"
 	expected_events :=
-		watchpointSet(config, config, uint64(8), 19, ct.DataFlow)
+		watchpointSet(config, config, uint64(8), 19, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "tainted_param_2", uint64(8), 10, ct.DataFlow)...)
+		watchpointSet(config, "tainted_param_2", uint64(8), 10, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "a", uint64(8), 22, ct.DataFlow)...)
+		watchpointSet(config, "a", uint64(8), 22, ct.DataFlow, nil)...)
 
 	run(t, "call_assign_2.go", expected_events, nil, move_wps)
 }
@@ -167,13 +195,13 @@ func TestCallAndAssign2(t *testing.T) {
 func TestStrings(t *testing.T) {
 	config := "s"
 	expected_events :=
-		watchpointSet(config, config, uint64(2), 15, ct.DataFlow)
+		watchpointSet(config, config, uint64(2), 15, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "s2", uint64(6), 16, ct.DataFlow)...)
+		watchpointSet(config, "s2", uint64(6), 16, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "i", uint64(1), 19, ct.DataFlow)...)
+		watchpointSet(config, "i", uint64(1), 19, ct.DataFlow, nil)...)
 
 	run(t, "strings.go", expected_events, nil, move_wps)
 }
@@ -181,10 +209,10 @@ func TestStrings(t *testing.T) {
 func TestSliceRangeBuiltins(t *testing.T) {
 	config := "s"
 	expected_events :=
-		watchpointSet(config, config, uint64(2), 15, ct.DataFlow)
+		watchpointSet(config, config, uint64(2), 15, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "s2", uint64(6), 16, ct.DataFlow)...)
+		watchpointSet(config, "s2", uint64(6), 16, ct.DataFlow, nil)...)
 	// Client sets initial watch on conf.search => server sets wp on both strings
 	initial_watchexpr := "conf.search"
 	run(t, "slice_range_builtins.go", expected_events, &initial_watchexpr, move_wps)
@@ -200,34 +228,34 @@ func TestReferenceElems(t *testing.T) {
 	// Array of strings => set on each string
 	config := "arr_strs"
 	expected_events :=
-		watchpointSet(config, config+"[0]", uint64(2), 10, ct.DataFlow)
+		watchpointSet(config, config+"[0]", uint64(2), 10, ct.DataFlow, nil)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[1]", uint64(5), 10, ct.DataFlow)...)
+		watchpointSet(config, config+"[1]", uint64(5), 10, ct.DataFlow, nil)...)
 
 	run(t, dir+"arr_strs.go", expected_events, &config, move_wps)
 
 	// Array of slices => set on each slice's strings
 	config = "arr_slices"
 	expected_events =
-		watchpointSet(config, config+"[0][0]", uint64(2), 12, ct.DataFlow)
+		watchpointSet(config, config+"[0][0]", uint64(2), 12, ct.DataFlow, nil)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[0][1]", uint64(5), 12, ct.DataFlow)...)
+		watchpointSet(config, config+"[0][1]", uint64(5), 12, ct.DataFlow, nil)...)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[1][0]", uint64(3), 12, ct.DataFlow)...)
+		watchpointSet(config, config+"[1][0]", uint64(3), 12, ct.DataFlow, nil)...)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[1][1]", uint64(4), 12, ct.DataFlow)...)
+		watchpointSet(config, config+"[1][1]", uint64(4), 12, ct.DataFlow, nil)...)
 	run(t, dir+"arr_slices.go", expected_events, &config, move_wps)
 
 	// Slice of slices => set on each inner slice's strings
 	config = "slice_slices"
 	expected_events =
-		watchpointSet(config, config+"[0][0]", uint64(2), 12, ct.DataFlow)
+		watchpointSet(config, config+"[0][0]", uint64(2), 12, ct.DataFlow, nil)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[0][1]", uint64(5), 12, ct.DataFlow)...)
+		watchpointSet(config, config+"[0][1]", uint64(5), 12, ct.DataFlow, nil)...)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[1][0]", uint64(3), 12, ct.DataFlow)...)
+		watchpointSet(config, config+"[1][0]", uint64(3), 12, ct.DataFlow, nil)...)
 	expected_events = append(expected_events,
-		watchpointSet(config, config+"[1][1]", uint64(4), 12, ct.DataFlow)...)
+		watchpointSet(config, config+"[1][1]", uint64(4), 12, ct.DataFlow, nil)...)
 
 	run(t, dir+"slice_slices.go", expected_events, &config, move_wps)
 }
@@ -235,10 +263,10 @@ func TestReferenceElems(t *testing.T) {
 func TestMethods(t *testing.T) {
 	config := "nested.name.Data"
 	expected_events :=
-		watchpointSet(config, config, uint64(2), 39, ct.DataFlow)
+		watchpointSet(config, config, uint64(2), 39, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "recvr_callee.Data", uint64(2), 27, ct.DataFlow)...)
+		watchpointSet(config, "recvr_callee.Data", uint64(2), 27, ct.DataFlow, nil)...)
 
 	run(t, "methods.go", expected_events, nil, move_wps)
 }
@@ -248,18 +276,18 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	// so only expect wp for chars on 13
 	config := "fqdn"
 	expected_events :=
-		watchpointSet(config, config, uint64(4), 14, ct.DataFlow)
+		watchpointSet(config, config, uint64(4), 14, ct.DataFlow, nil)
 	run(t, "funclit_goroutine.go", expected_events, nil, move_wps)
 }
 
 func TestMultiRound(t *testing.T) {
 	config := "vars[0]"
 	expected_events :=
-		watchpointSet(config, config, uint64(8), 11, ct.DataFlow)
+		watchpointSet(config, config, uint64(8), 11, ct.DataFlow, nil)
 
 	for i := 0; i < 5; i++ {
 		expected_events = append(expected_events,
-			watchpointSet(config, "vars[i]", uint64(8), 16, ct.DataFlow)...)
+			watchpointSet(config, "vars[i]", uint64(8), 16, ct.DataFlow, nil)...)
 	}
 
 	run(t, "multiround.go", expected_events, nil, move_wps)
@@ -268,14 +296,14 @@ func TestMultiRound(t *testing.T) {
 func TestRuntimeHits(t *testing.T) {
 	config := "name"
 	expected_events :=
-		watchpointSet(config, config, uint64(2), 21, ct.DataFlow)
+		watchpointSet(config, config, uint64(2), 21, ct.DataFlow, nil)
 	// uses same backing array for name and name_callee, but n.Data and n_caller.Data each have their own
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "n.Data[:]", uint64(255), 16, ct.DataFlow)...)
+		watchpointSet(config, "n.Data[:]", uint64(255), 16, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "n_caller.Data", uint64(255), 22, ct.DataFlow)...)
+		watchpointSet(config, "n_caller.Data", uint64(255), 22, ct.DataFlow, nil)...)
 
 	run(t, "runtime_hits.go", expected_events, nil, move_wps)
 }
@@ -283,10 +311,10 @@ func TestRuntimeHits(t *testing.T) {
 func TestCasts(t *testing.T) {
 	config := "x"
 	expected_events :=
-		watchpointSet(config, config, uint64(8), 11, ct.DataFlow)
+		watchpointSet(config, config, uint64(8), 11, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "y", uint64(8), 13, ct.DataFlow)...)
+		watchpointSet(config, "y", uint64(8), 13, ct.DataFlow, nil)...)
 
 	run(t, "casts.go", expected_events, nil, move_wps)
 }
@@ -305,28 +333,28 @@ func TestNetworkRecv(t *testing.T) {
 func TestStructs(t *testing.T) {
 	config := "arr"
 	expected_events :=
-		watchpointSet(config, config, uint64(2), 26, ct.DataFlow)
+		watchpointSet(config, config, uint64(2), 26, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "struct_lit.Data", uint64(2), 27, ct.DataFlow)...)
+		watchpointSet(config, "struct_lit.Data", uint64(2), 27, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "s.Data", uint64(2), 29, ct.DataFlow)...)
+		watchpointSet(config, "s.Data", uint64(2), 29, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "s_callee.Data", uint64(2), 20, ct.DataFlow)...)
+		watchpointSet(config, "s_callee.Data", uint64(2), 20, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "s_caller.Data", uint64(2), 31, ct.DataFlow)...)
+		watchpointSet(config, "s_caller.Data", uint64(2), 31, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "multiline_lit.Data", uint64(2), 36, ct.DataFlow)...)
+		watchpointSet(config, "multiline_lit.Data", uint64(2), 36, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "nested.name.Data", uint64(2), 41, ct.DataFlow)...)
+		watchpointSet(config, "nested.name.Data", uint64(2), 41, ct.DataFlow, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "nested2.name.Data", uint64(2), 44, ct.DataFlow)...)
+		watchpointSet(config, "nested2.name.Data", uint64(2), 44, ct.DataFlow, nil)...)
 
 	run(t, "structs.go", expected_events, nil, move_wps)
 }
@@ -334,10 +362,10 @@ func TestStructs(t *testing.T) {
 func TestAllocatorHTTP(t *testing.T) {
 	config := "*ptr"
 	expected_events :=
-		watchpointSet(config, config, uint64(8), 27, ct.DataFlow)
+		watchpointSet(config, config, uint64(8), 27, ct.DataFlow, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(config, "x", uint64(8), 31, ct.DataFlow)...)
+		watchpointSet(config, "x", uint64(8), 31, ct.DataFlow, nil)...)
 
 	run(t, "allocator_http.go", expected_events, nil, true)
 }
