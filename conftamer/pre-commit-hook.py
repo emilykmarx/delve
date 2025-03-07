@@ -3,7 +3,7 @@
 import subprocess
 
 subprocess.check_output('go install github.com/go-delve/delve/cmd/dlv', shell=True, text=True)
-subprocess.check_output('go build github.com/go-delve/delve/cmd/dlv/dlv_config_client', shell=True, text=True)
+subprocess.check_output('go build github.com/go-delve/delve/cmd/dlv/conftamer_main', shell=True, text=True)
 
 '''
 Running all the tests with a single regex command causes the second wp test to fail due to bad siginfo:
@@ -27,7 +27,7 @@ for i, test_group in enumerate(['Watchpoint', 'Client']):
   print(f'{test_group} tests: {tests}')
 
   for test in tests:
-    test_cmd = f'go test -v -timeout 30s -run {test} github.com/go-delve/delve/{test_path} -count=1 -failfast'
+    test_cmd = f'/home/emily/projects/wtf_project/go1.20.1/bin/go test -v -timeout 30s -run {test} github.com/go-delve/delve/{test_path} -count=1 -failfast'
     print(test_cmd)
     try:
       p = subprocess.run(test_cmd, shell=True, check=True, text=True, capture_output=True)

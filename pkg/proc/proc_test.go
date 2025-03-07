@@ -5471,7 +5471,7 @@ func assertWpOOS(t *testing.T, p *proc.Target, grp *proc.TargetGroup, wp_oos_pc 
 
 // Tests instruction that hits sw bp and (spuriously) segfaults
 func TestWatchpointsSoftwareSpuriousSwWpAtBp(t *testing.T) {
-	withTestProcessArgs("dlv_config_client/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
+	withTestProcessArgs("conftamer/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 			// Get to bp
 			setFileBreakpoint(p, t, fixture.Source, 11)
@@ -5498,10 +5498,10 @@ func TestWatchpointsSoftwareSpuriousSwWpAtBp(t *testing.T) {
 }
 
 // Tests instruction that hits sw bp and non-spuriously segfaults
-// Instruction is hardcoded - need to run with go 1.20.1 to pass
+// PC is hardcoded - need to run with go 1.20.1, and any modifications to go fork may require updating the PC.
 // (tried to get it properly by modifying FindFileLocation, but wasn't obvious how (`pcs` only has first 2 in line))
 func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
-	withTestProcessArgs("dlv_config_client/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
+	withTestProcessArgs("conftamer/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 			// Get to where x in scope
 			setFileBreakpoint(p, t, fixture.Source, 11)
@@ -5514,7 +5514,7 @@ func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
 			watchpoint, err := p.SetWatchpoint(100, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			wp_oos_pc := getWpOOSPC(p)
 			assertNoError(err, t, "SetWatchpoint")
-			access_instr := 0x49d4b1
+			access_instr := 0x49d3b1
 			breakpoint, err := p.SetBreakpoint(101, uint64(access_instr), proc.UserBreakpoint, nil)
 			assertNoError(err, t, "Set bp at access instr")
 			// continue to bp hit
@@ -5538,7 +5538,7 @@ func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
 }
 
 func TestWatchpointsSoftwareNoPrints(t *testing.T) {
-	withTestProcessArgs("dlv_config_client/sw_wp_no_prints", t, ".", []string{}, protest.AllNonOptimized,
+	withTestProcessArgs("conftamer/sw_wp_no_prints", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 			// Get to bp
 			setFileBreakpoint(p, t, fixture.Source, 11)
@@ -5714,7 +5714,7 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 // (write returns only if non-spurious, read returns always, other syscalls never return).
 // Page should be re-mprotected once syscall finishes.
 func TestWatchpointsSyscallArgFault(t *testing.T) {
-	withTestProcessArgs("dlv_config_client/syscall_arg_fault", t, ".", []string{}, protest.AllNonOptimized,
+	withTestProcessArgs("conftamer/syscall_arg_fault", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 			// 1. Set wp on syscall arg (force situation where arg would fault)
 			setFileBreakpoint(p, t, fixture.Source, 15)

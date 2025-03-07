@@ -66,7 +66,7 @@ func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals Taintin
 	}
 	tc.mem_param_map[watchaddr] = new_taint
 
-	event := Event{EventType: MemParamMapUpdate, Address: watchaddr, TaintingVals: &new_taint}
+	event := Event{EventType: MemParamMapUpdate, Address: watchaddr, Size: 1, TaintingVals: &new_taint}
 	WriteEvent(tc, tc.event_log, event)
 }
 
@@ -354,11 +354,19 @@ const (
 // A row of the event log, for the columns that test will check
 // (so excludes e.g. timestamp)
 type Event struct {
-	EventType    EventType
-	Address      uint64
-	Size         uint64
-	Expression   string
-	Behavior     *BehaviorValue
+	EventType EventType
+	// Address of memory region
+	// Unused for BehaviorMapUpdate
+	Address uint64
+	// Size of memory region
+	// Used for all (always 1 for map updates, since entries are per byte)
+	Size uint64
+	// Only used for WatchpointHit/WatchpointSet
+	Expression string
+	// Only used for MessageSend/MessageRecv and BehaviorMapUpdate (for behavior map, is key)
+	// For MessageSend/MessageRecv, offset is 0
+	Behavior *BehaviorValue
+	// Only used for MemParamMapUpdate/BehaviorMapUpdate
 	TaintingVals *TaintingVals
 	Line         int // Filled in on read from csv
 }

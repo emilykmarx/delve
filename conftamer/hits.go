@@ -112,7 +112,7 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 			Send_endpoint: local, Recv_endpoint: remote, Transport: transport,
 			Send_module: tc.module,
 		}
-		event := Event{EventType: MessageSend, Address: bufstart, Size: bufsz, Expression: "", Behavior: &sent_msg}
+		event := Event{EventType: MessageSend, Address: bufstart, Size: bufsz, Behavior: &sent_msg}
 		WriteEvent(tc, tc.event_log, event)
 
 		// TODO handle other syscalls that do network send and file open (e.g. mmap, munmap)
@@ -123,15 +123,19 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 			}
 			sent_msg.Offset = buf_addr - bufstart
 			tc.behavior_map[sent_msg] = tainting_vals
-			// log for test
-			log.Printf("\tBehavior map: %+v => %+v\n", sent_msg, tainting_vals)
+			event := Event{EventType: BehaviorMapUpdate, Size: 1, Behavior: &sent_msg, TaintingVals: &tainting_vals}
+			WriteEvent(tc, tc.event_log, event)
 		}
 	} else if syscall_name == "syscall.read" {
 		// Receive message => set watchpoint on entire receive buffer
 		recvd_msg := BehaviorValue{
-			Offset:        bufsz,
+			Offset:        0,
 			Send_endpoint: remote, Recv_endpoint: local, Transport: transport,
 		}
+		event := Event{EventType: MessageRecv, Address: bufstart, Size: bufsz, Behavior: &recvd_msg}
+		WriteEvent(tc, tc.event_log, event)
+
+		recvd_msg.Offset = bufsz // Used in setWatchpoint
 		tainting_msg := TaintingBehavior{
 			Behavior: recvd_msg,
 			Flow:     DataFlow,
@@ -375,7 +379,7 @@ func (tc *TaintCheck) onWatchpointHit() {
 		log.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
 		return
 	}
-	event := Event{EventType: WatchpointHit, Address: tc.hit.hit_bp.Addr, Size: watchSize(tc.hit.hit_bp), Expression: tc.hit.hit_bp.WatchExpr}
+	event := Event{EventType: WatchpointHit, Address: tc.hit.hit_bp.Addr, Size: 1, Expression: tc.hit.hit_bp.WatchExpr}
 	WriteEvent(tc, tc.event_log, event)
 	tc.propagateTaint()
 }

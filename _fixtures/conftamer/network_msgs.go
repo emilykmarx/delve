@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-func server(endpoint string) {
-	l, err := net.Listen("tcp", endpoint)
+func server(server_endpoint string) {
+	l, err := net.Listen("tcp", server_endpoint)
 	if err != nil {
 		log.Panicf("Listen: %v\n", err.Error())
 	}
@@ -20,6 +20,7 @@ func server(endpoint string) {
 	}
 
 	var recvd_msg [3]byte            // untainted (and nothing else is tainted, so won't fault)
+	time.Sleep(1 * time.Second)      // wait for client to write
 	_, err = conn.Read(recvd_msg[:]) // recvd_msg passed to `read` syscall => return to client, set wp on it
 	if err != nil {
 		log.Panicf("Read: %v\n", err.Error())
@@ -32,20 +33,29 @@ func server(endpoint string) {
 // On network receive, watch whole recv buf.
 // Avoid using HTTP server here, since receive path there is likely more complex
 func main() {
-	endpoint := "localhost:6060"
-	go server(endpoint)
+	server_endpoint := "localhost:6060"
+	go server(server_endpoint)
 
 	// wait for listener to start (so Dial will succeed)
 	time.Sleep(1 * time.Second)
+	client_endpoint, err := net.ResolveTCPAddr("tcp", "localhost:5050")
+	if err != nil {
+		log.Panicf("Resolve client endpoint: %v", err.Error())
+	}
 
 	nd := net.Dialer{
-		//Timeout: 5 * time.Second, # makes manual debugging annoying, but likely want for automated test
+		Timeout:   1 * time.Second,
+		LocalAddr: client_endpoint,
 	}
-	conn, err := nd.Dial("tcp", endpoint)
+	conn, err := nd.Dial("tcp", server_endpoint)
 	if err != nil {
 		log.Panicf("Dial: %v", err)
 	}
-	_, err = conn.Write([]byte("hi")) // taint doesn't matter for recv
+
+	config := []byte("config") // config[1] initially tainted
+	// behavior map should record message offset 1 is tainted by config[1]
+	// (when dial tcp, msgs are raw tcp not http)
+	_, err = conn.Write(config)
 	if err != nil {
 		log.Panicf("Write: %v", err)
 	}
