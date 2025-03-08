@@ -68,6 +68,7 @@ type PendingWp struct {
 }
 
 type TaintCheck struct {
+	config   Config
 	hit      Hit
 	client   *rpc2.RPCClient
 	thread   *api.Thread
@@ -504,33 +505,34 @@ func (tc *TaintCheck) Run() {
 	tc.client.Detach(false) // Also kills server, despite function doc (even on unmodified dlv)
 }
 
-func New(initial_bp_file string, initial_bp_line int, initial_watchexpr string, module string, move_wps bool,
-	event_log_filename string, behavior_map_filename string) (*TaintCheck, error) {
-	listenAddr := "localhost:4040"
-	client := rpc2.NewClient(listenAddr)
+func New(config *Config) (*TaintCheck, error) {
 
-	event_log_file, err := os.Create(event_log_filename)
+	client := rpc2.NewClient(config.Server_endpoint)
+
+	event_log_file, err := os.Create(config.Event_log_filename)
 	if err != nil {
 		return nil, err
 	}
 
-	tc := TaintCheck{client: client,
-		module:                module,
-		move_wps:              move_wps,
+	tc := TaintCheck{
+		config:                *config,
+		client:                client,
+		module:                config.Module,
+		move_wps:              config.Move_wps,
 		pending_wps:           make(map[uint64]PendingWp),
 		mem_param_map:         make(map[uint64]TaintingVals),
 		behavior_map:          make(BehaviorMap),
 		event_log:             csv.NewWriter(event_log_file),
-		behavior_map_filename: behavior_map_filename,
+		behavior_map_filename: config.Behavior_map_filename,
 	}
 
 	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
 		"Timestamp", "Breakpoint/Watchpoint Hit Location (File Line PC)", "Thread"})
 
-	init_loc := tc.lineWithStmt(nil, initial_bp_file, initial_bp_line, 0)
+	init_loc := tc.lineWithStmt(nil, config.Initial_bp_file, config.Initial_bp_line, 0)
 
 	// This will be replaced by a config breakpoint
-	log.Printf("Configuration variable: %v\n", initial_watchexpr)
-	tc.recordPendingWp(initial_watchexpr, init_loc, nil, 0, 0)
+	log.Printf("Configuration variable: %v\n", config.Initial_watchexpr)
+	tc.recordPendingWp(config.Initial_watchexpr, init_loc, nil, 0, 0)
 	return &tc, nil
 }
