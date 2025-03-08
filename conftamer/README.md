@@ -55,9 +55,9 @@ Implemented in [taint.go](taint.go).
 * Array: Watch elements (or if elements are slices/strings, their backing arrays)
 * Any other type with size <= 8 bytes
 
-See the [client tests](../client_test.go) for examples of non-trivial types.
+See the [client tests](../cmd/dlv/conftamer_test.go) for examples of non-trivial types.
 
-Type-specific support implemented in [breakpoints.go](../../../pkg/proc/breakpoints.go).
+Type-specific support implemented in [breakpoints.go](../pkg/proc/breakpoints.go).
 
 Watchexprs match the name of the expr passed by the client,
 except for types containing reference elements (e.g. slice of strings) -

@@ -20,7 +20,7 @@ for i, test_group in enumerate(['Watchpoint', 'Client']):
     grep_arg = f"'func TestWatchpoints' {test_path}/proc_test.go"
   else:
     test_path = "cmd/dlv"
-    grep_arg = f"'func Test' {test_path}/client_test.go"
+    grep_arg = f"'func Test' {test_path}/conftamer_test.go"
 
   grep = subprocess.run(f"grep {grep_arg} | cut -d '(' -f1 | cut -d ' ' -f2", shell=True, check=True, text=True, capture_output=True)
   tests = grep.stdout.splitlines()
