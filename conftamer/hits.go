@@ -506,7 +506,6 @@ func (tc *TaintCheck) Run() {
 }
 
 func New(config *Config) (*TaintCheck, error) {
-
 	client := rpc2.NewClient(config.Server_endpoint)
 
 	event_log_file, err := os.Create(config.Event_log_filename)
@@ -514,6 +513,7 @@ func New(config *Config) (*TaintCheck, error) {
 		return nil, err
 	}
 
+	// TODO (minor) rename TaintCheck to e.g. ConfTamerModule
 	tc := TaintCheck{
 		config:                *config,
 		client:                client,
@@ -529,10 +529,11 @@ func New(config *Config) (*TaintCheck, error) {
 	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
 		"Timestamp", "Breakpoint/Watchpoint Hit Location (File Line PC)", "Thread"})
 
-	init_loc := tc.lineWithStmt(nil, config.Initial_bp_file, config.Initial_bp_line, 0)
-
-	// This will be replaced by a config breakpoint
-	log.Printf("Configuration variable: %v\n", config.Initial_watchexpr)
-	tc.recordPendingWp(config.Initial_watchexpr, init_loc, nil, 0, 0)
+	if config.Initial_watchexpr != "" {
+		// This will be replaced by a config breakpoint
+		init_loc := tc.lineWithStmt(nil, config.Initial_bp_file, config.Initial_bp_line, 0)
+		log.Printf("Configuration variable: %v\n", config.Initial_watchexpr)
+		tc.recordPendingWp(config.Initial_watchexpr, init_loc, nil, 0, 0)
+	}
 	return &tc, nil
 }

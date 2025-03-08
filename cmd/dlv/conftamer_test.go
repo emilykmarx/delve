@@ -402,10 +402,13 @@ func messageRecv(recvd_msg ct.TaintingBehavior, msg_bufsz uint64) []ct.Event {
 	return events
 }
 
-// XXX when split: delete network_msgs.go
 func TestNetworkMessages(t *testing.T) {
-	initial_line := 58
-	config := Config("network_msgs.go", "config[1]", initial_line)
+	// SENDER
+	initial_line := 34
+	config := Config("behavior_client.go", "config[1]", initial_line)
+	config.Module = "send_module"
+	config.Event_log_filename = config.Module + "_event_log.csv"
+	config.Behavior_map_filename = config.Module + "_behavior_map.csv"
 
 	client_endpoint := "127.0.0.1:5050"
 	server_endpoint := "127.0.0.1:6060"
@@ -418,20 +421,26 @@ func TestNetworkMessages(t *testing.T) {
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(1), initial_line, ct.DataFlow, nil, nil)
 
-		// Send message
 	expected_events = append(expected_events, messageSend(sent_msg, config, 6, 1, 2)...)
+	go run(t, config, expected_events)
 
-	// Receive msg
+	// RECEIVER
+	config = Config("behavior_server.go", "", 0)
+	config.Module = "recv_module"
+	config.Event_log_filename = config.Module + "_event_log.csv"
+	config.Behavior_map_filename = config.Module + "_behavior_map.csv"
+	config.Server_endpoint = "localhost:4041"
+
 	recvd_msg := sent_msg
 	recvd_msg.Send_module = "" // receiver doesn't know send module
 	tainting_behavior := ct.TaintingBehavior{
 		Behavior: recvd_msg,
 		Flow:     ct.DataFlow,
 	}
-	expected_events = append(expected_events, messageRecv(tainting_behavior, 3)...)
+	expected_events = messageRecv(tainting_behavior, 3)
 
 	expected_events = append(expected_events,
-		watchpointSet(nil, "msg_copy", uint64(1), 30, ct.DataFlow, nil, &tainting_behavior)...)
+		watchpointSet(nil, "msg_copy", uint64(1), 33, ct.DataFlow, nil, &tainting_behavior)...)
 
 	run(t, config, expected_events)
 }
@@ -514,37 +523,26 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 	return os.Stdout.Write(p)
 }
 
+// Start a dlv server and client for a module, wait for client to exit/timeout.
+// Note this may be called concurrently for multiple modules.
+// TODO (minor) prefix log msgs with module to make clearer for tests that run multiple modules
 func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 	// Set up config
 	config.Initial_bp_file = filepath.Join(protest.FindFixturesDir(), "conftamer", config.Initial_bp_file)
 	config.Initial_bp_line = expected_events[0].Line
 
-	var event_log, behavior_map string
-	os.Setenv("CT_KEEP_CSVS", "")
 	if os.Getenv("CT_KEEP_CSVS") == "" {
-		event_log = filepath.Join(t.TempDir(), config.Event_log_filename)
-		behavior_map = filepath.Join(t.TempDir(), config.Behavior_map_filename)
+		event_log := filepath.Join(t.TempDir(), config.Event_log_filename)
+		behavior_map := filepath.Join(t.TempDir(), config.Behavior_map_filename)
+		config.Event_log_filename = event_log
+		config.Behavior_map_filename = behavior_map
 	}
-	config.Event_log_filename = event_log
-	config.Behavior_map_filename = behavior_map
 
 	config_file := filepath.Join(t.TempDir(), "client_config.yml")
 	ct.SaveConfig(config_file, config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Remove testfile binary
-	defer func() {
-		entries, err := os.ReadDir("./")
-		assertNoError(err, t, "readdir to remove testfile binary")
-
-		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), "__debug_bin") {
-				assertNoError(os.Remove(e.Name()), t, "remove testfile binary")
-			}
-		}
-	}()
 
 	// Start dlv server
 	var server_out saveOutput
@@ -574,15 +572,16 @@ func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 
 	if err := client.Run(); err != nil {
 		if err.Error() == "signal: killed" {
-			// Can occur with structs test, but not when run outside `go test`
+			// Can occur with some tests, but not when run outside `go test`
 			t.Logf("Test OOM - may cause failure if occurred before end")
 		} else {
-			t.Fatalf("Client exited with error: %v\n", err.Error())
+			t.Logf("Client exited with error: %v\n", err.Error())
+			t.Fail()
 		}
 	}
 
 	checkStderr(t, client_err.savedOutput, server_err.savedOutput)
-	checkEvents(t, expected_events, event_log)
+	checkEvents(t, expected_events, config.Event_log_filename)
 	//checkBehaviorMap(t, expected_behavior_map, behavior_map)
 }
 
