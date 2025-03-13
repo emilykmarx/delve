@@ -15,11 +15,11 @@ import (
 
 // Taint propagation logic
 
-type TaintFlow uint8
+type TaintFlow string
 
 const (
-	DataFlow TaintFlow = 1 << iota
-	ControlFlow
+	DataFlow    TaintFlow = "Data Flow"
+	ControlFlow TaintFlow = "Control Flow"
 )
 
 // Get the ith lhs of an assignment on lineno

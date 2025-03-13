@@ -57,11 +57,13 @@ func behavior() ct.BehaviorValue {
 	return ct.BehaviorValue{Offset: 1, Send_endpoint: "send_endpoint", Recv_endpoint: "recv_endpoint", Transport: "tcp", Send_module: "send_module"}
 }
 
+// Checks .gv - other tests can more easily use in-memory version
 func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expected_lines []string) {
 	if os.Getenv("CT_KEEP_CSVS") == "" {
 		graph_file = filepath.Join(t.TempDir(), graph_file)
 	}
-	assertNoError(ct.WriteGraph(graph_file, behavior_maps), t, "write graph")
+	_, err := ct.WriteGraph(graph_file, behavior_maps)
+	assertNoError(err, t, "write graph")
 
 	graph, err := os.ReadFile(graph_file)
 	assertNoError(err, t, "read graph file")
@@ -78,6 +80,7 @@ func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expecte
 	for i, line := range sorted_lines {
 		assertEqual(t, expected_lines[i], strings.TrimSpace(line), fmt.Sprintf("graph %v line wrong", i))
 	}
+	// Would be nice to check .gv can be rendered (unclear how to call dot from here - neither dot nor /usr/bin/dot finds the executable)
 }
 
 func TestWriteGraph(t *testing.T) {
@@ -124,18 +127,18 @@ func TestWriteGraph(t *testing.T) {
 		"",
 		"\"{ {param_module param} {0     }}\" [  weight=0 ];",
 		"",
-		"\"{ {param_module param} {0     }}\" -> \"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [  weight=0 ];",
+		"\"{ {param_module param} {0     }}\" -> \"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [ EdgeType=\"Control Flow\",  weight=0 ];",
 		"",
 		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [  weight=0 ];",
 		"",
-		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" -> \"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [  weight=0 ];",
+		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" -> \"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
 		"",
 		"\"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [  weight=0 ];",
 		"",
 		"}",
 		"",
 	}
-	checkGraph(t, []string{send_file, recv_file}, "fake_graph.csv", expected_lines)
+	checkGraph(t, []string{send_file, recv_file}, "fake_graph.gv", expected_lines)
 }
 
 func readWriteBehaviorMap(t *testing.T, behavior_map ct.BehaviorMap) {

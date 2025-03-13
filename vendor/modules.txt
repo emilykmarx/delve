@@ -27,6 +27,10 @@ github.com/creack/pty
 # github.com/derekparker/trie v0.0.0-20230829180723-39f4de51ef7d
 ## explicit; go 1.19
 github.com/derekparker/trie
+# github.com/dominikbraun/graph v0.23.0 => ../graph
+## explicit; go 1.18
+github.com/dominikbraun/graph
+github.com/dominikbraun/graph/draw
 # github.com/go-delve/liner v1.2.3-0.20231231155935-4726ab1d7f62
 ## explicit
 github.com/go-delve/liner
@@ -128,3 +132,4 @@ gopkg.in/yaml.v2
 ## explicit
 gopkg.in/yaml.v3
 # github.com/hashicorp/go-set => ../go-set
+# github.com/dominikbraun/graph => ../graph

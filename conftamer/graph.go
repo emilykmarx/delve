@@ -17,6 +17,8 @@ const (
 	Behavior  NodeType = "behavior"
 )
 
+const EdgeType = "EdgeType"
+
 type Node struct {
 	NodeType  NodeType
 	Parameter Param
@@ -61,7 +63,9 @@ func AddBehaviorNode(g graph.Graph[NodeHashType, Node], n Node) error {
 	return nil
 }
 
-// If end up using vertex/edge properties, will need to pass those in to new graph
+// Remove any nodes not reachable from roots - these exist because
+// we treat all received messages as tainted.
+// Note any vertex/edge properties must be passed in to new graph
 func RemoveUnreachableNodes(g graph.Graph[NodeHashType, Node], roots []Node) (graph.Graph[NodeHashType, Node], error) {
 	adjacencyMap, err := g.AdjacencyMap() // node => {neighbor, edge}
 	if err != nil {
@@ -75,7 +79,7 @@ func RemoveUnreachableNodes(g graph.Graph[NodeHashType, Node], roots []Node) (gr
 		err := graph.DFS(g, NodeHash(root), func(cur_hash NodeHashType) bool {
 			// Add neighbors to new graph
 			neighbors := adjacencyMap[cur_hash]
-			for neighbor_hash := range neighbors {
+			for neighbor_hash, edge := range neighbors {
 				neighbor, err := g.Vertex(neighbor_hash)
 				if err != nil {
 					log.Panicf("Neighbor %+v not found: %v\n", neighbor_hash, err)
@@ -83,7 +87,9 @@ func RemoveUnreachableNodes(g graph.Graph[NodeHashType, Node], roots []Node) (gr
 				if err := g_new.AddVertex(neighbor); err != nil && !errors.Is(err, graph.ErrVertexAlreadyExists) {
 					log.Panicf("Adding neighbor %+v: %v", neighbor, err)
 				}
-				if err := g_new.AddEdge(cur_hash, neighbor_hash); err != nil && !errors.Is(err, graph.ErrEdgeAlreadyExists) {
+
+				err = g_new.AddEdge(cur_hash, neighbor_hash, graph.EdgeAttributes(edge.Properties.Attributes))
+				if err != nil && !errors.Is(err, graph.ErrEdgeAlreadyExists) {
 					log.Panicf("Error adding edge %+v => %+v: %v\n", cur_hash, neighbor_hash, err.Error())
 				}
 			}
@@ -98,8 +104,8 @@ func RemoveUnreachableNodes(g graph.Graph[NodeHashType, Node], roots []Node) (gr
 	return g_new, nil
 }
 
-// Assemble behavior_maps into a single graph and write it to a .gv
-func WriteGraph(outfile string, behavior_map_files []string) error {
+// Assemble behavior_maps into a single in-memory graph, return graph and write it to a .gv
+func WriteGraph(outfile string, behavior_map_files []string) (graph.Graph[NodeHashType, Node], error) {
 	g := graph.New(NodeHash, graph.Directed())
 	roots := []Node{}
 
@@ -107,20 +113,21 @@ func WriteGraph(outfile string, behavior_map_files []string) error {
 	for _, behavior_map_file := range behavior_map_files {
 		behavior_map, err := ReadBehaviorMap(behavior_map_file)
 		if err != nil {
-			return fmt.Errorf("reading behavior map file %v: %v", behavior_map_file, err.Error())
+			return nil, fmt.Errorf("reading behavior map file %v: %v", behavior_map_file, err.Error())
 		}
 		for behavior, tainting_vals := range behavior_map {
 			tainted_by := Node{NodeType: Behavior, Behavior: behavior}
 			if err := AddBehaviorNode(g, tainted_by); err != nil {
-				return err
+				return nil, err
 			}
 
 			tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
 				taints := Node{NodeType: Parameter, Parameter: Param{Module: tp.Param.Module, Param: tp.Param.Param}}
 				roots = append(roots, taints)
 				_ = g.AddVertex(taints)
-				if err := g.AddEdge(NodeHash(taints), NodeHash(tainted_by)); err != nil && !errors.Is(err, graph.ErrEdgeAlreadyExists) {
-					// XXX data vs control flow (edge attributes?) - note can be both
+				err := g.AddEdge(NodeHash(taints), NodeHash(tainted_by), graph.EdgeAttribute(EdgeType, string(tp.Flow)))
+				if err != nil && !errors.Is(err, graph.ErrEdgeAlreadyExists) {
+					// XXX same val can taint a behavior by both data and control flow (see control_flow test) - handle here
 					log.Panicf("Error adding edge %+v => %+v: %v\n", taints, tainted_by, err.Error())
 				}
 				return true
@@ -131,7 +138,8 @@ func WriteGraph(outfile string, behavior_map_files []string) error {
 				if err := AddBehaviorNode(g, taints); err != nil {
 					log.Panicf("Adding behavior node %+v: %v\n", taints, err)
 				}
-				if err := g.AddEdge(NodeHash(taints), NodeHash(tainted_by)); err != nil && !errors.Is(err, graph.ErrEdgeAlreadyExists) {
+				err := g.AddEdge(NodeHash(taints), NodeHash(tainted_by), graph.EdgeAttribute(EdgeType, string(tb.Flow)))
+				if err != nil && !errors.Is(err, graph.ErrEdgeAlreadyExists) {
 					log.Panicf("Error adding edge %+v => %+v: %v\n", taints, tainted_by, err.Error())
 				}
 				return true
@@ -143,14 +151,14 @@ func WriteGraph(outfile string, behavior_map_files []string) error {
 	var err error
 	g, err = RemoveUnreachableNodes(g, roots)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	file, err := os.Create(outfile)
 	if err != nil {
-		return fmt.Errorf("creating graph file %v: %v", file, err.Error())
+		return nil, fmt.Errorf("creating graph file %v: %v", file, err.Error())
 	}
 	if err := draw.DOT(g, file); err != nil {
-		return fmt.Errorf("drawing graph to %v: %v", file, err.Error())
+		return nil, fmt.Errorf("drawing graph to %v: %v", file, err.Error())
 	}
-	return nil
+	return g, nil
 }

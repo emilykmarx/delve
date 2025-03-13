@@ -27,6 +27,7 @@ require (
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
+	github.com/dominikbraun/graph v0.23.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
@@ -37,4 +38,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/hashicorp/go-set => ../go-set
+replace (
+	github.com/hashicorp/go-set => ../go-set
+	github.com/dominikbraun/graph => ../graph
+)
