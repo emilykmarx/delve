@@ -13,10 +13,10 @@ func main() {
 	server_endpoint := "localhost:6060"
 
 	// wait for server to start (so Dial will succeed)
-	time.Sleep(1 * time.Second)
+	time.Sleep(100 * time.Millisecond)
 	client_endpoint, err := net.ResolveTCPAddr("tcp", "localhost:5050")
 	if err != nil {
-		log.Panicf("Resolve client endpoint: %v", err.Error())
+		log.Panicf("Client resolve client endpoint: %v", err.Error())
 	}
 
 	nd := net.Dialer{
@@ -25,7 +25,7 @@ func main() {
 	}
 	conn, err := nd.Dial("tcp", server_endpoint)
 	if err != nil {
-		log.Panicf("Dial: %v", err)
+		log.Panicf("Client dial: %v", err)
 	}
 
 	config := []byte("config") // config[1] initially tainted
@@ -33,7 +33,8 @@ func main() {
 	// (when dial tcp, msgs are raw tcp not http)
 	_, err = conn.Write(config)
 	if err != nil {
-		log.Panicf("Write: %v", err)
+		log.Panicf("Client write: %v", err)
 	}
+
 	fmt.Println("behavior client exit")
 }

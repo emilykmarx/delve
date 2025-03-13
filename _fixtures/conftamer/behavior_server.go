@@ -15,22 +15,32 @@ func main() {
 
 	l, err := net.Listen("tcp", server_endpoint)
 	if err != nil {
-		log.Panicf("Listen: %v\n", err.Error())
+		log.Panicf("Server listen: %v\n", err.Error())
 	}
 	conn, err := l.Accept()
 	if err != nil {
-		log.Panicf("Accept: %v\n", err.Error())
+		log.Panicf("Server accept: %v\n", err.Error())
 	}
 
-	var recvd_msg [3]byte            // untainted (and nothing else is tainted, so won't fault)
-	time.Sleep(1 * time.Second)      // wait for client to write
-	_, err = conn.Read(recvd_msg[:]) // recvd_msg passed to `read` syscall => return to client, set wp on it
+	var msg_A [7]byte                  // untainted (and nothing else is tainted, so won't fault)
+	time.Sleep(100 * time.Millisecond) // wait for client to write (else will EAGAIN and do 2 read syscalls, which is fine but makes logs messier)
+	_, err = conn.Read(msg_A[:])       // msg_A passed to `read` syscall => return to client, set wp on it
 	if err != nil {
-		log.Panicf("Read: %v\n", err.Error())
+		log.Panicf("Server read: %v\n", err.Error())
 	}
 
-	msg_copy := recvd_msg[1] // wp hits for recvd_msg => propagate to msg_copy (on stack), m-c map should hv {&msg_copy} => 0x1
-	fmt.Printf("msg_copy: %v\n", string(msg_copy))
+	// wp hits, m-c map should hv &msg_B[1] => msg_A[0], &msg_B[2] => msg_A[1]
+	// behavior map should hv msg_B[0x1] => msg_A[0x0], msg_B[0x2] => msg_A[0x1]
+	// sender didn't taint msg_A[0], but we'll only find out when we assemble the graph
+	// graph should only have msg_B[0x2] => msg_A[0x1]
+	var msg_B [3]byte
+	msg_B[0] = 'a'
+	msg_B[1] = msg_A[0]
+	msg_B[2] = msg_A[1]
+	_, err = conn.Write(msg_B[:])
+	if err != nil {
+		log.Panicf("Server write: %v", err)
+	}
 
 	fmt.Println("behavior server exit")
 }

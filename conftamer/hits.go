@@ -14,11 +14,15 @@ import (
 )
 
 // Data structures used to create the configuration tamer
+// When adding fields to Param or BehaviorValue, update graph.go
 
-type TaintingParam struct {
+type Param struct {
 	Module string
 	Param  string
-	Flow   TaintFlow
+}
+type TaintingParam struct {
+	Param Param
+	Flow  TaintFlow
 }
 
 type BehaviorValue struct {
@@ -27,6 +31,7 @@ type BehaviorValue struct {
 	Recv_endpoint string // IP:port
 	Transport     string // transport protocol
 	Send_module   string
+	Recv_module   string
 	// XXX protocol, request vs response
 }
 
@@ -132,6 +137,7 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 		recvd_msg := BehaviorValue{
 			Offset:        0,
 			Send_endpoint: remote, Recv_endpoint: local, Transport: transport,
+			Recv_module: tc.config.Module,
 		}
 		event := Event{EventType: MessageRecv, Address: bufstart, Size: bufsz, Behavior: &recvd_msg}
 		WriteEvent(tc, tc.event_log, event)
@@ -301,7 +307,7 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
 		}
 	} else {
 		// config variable
-		tainting_param := []TaintingParam{{Module: tc.module, Param: expr, Flow: DataFlow}}
+		tainting_param := []TaintingParam{{Param: Param{Module: tc.module, Param: expr}, Flow: DataFlow}}
 		existing_info.tainting_vals = TaintingVals{Params: *set.From(tainting_param)}
 	}
 
@@ -380,7 +386,7 @@ func (tc *TaintCheck) onWatchpointHit() {
 		log.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
 		return
 	}
-	event := Event{EventType: WatchpointHit, Address: tc.hit.hit_bp.Addr, Size: 1, Expression: tc.hit.hit_bp.WatchExpr}
+	event := Event{EventType: WatchpointHit, Address: tc.hit.hit_bp.Addr, Size: watchSize(tc.hit.hit_bp), Expression: tc.hit.hit_bp.WatchExpr}
 	WriteEvent(tc, tc.event_log, event)
 	tc.propagateTaint()
 }
