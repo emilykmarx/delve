@@ -29,8 +29,7 @@ func main() {
 		log.Panicf("Server read: %v\n", err.Error())
 	}
 
-	// wp hits, m-c map should hv &msg_B[1] => msg_A[0], &msg_B[2] => msg_A[1]
-	// behavior map should hv msg_B[0x1] => msg_A[0x0], msg_B[0x2] => msg_A[0x1]
+	// wp hits, m-c map and behavior map should hv msg_B[1] => msg_A[0], msg_B[2] => msg_A[1]
 	// sender didn't taint msg_A[0], but we'll only find out when we assemble the graph
 	// graph should only have msg_B[0x2] => msg_A[0x1]
 	var msg_B [3]byte

@@ -57,7 +57,7 @@ func behavior() ct.BehaviorValue {
 	return ct.BehaviorValue{Offset: 1, Send_endpoint: "send_endpoint", Recv_endpoint: "recv_endpoint", Transport: "tcp", Send_module: "send_module"}
 }
 
-// Checks .gv - other tests can more easily use in-memory version
+// Checks .gv
 func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expected_lines []string) {
 	if os.Getenv("CT_KEEP_CSVS") == "" {
 		graph_file = filepath.Join(t.TempDir(), graph_file)
@@ -70,14 +70,17 @@ func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expecte
 	lines := strings.Split(string(graph), "\n")
 	// order of lines in .gv isn't deterministic
 	sort.Strings(expected_lines)
-	sorted_lines := []string{}
+	actual_lines := []string{}
 	for _, line := range lines {
-		sorted_lines = append(sorted_lines, strings.TrimSpace(line))
+		line = strings.TrimSpace(line)
+		if line != "" {
+			actual_lines = append(actual_lines, line)
+		}
 	}
-	sort.Strings(sorted_lines)
-	assertEqual(t, len(expected_lines), len(sorted_lines), "length of graph file")
+	sort.Strings(actual_lines)
+	assertEqual(t, len(expected_lines), len(actual_lines), "length of graph file")
 
-	for i, line := range sorted_lines {
+	for i, line := range actual_lines {
 		assertEqual(t, expected_lines[i], strings.TrimSpace(line), fmt.Sprintf("graph %v line wrong", i))
 	}
 	// Would be nice to check .gv can be rendered (unclear how to call dot from here - neither dot nor /usr/bin/dot finds the executable)
@@ -123,20 +126,12 @@ func TestWriteGraph(t *testing.T) {
 
 	expected_lines := []string{
 		"strict digraph {",
-		"",
-		"",
 		"\"{ {param_module param} {0     }}\" [  weight=0 ];",
-		"",
 		"\"{ {param_module param} {0     }}\" -> \"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [ EdgeType=\"Control Flow\",  weight=0 ];",
-		"",
 		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [  weight=0 ];",
-		"",
 		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" -> \"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
-		"",
 		"\"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [  weight=0 ];",
-		"",
 		"}",
-		"",
 	}
 	checkGraph(t, []string{send_file, recv_file}, "fake_graph.gv", expected_lines)
 }
@@ -440,7 +435,7 @@ func configTaintingParam(config *ct.Config, flow ct.TaintFlow) set.Set[ct.Tainti
 }
 
 // If config passed: config.Initial_watchexpr taints the entire watchpoint region (specified by watchexpr/sz/line).
-// If additional taint is passed, add that.
+// If additional taint is passed, add that to corresponding sz bytes (starting with extra[Offset])
 // Return resulting watchpoint set and mem-param update events.
 func watchpointSet(config *ct.Config, watchexpr string, sz uint64, line int, flow ct.TaintFlow,
 	extra_tainting_param *ct.TaintingParam, extra_tainting_behavior *ct.TaintingBehavior) []ct.Event {
@@ -460,7 +455,7 @@ func watchpointSet(config *ct.Config, watchexpr string, sz uint64, line int, flo
 		if extra_tainting_behavior != nil {
 			// M-c entry is tainted by corresponding received message offset
 			tainting_behavior := *extra_tainting_behavior
-			tainting_behavior.Behavior.Offset = offset
+			tainting_behavior.Behavior.Offset = extra_tainting_behavior.Behavior.Offset + offset
 			tainting_behaviors.Insert(tainting_behavior)
 		}
 
@@ -478,10 +473,13 @@ func watchpointSet(config *ct.Config, watchexpr string, sz uint64, line int, flo
 
 // If config passed: config.Initial_watchexpr taints the region of message specified by taint_start:taint_end.
 // Msg buf sz is `sz`.
-// If additional taint is passed, add that.
+// If extra behavior is passed, add that to corresponding taint_sz bytes of sent message (starting with
+// extra[Offset] and send_msg[Offset])
 // Return resulting message send and behavior update events.
-func messageSend(config *ct.Config, sent_msg ct.BehaviorValue, sz uint64, taint_start uint64, taint_end uint64,
+func messageSend(config *ct.Config, sent_msg ct.BehaviorValue, sz uint64, taint_sz uint64,
 	extra_tainting_behavior *ct.TaintingBehavior) []ct.Event {
+	sent_taint_start := sent_msg.Offset
+	sent_msg.Offset = 0
 	// Message send
 	events := []ct.Event{
 		{EventType: ct.MessageSend, Size: sz, Behavior: &sent_msg, Line: syscall_entry_line},
@@ -490,21 +488,28 @@ func messageSend(config *ct.Config, sent_msg ct.BehaviorValue, sz uint64, taint_
 	// Tainting vals
 	tainting_params := configTaintingParam(config, ct.DataFlow)
 
-	tainting_behaviors := set.New[ct.TaintingBehavior](0)
-	if extra_tainting_behavior != nil {
-		tainting_behaviors.Insert(*extra_tainting_behavior)
-	}
-	tainting_vals := ct.TaintingVals{
-		Params:    tainting_params,
-		Behaviors: *tainting_behaviors,
-	}
-	// Update behavior map for tainted offsets
-	for offset := taint_start; offset < taint_end; offset++ {
-		msg := sent_msg // gets different address every iter
-		msg.Offset = offset
+	// Update behavior map for tainted offsets of sent msg (corresponding offset of extra_tainting_behavior)
+
+	i := uint64(0)
+	for sent_offset := sent_taint_start; sent_offset < sent_taint_start+taint_sz; sent_offset++ {
+		sent_msg_copy := sent_msg // gets different address every iter
+		// XXX make Event fields non-pointer so dn to worry about this in writing tests?
+		sent_msg_copy.Offset = sent_offset
+		tainting_behaviors := set.New[ct.TaintingBehavior](0)
+
+		if extra_tainting_behavior != nil {
+			recvd_msg := *extra_tainting_behavior
+			recvd_msg.Behavior.Offset = extra_tainting_behavior.Behavior.Offset + i
+			tainting_behaviors.Insert(recvd_msg)
+		}
+		tainting_vals := ct.TaintingVals{
+			Params:    tainting_params,
+			Behaviors: *tainting_behaviors,
+		}
 		events = append(events, ct.Event{
-			EventType: ct.BehaviorMapUpdate, Size: 1, Behavior: &msg, TaintingVals: &tainting_vals, Line: syscall_entry_line},
+			EventType: ct.BehaviorMapUpdate, Size: 1, Behavior: &sent_msg_copy, TaintingVals: &tainting_vals, Line: syscall_entry_line},
 		)
+		i++
 	}
 
 	return events
@@ -534,6 +539,7 @@ func TestNetworkMessages(t *testing.T) {
 	client_endpoint := "127.0.0.1:5050"
 	server_endpoint := "127.0.0.1:6060"
 	sent_msg := ct.BehaviorValue{
+		Offset:        1,
 		Send_endpoint: client_endpoint,
 		Recv_endpoint: server_endpoint,
 		Transport:     "tcp",
@@ -542,8 +548,7 @@ func TestNetworkMessages(t *testing.T) {
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(1), initial_line, ct.DataFlow, nil, nil)
 
-	expected_events = append(expected_events, messageSend(&config, sent_msg, 6, 1, 2, nil)...)
-	fmt.Printf("client expected_events: %v\n", expected_events)
+	expected_events = append(expected_events, messageSend(&config, sent_msg, 6, 1, nil)...)
 	go run(t, config, expected_events)
 
 	// RECEIVER
@@ -554,32 +559,47 @@ func TestNetworkMessages(t *testing.T) {
 	behavior_maps = append(behavior_maps, config.Behavior_map_filename)
 	config.Server_endpoint = "localhost:4041"
 
-	recvd_msg := sent_msg
-	recvd_msg.Send_module = ""
-	recvd_msg.Recv_module = config.Module
+	recvd_msg := ct.BehaviorValue{
+		Send_endpoint: client_endpoint,
+		Recv_endpoint: server_endpoint,
+		Transport:     "tcp",
+		Recv_module:   config.Module,
+	}
 	tainting_behavior := ct.TaintingBehavior{
 		Behavior: recvd_msg,
 		Flow:     ct.DataFlow,
 	}
 	expected_events = messageRecv(tainting_behavior, 7)
 
-	// XXX once fix partial tainting: need to update offset of msg that taints wp set and msg send
 	expected_events = append(expected_events,
-		watchpointSet(nil, "msg_B[1]", uint64(1), 39, ct.DataFlow, nil, &tainting_behavior)...)
+		watchpointSet(nil, "msg_B[1]", uint64(1), 38, ct.DataFlow, nil, &tainting_behavior)...)
+	tainting_behavior.Behavior.Offset = 1 // msg_B[2] tainted by msg_A[1]
 	expected_events = append(expected_events,
-		watchpointSet(nil, "msg_B[2]", uint64(1), 40, ct.DataFlow, nil, &tainting_behavior)...)
+		watchpointSet(nil, "msg_B[2]", uint64(1), 39, ct.DataFlow, nil, &tainting_behavior)...)
 
 	sent_msg = ct.BehaviorValue{
+		Offset:        1,
 		Send_endpoint: server_endpoint,
 		Recv_endpoint: client_endpoint,
 		Transport:     "tcp",
 		Send_module:   config.Module,
 	}
-	expected_events = append(expected_events, messageSend(nil, sent_msg, 3, 1, 3, &tainting_behavior)...)
+	tainting_behavior.Behavior.Offset = 0 // msg_B[1] tainted by msg_A[0] (messageSend takes care of rest of msg_B)
+	expected_events = append(expected_events, messageSend(nil, sent_msg, 3, 2, &tainting_behavior)...)
 
-	fmt.Printf("server expected_events: %v\n", expected_events)
 	run(t, config, expected_events)
-	// XXX once fix partial tainting: checkGraph should pass (need to fill in expected_events)
+
+	expected_lines := []string{
+		"strict digraph {",
+		"\"{ {send_module config[1]} {0     }}\" [  weight=0 ];",
+		"\"{ {send_module config[1]} {0     }}\" -> \"{ { } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
+		"\"{ { } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" [  weight=0 ];",
+		"\"{ { } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" -> \"{ { } {2 127.0.0.1:6060 127.0.0.1:5050 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
+		"\"{ { } {2 127.0.0.1:6060 127.0.0.1:5050 tcp  }}\" [  weight=0 ];",
+		"}",
+	}
+
+	checkGraph(t, behavior_maps, "behavior_graph.gv", expected_lines)
 }
 
 func TestStructs(t *testing.T) {
@@ -644,7 +664,7 @@ func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
 	}
 
 	// Check for error
-	// XXX need to fix this to account for logging in my version of go
+	// XXX fix this for logging in my fork of go
 	if len(stderr.savedOutput) > 0 {
 		//t.Fatalf("Delve server errored while starting up")
 	}
@@ -720,10 +740,10 @@ func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 
 	checkStderr(t, client_err.savedOutput, server_err.savedOutput)
 	checkEvents(t, expected_events, config.Event_log_filename)
-	//checkBehaviorMap(t, expected_behavior_map, behavior_map)
 }
 
 func checkStderr(t *testing.T, client_err []byte, server_err []byte) {
+	// XXX fix this for logging in my fork of go
 	// Check for errors during replay
 	/*
 		if len(server_err) > 0 {
@@ -788,11 +808,6 @@ func checkEvents(t *testing.T, expected []ct.Event, event_log string) {
 		}
 		expected_i++
 	}
-}
-
-// XXX remove?
-func checkBehaviorMap(t *testing.T, expected_events []ct.Event, behavior_map string) {
-
 }
 
 func assertEventsEqual(t testing.TB, expected ct.Event, actual ct.Event, msg string, ignore_addr bool) {

@@ -61,10 +61,12 @@ type PendingWp struct {
 	watchexprs set.Set[string]
 	// Arg index => Expression to append to callee's copy, if any
 	watchargs map[int]string
-	// Values that tainted these
-	// On wp hit: Copy from mem_param_map[hitting addrs], so we have them even if orig wp goes OOS
+	// TaintingVals for the memory region that taints these watchexprs/args,
+	// i.e. the region that overlapped the wp we just hit,
+	// indexed by offset in region.
+	// Copy from mem_param_map, so we have them even if the hit wp goes OOS
 	// (e.g. hit for return of function local - will set wp after function returns)
-	tainting_vals TaintingVals
+	tainting_vals []TaintingVals
 
 	// If this is a bp within an if[else] body,
 	// the start/end lines of the body
@@ -148,7 +150,7 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 			Flow:     DataFlow,
 		}
 		tc.hit.frame = 3 // syscall.read: buffer is `p` argument
-		tc.setWatchpoint("p", TaintingVals{Behaviors: *set.From([]TaintingBehavior{tainting_msg})}, true)
+		tc.setWatchpoint("p", []TaintingVals{{Behaviors: *set.From([]TaintingBehavior{tainting_msg})}}, true)
 	} else {
 		log.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", syscall_name)
 	}
@@ -243,72 +245,93 @@ func (tc *TaintCheck) hittingLine() bool {
 	return true
 }
 
+// Pick any control-flow taint out of taintingVals
+func controlFlowTaint(tainting_vals TaintingVals) TaintingVals {
+	ifstmt_taint := newTaintingVals()
+	tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
+		if tp.Flow == ControlFlow {
+			ifstmt_taint.Params.Insert(tp)
+		}
+		return true
+	})
+	tainting_vals.Behaviors.ForEach(func(tb TaintingBehavior) bool {
+		if tb.Flow == ControlFlow {
+			ifstmt_taint.Behaviors.Insert(tb)
+		}
+		return true
+	})
+	return ifstmt_taint
+}
+
 // Set bp for when wp will be in scope, record state
-func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int, body_start int, body_end int) {
-	// 1. Set breakpoint where pending watchpoint will be in scope
+func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
+	body_start int, body_end int, overlap_start uint64, overlap_end uint64) {
+	// Set breakpoint where pending watchpoint will be in scope
 	new_bp_addr := loc.PCs[0]
 	tc.setBp(new_bp_addr)
 
-	// 2. Copy tainting values from hit watchpoint's to pending watchpoint
-	// (or from config var, for config breakpoint)
 	existing_info := tc.pending_wps[new_bp_addr]
 
 	if tc.hit.hit_bp != nil {
 		if tc.hit.hit_bp.WatchType != 0 {
-			// hit watchpoint => copy tainting vals from watchpoint's m-c entry
-			hit_wp_addr := tc.hit.hit_bp.Addrs[0]
-			// XXX (when handle partial tainting): handle wp where m-p map entries
-			// differ across the watched region. For now, using entry of starting addr
+			// Case 1: Hit watchpoint => copy tainting vals from overlapping region's m-c entries
+			// (they may differ across the region)
+			ifstmt_taint := newTaintingVals()
+			if overlap_end == 0 {
+				// append => handle same as config load (put all taint at offset 0)
+				overlap_end = overlap_start + 1
+			}
+			for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
+				tainting_vals, ok := tc.mem_param_map[watchaddr]
+				if !ok {
+					log.Panicf("No mem-param map entry for %#x\n", watchaddr)
+				}
 
-			tainting_vals, ok := tc.mem_param_map[hit_wp_addr]
-			if !ok {
-				log.Panicf("No mem-param map entry for watchpoint %v\n", tc.hit.hit_bp.WatchExpr)
+				if body_start == 0 {
+					// Case 1a: Regular watchpoint => copy overlapping region's vals at each offset
+					// (offset may already have existing ones, e.g. hit a watchpoint within a tainted branch body - union with those if so).
+					existing_info.updateTaintingVals(tainting_vals, watchaddr-overlap_start)
+				} else {
+					// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
+					// to be copied into each byte of expressions in branch body (don't know their size),
+					// and set them to control flow
+					tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
+						tp.Flow = ControlFlow
+						ifstmt_taint.Params.Insert(tp)
+						return true
+					})
+					tainting_vals.Behaviors.ForEach(func(tb TaintingBehavior) bool {
+						tb.Flow = ControlFlow
+						ifstmt_taint.Behaviors.Insert(tb)
+						return true
+					})
+				}
 			}
 
-			// TODO add test for append w/ realloc to an alrdy tainted thing (i.e. need to update wp addr)
-			// Note that wp for tainted array can hit for append to empty slice (first call to packUint16) - need to investigate
-			// Also think abt packUint16 in xenon: passes in a ptr midway thru an alrdy-tainted slice
-			// Also confirm that passing and returning a "[]" is always a slice (i.e. won't create new array)
-
-			// Union with any existing ones for the new bp addr - can happen if e.g.
-			// hit a watchpoint within a branch body whose condition hit the same watchpoint
-			existing_info.updateTaintingVals(tainting_vals)
-
 			if body_start != 0 {
-				// Entering if[else] body => copy branch condition's tainting values, but set them to control flow
-				tainting_vals = existing_info.tainting_vals
-				existing_info.tainting_vals.Params = *set.New[TaintingParam](0)
-				existing_info.tainting_vals.Behaviors = *set.New[TaintingBehavior](0)
-				tainting_vals.Params.ForEach(func(tainting_param TaintingParam) bool {
-					tainting_param.Flow = ControlFlow
-					existing_info.tainting_vals.Params.Insert(tainting_param)
-					return true
-				})
-				tainting_vals.Behaviors.ForEach(func(tainting_behavior TaintingBehavior) bool {
-					tainting_behavior.Flow = ControlFlow
-					existing_info.tainting_vals.Behaviors.Insert(tainting_behavior)
-					return true
-				})
-
+				existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
 				existing_info.body_start = body_start
 				existing_info.body_end = body_end
 			}
 		} else {
-			// hit breakpoint, presumably in branch body =>
-			// copy taintingVals and body start/end from pending wp for bp we just hit
+			// Case 3: Hit breakpoint, presumably in branch body =>
+			// copy CF from this bp's tv[0] to new bp's tv[0]
 			cur_bp_addr := tc.hit.hit_bp.Addrs[0]
 			cur_info, existed := tc.pending_wps[cur_bp_addr]
 			if !existed {
 				log.Panicf("Expected to find pending_wp at addr %#x in branch body\n", cur_bp_addr)
 			}
-			existing_info.updateTaintingVals(cur_info.tainting_vals)
+
+			ifstmt_taint := controlFlowTaint(cur_info.tainting_vals[0])
+			existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
 			existing_info.body_start = cur_info.body_start
 			existing_info.body_end = cur_info.body_end
 		}
 	} else {
-		// config variable
+		// Case 4: Load config param => store it, to be copied into each byte of config variable (don't know its size)
 		tainting_param := []TaintingParam{{Param: Param{Module: tc.module, Param: expr}, Flow: DataFlow}}
-		existing_info.tainting_vals = TaintingVals{Params: *set.From(tainting_param)}
+		// If there was already non-param taint at offset 0, will taint whole variable with it - unsure if possible
+		existing_info.updateTaintingVals(TaintingVals{Params: *set.From(tainting_param)}, 0)
 	}
 
 	if argno != nil {
@@ -337,10 +360,10 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 
 // Move watchexpr to tainted page, and set any watchpoint(s) corresponding to watchexpr
 // Update m-c map:
-// If !message, add tainting_vals to each addr in resulting watched region(s)
+// If !message, add tainting_vals to resulting watched region(s), byte by byte
 // Else, we're tainting a message recv buf =>
-// record each byte of message as tainting corresponding byte of buf (tainting_vals.offset is buffer size)
-func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals, message bool) {
+// record each byte of message as tainting corresponding byte of buf (tainting_vals[0] is recvd msg, whose offset is buffer size)
+func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVals, message bool) {
 	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
 	// We really want a read-only wp, but not supported
 	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.move_wps)
@@ -350,7 +373,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 		log.Panicf("Debugger returned no watchpoints for %v\n", watchexpr)
 	}
 	if message && len(watchpoints) > 1 {
-		log.Panicf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals.Behaviors.Slice()[0])
+		log.Panicf("Debugger returned multiple watchpoints for msg buffer %+v\n", tainting_vals[0].Behaviors.Slice()[0])
 	}
 
 	// Add pre-move addresses to m-c - will update after next Continue()
@@ -362,15 +385,28 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals TaintingVals
 		WriteEvent(tc, tc.event_log, event)
 
 		if !message {
-			tc.forEachWatchaddr(watchpoint, func(watchaddr uint64) bool {
-				tc.updateTaintingVals(watchaddr, tainting_vals)
-				return true // unused
-			})
+			new_taint := controlFlowTaint(tainting_vals[0])
+			// Config variable or append (or one-byte expression, but works for that too)
+			if len(tainting_vals) == 1 {
+				config_taint := tainting_vals[0]
+				new_taint = union(new_taint, config_taint)
+			}
+			watch_end := watchpoint.Addrs[0] + watchSize(watchpoint)
+			for watchaddr := watchpoint.Addrs[0]; watchaddr < watch_end; watchaddr++ {
+				offset := watchaddr - watchpoint.Addrs[0]
+
+				// Apply any data-flow taint from corresponding byte,
+				// and any control-flow or config taint
+				if uint64(len(tainting_vals)) > offset {
+					new_taint = union(new_taint, tainting_vals[offset])
+				}
+				tc.updateTaintingVals(watchaddr, new_taint)
+			}
 		}
 	}
 
 	if message {
-		tainting_val := tainting_vals.Behaviors.Slice()[0]
+		tainting_val := tainting_vals[0].Behaviors.Slice()[0]
 		bufstart := watchpoints[0].Addr
 		bufsz := tainting_val.Behavior.Offset
 		for offset := uint64(0); offset < bufsz; offset++ {
@@ -391,7 +427,7 @@ func (tc *TaintCheck) onWatchpointHit() {
 	tc.propagateTaint()
 }
 
-// Breakpoint for pending watchpoint hit => try to set the watchpoint
+// Breakpoint for pending watchpoint hit => set the watchpoint
 func (tc *TaintCheck) onPendingWpBpHit() {
 	if len(tc.hit.hit_bp.Addrs) != 1 {
 		log.Panicf("Wrong number of addrs at pending wp; bp %+v\n", tc.hit.hit_bp)
@@ -538,8 +574,7 @@ func New(config *Config) (*TaintCheck, error) {
 	if config.Initial_watchexpr != "" {
 		// This will be replaced by a config breakpoint
 		init_loc := tc.lineWithStmt(nil, config.Initial_bp_file, config.Initial_bp_line, 0)
-		log.Printf("Configuration variable: %v\n", config.Initial_watchexpr)
-		tc.recordPendingWp(config.Initial_watchexpr, init_loc, nil, 0, 0)
+		tc.recordPendingWp(config.Initial_watchexpr, init_loc, nil, 0, 0, 0, 0)
 	}
 	return &tc, nil
 }

@@ -17,6 +17,8 @@ import (
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/rpc2"
+	"github.com/google/go-cmp/cmp"
+	set "github.com/hashicorp/go-set"
 )
 
 // Return value of register reg_name
@@ -51,27 +53,47 @@ func (tc *TaintCheck) forEachWatchaddr(watchpoint *api.Breakpoint, f func(watcha
 	return ret
 }
 
+func newTaintingVals() TaintingVals {
+	return TaintingVals{
+		Params:    *set.New[TaintingParam](0),
+		Behaviors: *set.New[TaintingBehavior](0),
+	}
+}
+
+func union(tv1 TaintingVals, tv2 TaintingVals) TaintingVals {
+	return TaintingVals{
+		Params:    *tv1.Params.Union(&tv2.Params),
+		Behaviors: *tv1.Behaviors.Union(&tv2.Behaviors),
+	}
+}
+
 // Add tainting_vals to any existing entry in m-p map
 // If new entry, insert it
 func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals) {
-	existing_taint := tc.mem_param_map[watchaddr]
-	new_taint := TaintingVals{
-		Params:    *tainting_vals.Params.Union(&existing_taint.Params),
-		Behaviors: *tainting_vals.Behaviors.Union(&existing_taint.Behaviors),
+	if cmp.Equal(tainting_vals, newTaintingVals()) {
+		// Ignore if empty
+		return
 	}
+	existing_taint := tc.mem_param_map[watchaddr]
+	new_taint := union(tainting_vals, existing_taint)
 	tc.mem_param_map[watchaddr] = new_taint
 
 	event := Event{EventType: MemParamMapUpdate, Address: watchaddr, Size: 1, TaintingVals: &new_taint}
 	WriteEvent(tc, tc.event_log, event)
 }
 
-// Union together tainting vals in a pending wp
-func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals) {
-	new_taint := TaintingVals{
-		Params:    *tainting_vals.Params.Union(&pending_wp.tainting_vals.Params),
-		Behaviors: *tainting_vals.Behaviors.Union(&pending_wp.tainting_vals.Behaviors),
+// If offset is beyond pending_wp's len, append - else union with any existing at offset
+func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offset uint64) {
+	existing_taint := newTaintingVals()
+	if uint64(len(pending_wp.tainting_vals)) > offset {
+		existing_taint = pending_wp.tainting_vals[offset]
 	}
-	pending_wp.tainting_vals = new_taint
+	new_taint := union(tainting_vals, existing_taint)
+	if uint64(len(pending_wp.tainting_vals)) > offset {
+		pending_wp.tainting_vals[offset] = new_taint
+	} else {
+		pending_wp.tainting_vals = append(pending_wp.tainting_vals, new_taint)
+	}
 }
 
 // pretty-print
@@ -123,8 +145,29 @@ func exprToString(t ast.Expr) string {
 	return buf.String()
 }
 
-func memOverlap(addr1 uint64, sz1 uint64, addr2 uint64, sz2 uint64) bool {
-	return addr1 < addr2+sz2 && addr2 < addr1+sz1
+func uint64Max(a uint64, b uint64) uint64 {
+	if a >= b {
+		return a
+	}
+	return b
+}
+func uint64Min(a uint64, b uint64) uint64 {
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+// Return overlapping region: start, exclusive end, ok
+func memOverlap(start1 uint64, sz1 uint64, start2 uint64, sz2 uint64) (uint64, uint64, bool) {
+	end1 := start1 + sz1 // exclusive
+	end2 := start2 + sz2
+	overlap_start := uint64Max(start1, start2)
+	overlap_end := uint64Min(end1, end2)
+	if overlap_start < overlap_end {
+		return overlap_start, overlap_end, true
+	}
+	return 0, 0, false
 }
 
 func (tc *TaintCheck) printBps() {
