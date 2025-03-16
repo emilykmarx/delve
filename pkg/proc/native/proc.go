@@ -312,8 +312,11 @@ func ProgramThreads(procgrp *processGroup, msg string) {
 func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, dbp *nativeProcess, donech chan error) error {
 	fmt.Println("enter monitorMoveObject")
 	for {
-		// XXX check if any of these functions will use a thread besides trapthread to do ptrace
+		// XXX check if any of these functions will use a thread besides trapthread to do ptrace,
+		// and if they refresh g (which might be ok, or might cause same problem as it does when called from resume) -
+		// XXX move major changes to their own package (e.g. softwarewatchpoints) so these audits are easier
 		// XXX if any hits were non-spurious, return to client
+		// XXX add test that faults on syscall during move
 
 		select {
 		// Two ways to exit this loop:
@@ -345,7 +348,10 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 
 			fmt.Printf("set bp to %+v\n", trapthread.CurrentBreakpoint.Breakpoint)
 
-			// 3. Step over the breakpoint/watchpoint
+			// 3. Handle any faulting syscalls
+			procgrp.handleSyscallBreakpoints()
+
+			// 4. Step over and clear the breakpoint/watchpoint
 			if err := procgrp.stepOverBreakpoint(trapthread); err != nil {
 				if _, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
 					// stepped over the bp - now step over the sw wp
@@ -359,7 +365,7 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 
 			fmt.Printf("stepped over bp\n")
 
-			// 4. Resume thread
+			// 5. Resume thread
 			if err := trapthread.resume(); err != nil && err != sys.ESRCH {
 				log.Panicf("resume error for thread %v: %v\n", trapthread.ThreadID(), err)
 			}
