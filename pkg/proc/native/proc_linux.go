@@ -849,6 +849,10 @@ func (procgrp *processGroup) handleSyscallBreakpoints() {
 			continue
 		}
 		target := proc.Target{Process: dbp, Proc: dbp}
+		defer func() {
+			// Calling threadStacktrace() refreshes g, which breaks next()
+			target.ClearCaches()
+		}()
 
 		// 1. Determine which threads are currently in which faulting syscalls
 		// (i.e. set thread.faultingSyscall and faultingSyscallArg)
@@ -1085,6 +1089,7 @@ func checkESRCH(th *nativeThread, err error) bool {
 
 // Get stacktrace
 // If get_syscall, return the name of the syscall it's in (assumes it's in one)
+// Note this has the side effect of possibly refreshing g, which matters if done during certain points in thread lifecycle
 func threadStacktrace(th *nativeThread, print bool, get_syscall bool) (string, error) {
 	if print {
 		printFaultingSyscall(th)
