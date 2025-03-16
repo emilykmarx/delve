@@ -378,6 +378,11 @@ func (bp *Breakpoint) checkCondition(tgt *Target, thread Thread, bpstate *Breakp
 }
 
 func (bpstate *BreakpointState) checkCond(tgt *Target, breaklet *Breaklet, thread Thread) {
+	fmt.Printf("th %v at bp: %+v\n", thread.ThreadID(), *bpstate.Breakpoint)
+	fmt.Printf("breaklet: %+v\n", *breaklet)
+	defer func() {
+		fmt.Printf("exit checkCond; bpstate %+v\n", *bpstate)
+	}()
 	var condErr error
 	active := true
 	if breaklet.Cond != nil {
@@ -388,6 +393,15 @@ func (bpstate *BreakpointState) checkCond(tgt *Target, breaklet *Breaklet, threa
 		bpstate.CondError = condErr
 	}
 	if !active {
+		fmt.Println("EVAL BP COND FALSE")
+		selg := tgt.SelectedGoroutine()
+		curthread := tgt.CurrentThread()
+		topframe, _, err := topframe(tgt, selg, curthread)
+		if err != nil {
+			fmt.Printf("err getting topframe %v\n", err.Error())
+		}
+		fmt.Printf("hit bp - frameOffset %v, CFA %#x, stackHi %#x\nframe %+v\n", topframe.FrameOffset(),
+			topframe.Regs.CFA, topframe.stackHi, topframe)
 		return
 	}
 
@@ -405,6 +419,7 @@ func (bpstate *BreakpointState) checkCond(tgt *Target, breaklet *Breaklet, threa
 		active = checkHitCond(lbp, goroutineID)
 
 	case StepBreakpoint, NextBreakpoint, NextDeferBreakpoint:
+		fmt.Printf("NEXT\n")
 		nextDeferOk := true
 		if breaklet.Kind&NextDeferBreakpoint != 0 {
 			var err error
@@ -560,6 +575,7 @@ func (bp *Breakpoint) UserBreaklet() *Breaklet {
 }
 
 func evalBreakpointCondition(tgt *Target, thread Thread, cond ast.Expr) (bool, error) {
+	fmt.Printf("cond: %v \n", exprToString(cond))
 	if cond == nil {
 		return true, nil
 	}

@@ -85,6 +85,7 @@ func (grp *TargetGroup) Continue() error {
 			grp.finishManualStop()
 			return nil
 		}
+		fmt.Println("About to ContinueOnce - will ClearCaches first")
 		for _, dbp := range grp.targets {
 			dbp.ClearCaches()
 		}
@@ -107,6 +108,7 @@ func (grp *TargetGroup) Continue() error {
 			// Both selectedGoroutine and current thread are stale here, since we can
 			// only set their definitive value *after* evaluating breakpoint
 			// conditions here we give them temporary non-stale values.
+			fmt.Println("Returned from ContinueOnce - about to set selectedGoroutine to nil and checkCondition")
 			it.selectedGoroutine = nil
 			curthread := it.currentThread
 			for _, thread := range it.ThreadList() {
@@ -284,6 +286,7 @@ func (grp *TargetGroup) setCurrentThreads(traptgt *Target, trapthread Thread) er
 		}
 		if _, ok := tgt.FindThread(tgt.currentThread.ThreadID()); ok {
 			tgt.selectedGoroutine, _ = GetG(tgt.currentThread)
+			fmt.Printf("set selectedGoroutine in setCurrentThreads: %+v\n", *tgt.selectedGoroutine)
 		} else {
 			threads := tgt.ThreadList()
 			if len(threads) > 0 {
@@ -331,6 +334,10 @@ func conditionErrors(grp *TargetGroup) error {
 //   - the previous current thread if it still exists
 //   - a randomly selected thread
 func pickCurrentThread(dbp *Target, trapthread Thread) error {
+	fmt.Println("enter pickCurrentThread")
+	defer func() {
+		fmt.Println("exit pickCurrentThread")
+	}()
 	threads := dbp.ThreadList()
 	for _, th := range threads {
 		if bp := th.Breakpoint(); bp.Active && bp.Stepping {
@@ -352,6 +359,7 @@ func pickCurrentThread(dbp *Target, trapthread Thread) error {
 	}
 	if _, ok := dbp.FindThread(dbp.currentThread.ThreadID()); ok {
 		dbp.selectedGoroutine, _ = GetG(dbp.currentThread)
+		fmt.Printf("set selectedGoroutine in pickCurrentThread: %+v\n", *dbp.selectedGoroutine)
 		return nil
 	}
 	if len(threads) > 0 {
@@ -608,6 +616,7 @@ func (grp *TargetGroup) StepInstruction(skipCalls bool) (err error) {
 		}
 		thread = g.Thread
 	}
+	fmt.Printf("StepInstruction about to clear Common.g")
 	dbp.ClearCaches()
 	if ok, err := dbp.Valid(); !ok {
 		return err
@@ -628,6 +637,7 @@ func (grp *TargetGroup) StepInstruction(skipCalls bool) (err error) {
 		return err
 	}
 	if tg, _ := GetG(thread); tg != nil {
+		fmt.Printf("set selectedGoroutine in stepInstruction: %+v\n", *tg)
 		dbp.selectedGoroutine = tg
 	}
 	dbp.StopReason = StopNextFinished
@@ -741,6 +751,8 @@ func next(dbp *Target, stepInto, inlinedStepOut bool) error {
 	}
 
 	sameFrameCond := astutil.And(sameGCond, frameoffCondition(&topframe))
+	fmt.Printf("set next bp - th %v frameOffset %v, CFA %#x, stackHi %#x\nframe %+v\n", curthread.ThreadID(), topframe.FrameOffset(),
+		topframe.Regs.CFA, topframe.stackHi, topframe)
 
 	if stepInto && !backward {
 		err := setStepIntoBreakpoints(dbp, topframe.Current.Fn, text, topframe, sameGCond)

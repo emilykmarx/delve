@@ -114,8 +114,10 @@ func ThreadStacktrace(tgt *Target, thread Thread, depth int) ([]Stackframe, erro
 }
 
 func goroutineStackIterator(tgt *Target, g *G, opts StacktraceOptions) (*stackIterator, error) {
+	fmt.Printf("goroutineStackIterator\n")
 	bi := g.variable.bi
 	if g.Thread != nil {
+		fmt.Printf("g.Thread non-nil => get regs. g.stack.hi: %#x\n", g.stack.hi)
 		regs, err := g.Thread.Registers()
 		if err != nil {
 			return nil, err
@@ -128,6 +130,7 @@ func goroutineStackIterator(tgt *Target, g *G, opts StacktraceOptions) (*stackIt
 			dwarfRegs,
 			g.stack.hi, g, opts), nil
 	}
+	fmt.Println("g.Thread nil => not getting regs")
 	so := g.variable.bi.PCToImage(g.PC)
 	return newStackIterator(
 		tgt, bi, g.variable.mem,

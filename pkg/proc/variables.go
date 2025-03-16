@@ -252,7 +252,9 @@ type stack struct {
 // In order to get around all this craziness, we read the address of the G structure for
 // the current thread from the thread local storage area.
 func GetG(thread Thread) (*G, error) {
+	fmt.Println("enter GetG")
 	if thread.Common().g != nil {
+		fmt.Printf("GetG returning Common().g: %+v\n", thread.Common().g)
 		return thread.Common().g, nil
 	}
 	if loc, _ := thread.Location(); loc != nil && loc.Fn != nil && loc.Fn.Name == "runtime.clone" {
@@ -297,6 +299,7 @@ func GetG(thread Thread) (*G, error) {
 	if loc, err := thread.Location(); err == nil {
 		g.CurrentLoc = *loc
 	}
+	fmt.Printf("GetG set Common.g to %+v\n", *g)
 	thread.Common().g = g
 	return g, nil
 }

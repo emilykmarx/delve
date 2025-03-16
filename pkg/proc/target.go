@@ -258,6 +258,7 @@ func (t *Target) SupportsFunctionCalls() bool {
 // ClearCaches clears internal caches that should not survive a restart.
 // This should be called anytime the target process executes instructions.
 func (t *Target) ClearCaches() {
+	fmt.Println("clear Common.G in clearCaches")
 	t.clearFakeMemory()
 	t.gcache.Clear()
 	for _, thread := range t.ThreadList() {
@@ -306,6 +307,7 @@ func (t *Target) SwitchGoroutine(g *G) error {
 	if g.Thread != nil {
 		return t.SwitchThread(g.Thread.ThreadID())
 	}
+	fmt.Printf("set selectedGoroutine in SwitchGoroutine: %+v\n", *g)
 	t.selectedGoroutine = g
 	return nil
 }
@@ -318,6 +320,7 @@ func (t *Target) SwitchThread(tid int) error {
 	if th, ok := t.FindThread(tid); ok {
 		t.currentThread = th
 		t.selectedGoroutine, _ = GetG(t.CurrentThread())
+		fmt.Printf("set selectedGoroutine in SwitchThread: %+v\n", *t.selectedGoroutine)
 		return nil
 	}
 	return fmt.Errorf("thread %d does not exist", tid)

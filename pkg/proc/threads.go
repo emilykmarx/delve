@@ -2,6 +2,7 @@ package proc
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/go-delve/delve/pkg/dwarf/op"
 )
@@ -68,12 +69,15 @@ func (t *CommonThread) ReturnValues(cfg LoadConfig) []*Variable {
 
 // topframe returns the two topmost frames of g, or thread if g is nil.
 func topframe(tgt *Target, g *G, thread Thread) (Stackframe, Stackframe, error) {
+	fmt.Printf("topframe(), th %v\n", thread.ThreadID())
 	var frames []Stackframe
 	var err error
 
 	if g == nil {
+		fmt.Println("g nil")
 		frames, err = ThreadStacktrace(tgt, thread, 1)
 	} else {
+		fmt.Println("g non-nil")
 		frames, err = GoroutineStacktrace(tgt, g, 1, StacktraceReadDefers)
 	}
 	if err != nil {

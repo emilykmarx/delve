@@ -771,6 +771,7 @@ func (procgrp *processGroup) stepOverBreakpoint(thread *nativeThread) error {
 // If th is about to enter a syscall that would fault on one of its args (spuriously or not):
 // save the arg and syscall name
 func handleSyscallEntry(th *nativeThread) {
+	fmt.Printf("handleSyscallEntry, th %v\n", th.ThreadID())
 	syscall, err := threadStacktrace(th, false, true)
 	if err != nil {
 		log.Panicf("getting stacktrace in handleSyscallEntry: %v\n", err.Error())
@@ -807,7 +808,7 @@ func handleSyscallEntry(th *nativeThread) {
 // If this syscall exit corresponds to an entry that would have faulted,
 // clear saved arg and name.
 func handleSyscallExit(th *nativeThread) {
-	fmt.Printf("handleSyscallExit\n")
+	fmt.Printf("handleSyscallExit, th %v\n", th.ThreadID())
 	syscall, err := threadStacktrace(th, true, true)
 
 	if err != nil {
@@ -848,6 +849,10 @@ func (procgrp *processGroup) handleSyscallBreakpoints() {
 			continue
 		}
 		target := proc.Target{Process: dbp, Proc: dbp}
+		defer func() {
+			// Calling threadStacktrace() refreshes g, which breaks next()
+			target.ClearCaches()
+		}()
 
 		// 1. Determine which threads are currently in which faulting syscalls
 		// (i.e. set thread.faultingSyscall and faultingSyscallArg)
@@ -926,6 +931,7 @@ func (procgrp *processGroup) handleSyscallBreakpoints() {
 }
 
 func (procgrp *processGroup) resume() error {
+	fmt.Println("\n\nresume")
 	procgrp.handleSyscallBreakpoints()
 
 	// for all threads stopped at a breakpoint, step over it
