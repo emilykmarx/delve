@@ -274,10 +274,18 @@ func (tc *TaintCheck) propagateTaint() {
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
 			if call_expr == "copy" {
-				// TODO update test for this (previous one no longer propagates when only watching for underlying data)
 				if overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Args[1]); overlap_expr != nil {
-					// Expr will be in scope, but can't set wp yet if runtime hit (often is, in memmove) -
-					// wps set from a newer frame will go OOS when exit that frame
+					// Copies min(len(new), len(old)). So if old is longer, and this is a config load, shorten overlap to new.
+					// (If not config load, doesn't matter since we'll store old's taint byte-by-byte.)
+					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(typed_node.Args[0]), true)
+					if err != nil {
+						// I think new should always be evaluatable?
+						log.Panicf("eval %v for copy builtin: %v", exprToString(typed_node.Args[0]), err)
+					}
+					overlap_end = min(overlap_start+uint64(xv.Watchsz), overlap_end)
+
+					// Expr will be allocated, but if on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
+					// are set correctly (TODO add test for this)
 					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
 					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil, 0, 0, overlap_start, overlap_end)
 				}

@@ -486,7 +486,7 @@ names selected from this list:
 	stack           Log stacktracer
 
 Additionally --log-dest can be used to specify where the logs should be
-written. 
+written.
 If the argument is a number it will be interpreted as a file descriptor,
 otherwise as a file path.
 This option will also redirect the "server listening at" message in headless
@@ -498,7 +498,7 @@ and dap modes.
 	rootCommand.AddCommand(&cobra.Command{
 		Use:   "redirect",
 		Short: "Help about file redirection.",
-		Long: `The standard file descriptors of the target process can be controlled using the '-r' and '--tty' arguments. 
+		Long: `The standard file descriptors of the target process can be controlled using the '-r' and '--tty' arguments.
 
 The --tty argument allows redirecting all standard descriptors to a terminal, specified as an argument to --tty.
 
@@ -1125,6 +1125,7 @@ func execute(attachPid int, processArgs []string, conf *config.Config, coreFile 
 				AttachWaitFor:         attachWaitFor,
 				AttachWaitForInterval: attachWaitForInterval,
 				AttachWaitForDuration: attachWaitForDuration,
+				TargetConfigFiles:     conf.TargetConfigFiles,
 			},
 		})
 	default:

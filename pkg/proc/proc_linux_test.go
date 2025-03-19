@@ -26,7 +26,7 @@ func TestLoadingExternalDebugInfo(t *testing.T) {
 	fixture := protest.BuildFixture("locationsprog", 0)
 	defer os.Remove(fixture.Path)
 	stripAndCopyDebugInfo(fixture, t)
-	p, err := native.Launch(append([]string{fixture.Path}, ""), "", 0, []string{filepath.Dir(fixture.Path)}, "", "", proc.OutputRedirect{}, proc.OutputRedirect{})
+	p, err := native.Launch(append([]string{fixture.Path}, ""), "", 0, []string{filepath.Dir(fixture.Path)}, "", "", proc.OutputRedirect{}, proc.OutputRedirect{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,7 +49,7 @@ type NewTargetGroupConfig struct {
 	CanDump             bool       // Can create core dumps (must implement ProcessInternal.MemoryMap)
 }
 
-type AddTargetFunc func(ProcessInternal, int, Thread, string, StopReason, string) (*Target, error)
+type AddTargetFunc func(ProcessInternal, int, Thread, string, StopReason, string, []string) (*Target, error)
 
 // NewGroup creates a TargetGroup containing the specified Target.
 func NewGroup(procgrp ProcessGroup, cfg NewTargetGroupConfig) (*TargetGroup, AddTargetFunc) {
@@ -95,7 +95,7 @@ func Restart(grp, oldgrp *TargetGroup, discard func(*LogicalBreakpoint, error)) 
 	}
 }
 
-func (grp *TargetGroup) addTarget(p ProcessInternal, pid int, currentThread Thread, path string, stopReason StopReason, cmdline string) (*Target, error) {
+func (grp *TargetGroup) addTarget(p ProcessInternal, pid int, currentThread Thread, path string, stopReason StopReason, cmdline string, configFiles []string) (*Target, error) {
 	logger := logflags.DebuggerLogger()
 	if len(grp.targets) > 0 {
 		if !grp.followExecEnabled {
@@ -107,7 +107,7 @@ func (grp *TargetGroup) addTarget(p ProcessInternal, pid int, currentThread Thre
 			return nil, nil
 		}
 	}
-	t, err := grp.newTarget(p, pid, currentThread, path, cmdline)
+	t, err := grp.newTarget(p, pid, currentThread, path, cmdline, configFiles)
 	if err != nil {
 		return nil, err
 	}

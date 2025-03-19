@@ -114,6 +114,9 @@ type Config struct {
 	// TraceShowTimestamp controls whether to show timestamp in the trace
 	// output.
 	TraceShowTimestamp bool `yaml:"trace-show-timestamp"`
+
+	// Absolute paths of the target's configuration files
+	TargetConfigFiles []string `yaml:"target-config-files"`
 }
 
 func (c *Config) GetSourceListLineCount() int {
@@ -293,7 +296,7 @@ aliases:
 # See also Documentation/cli/substitutepath.md.
 substitute-path:
   # - {from: path, to: path}
-  
+
 # Maximum number of elements loaded from an array.
 # max-array-values: 64
 

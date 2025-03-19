@@ -79,6 +79,8 @@ type Target struct {
 	fakeMemoryRegistryMap map[string]*compositeMemory
 
 	partOfGroup bool
+
+	ConfigFiles []string
 }
 
 type KeepSteppingBreakpoints uint8
@@ -161,7 +163,7 @@ func DisableAsyncPreemptEnv() []string {
 
 // newTarget returns an initialized Target object.
 // The p argument can optionally implement the RecordingManipulation interface.
-func (grp *TargetGroup) newTarget(p ProcessInternal, pid int, currentThread Thread, path, cmdline string) (*Target, error) {
+func (grp *TargetGroup) newTarget(p ProcessInternal, pid int, currentThread Thread, path, cmdline string, configFiles []string) (*Target, error) {
 	entryPoint, err := p.EntryPoint()
 	if err != nil {
 		return nil, err
@@ -184,6 +186,7 @@ func (grp *TargetGroup) newTarget(p ProcessInternal, pid int, currentThread Thre
 		currentThread: currentThread,
 		pid:           pid,
 		CmdLine:       cmdline,
+		ConfigFiles:   configFiles,
 	}
 
 	if recman, ok := p.(RecordingManipulationInternal); ok {

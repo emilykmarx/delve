@@ -13,9 +13,12 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	linuxproc "github.com/c9s/goprocinfo/linux"
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/dwarf/reader"
@@ -294,14 +297,57 @@ type returnBreakpointInfo struct {
 	spOffset     int64
 }
 
-// Whether bp is the entry of a tainted syscall,
-// i.e. any network recv, or network send of tainted data
+// If fdinfo is a socket:
+// Fill in local, remote endpoints, transport protocol
+func (info *SyscallBreakpointInfo) getSocketInfo(fdinfo string) error {
+	var err error
+	inode := uint64(0)
+	if suffix, socket := strings.CutPrefix(fdinfo, "socket:"); socket {
+		inode_str := suffix[1 : len(suffix)-1]
+		inode, err = strconv.ParseUint(inode_str, 0, 64)
+		if err != nil {
+			return fmt.Errorf("parse inode in getSocketInfo: %v", err)
+		}
+	} else {
+		return nil
+	}
+
+	// XXX ipv6 and other transports too
+	tcp_socks, err := linuxproc.ReadNetTCPSockets("/proc/net/tcp", linuxproc.NetIPv4Decoder)
+	if err != nil {
+		return fmt.Errorf("ReadNetTCPSockets: %v", err)
+	}
+	for _, sock := range tcp_socks.Sockets {
+		if sock.Inode == inode {
+			info.Local_endpoint = sock.LocalAddress
+			info.Remote_endpoint = sock.RemoteAddress
+			info.Transport = "tcp"
+		}
+	}
+	return nil
+}
+
+type SyscallBreakpointInfo struct {
+	SyscallName string
+	Bufaddr     uint64
+	Bufsz       uint64
+	// For file read
+	Filename string
+	// For network messages
+	Local_endpoint  string
+	Remote_endpoint string
+	Transport       string
+}
+
+// If bp is the entry of a tainted syscall,
+// i.e. any network recv; network send of tainted data; or read config file:
+// Return syscall info.
 // All other syscalls don't propagate taint of passed-in args =>
 // never return to client even if they would fault
-func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) bool {
+func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) *SyscallBreakpointInfo {
 	// Check if syscall.read/write entry
 	if bp.Logical == nil || bp.Logical.Name != SyscallEntryBreakpoint {
-		return false
+		return nil
 	}
 	syscall := ""
 	stack, err := ThreadStacktrace(tgt, thread, 50)
@@ -312,9 +358,10 @@ func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) bool {
 		syscall = stack[3].Call.Fn.Name
 	}
 	if !(syscall == "syscall.read" || syscall == "syscall.write") {
-		return false
+		return nil
 	}
-	// Check if network read/write
+
+	// Get fd, bufaddr, bufsz
 	raw_regs, err := thread.Registers()
 	if err != nil {
 		log.Panicf("getting raw regs to check for syscall.read fd: %v\n", err.Error())
@@ -334,35 +381,43 @@ func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) bool {
 			buf_addr = reg.Reg.Uint64Val
 		}
 	}
-	if fd == 0 {
-		log.Panicf("getting Rbx; regs %v\n", regs)
-	}
 
+	// fd 0 is not necessarily stdin when running target in dlv
+
+	// TODO handle any other syscalls that read/write network or files
 	fdinfo, err := os.Readlink(fmt.Sprintf("/proc/%v/fd/%v", tgt.pid, fd))
 	if err != nil {
 		log.Panicf("getting fd info: %v", err)
 	}
-	// TODO also ignore if dest is local (not visible outside module)
-	if _, socket := strings.CutPrefix(fdinfo, "socket:"); !socket {
-		return false
+	info := SyscallBreakpointInfo{SyscallName: syscall, Bufaddr: buf_addr, Bufsz: bufsz}
+	if err := info.getSocketInfo(fdinfo); err != nil {
+		log.Panicf("getting socket info: %v", err)
 	}
-	if syscall == "syscall.write" {
-		fmt.Printf("Message send\n")
-		// Message send
+	socket := info.Local_endpoint != ""
+
+	// TODO also ignore if dest is local (not visible outside module)
+	if syscall == "syscall.write" && socket {
+		// Network send
 		// Return to client if any part of send buffer overlaps any watchpoint
 		// (since we haven't actually faulted, we don't know which part overlaps)
 		if wp := thread.FindSoftwareWatchpoint(&buf_addr, bufsz); !wp.SpuriousPageFault {
 			fmt.Printf("Non-spuriously faulting send - will return to client\n")
-			return true
+			return &info
 		} else {
 			fmt.Printf("Non-faulting or spuriously faulting send - no return to client\n")
 		}
+	} else if socket {
+		// Network receive
+		return &info
 	} else {
-		// network recv
-		fmt.Printf("Message receive - will return to client\n")
-		return true
+		// Non-network read
+		if slices.Contains(tgt.ConfigFiles, fdinfo) {
+			info.Filename = fdinfo
+			return &info
+		}
 	}
-	return false
+
+	return nil
 }
 
 // CheckCondition evaluates bp's condition on thread.
@@ -372,7 +427,8 @@ func (bp *Breakpoint) checkCondition(tgt *Target, thread Thread, bpstate *Breakp
 		bpstate.checkCond(tgt, breaklet, thread)
 	}
 	// Activate syscall entry bp to return it to client, if applicable
-	if bp.taintedSyscallEntry(tgt, thread) {
+	if info := bp.taintedSyscallEntry(tgt, thread); info != nil {
+		bp.Logical.UserData = info
 		bpstate.Active = true
 	}
 	// Inactive bps: Untainted syscall entry, syscall exit, spurious wp

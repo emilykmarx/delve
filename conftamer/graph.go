@@ -122,7 +122,7 @@ func WriteGraph(outfile string, behavior_map_files []string) (graph.Graph[NodeHa
 			}
 
 			tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
-				taints := Node{NodeType: Parameter, Parameter: Param{Module: tp.Param.Module, Param: tp.Param.Param}}
+				taints := Node{NodeType: Parameter, Parameter: tp.Param}
 				roots = append(roots, taints)
 				_ = g.AddVertex(taints)
 				err := g.AddEdge(NodeHash(taints), NodeHash(tainted_by), graph.EdgeAttribute(EdgeType, string(tp.Flow)))

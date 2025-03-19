@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-
-	set "github.com/hashicorp/go-set"
 )
 
 // Write behavior map to csv - unsure how to get rid of extra quotes (part of the RFC)
@@ -63,7 +61,7 @@ func ReadBehaviorMap(filename string) (BehaviorMap, error) {
 			}
 		}
 		behavior_value := BehaviorValue{}
-		tainting_vals := TaintingVals{Params: *set.New[TaintingParam](0), Behaviors: *set.New[TaintingBehavior](0)}
+		tainting_vals := newTaintingVals()
 
 		for i, col := range row {
 			if i == 0 {

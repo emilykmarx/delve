@@ -10,13 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	set "github.com/hashicorp/go-set"
 )
 
 type EventType string
 
 const (
+	ConfigLoad        EventType = "Config load"
 	MessageSend       EventType = "Message send"
 	MessageRecv       EventType = "Message receive"
 	WatchpointHit     EventType = "Watchpoint hit"
@@ -35,12 +34,12 @@ type Event struct {
 	// Size of memory region
 	// Used for all (always 1 for map updates, since entries are per byte)
 	Size uint64
-	// Only used for WatchpointHit/WatchpointSet
+	// Only used for WatchpointHit/WatchpointSet (watchexpr)
 	Expression string
-	// Only used for MessageSend/MessageRecv and BehaviorMapUpdate (for behavior map, is key)
+	// Only used for MessageSend/MessageRecv (the sent/received message) and BehaviorMapUpdate (the key)
 	// For MessageSend/MessageRecv, offset is 0
 	Behavior *BehaviorValue
-	// Only used for MemParamMapUpdate/BehaviorMapUpdate
+	// Only used for MemParamMapUpdate/BehaviorMapUpdate, and ConfigLoad (the param)
 	TaintingVals *TaintingVals
 	Line         int // Filled in on read from csv
 }
@@ -101,7 +100,7 @@ func ReadEventLog(filename string) ([]Event, error) {
 		e := Event{}
 		e.EventType = EventType(row[0])
 		behavior_value := BehaviorValue{}
-		tainting_vals := TaintingVals{Params: *set.New[TaintingParam](0), Behaviors: *set.New[TaintingBehavior](0)}
+		tainting_vals := newTaintingVals()
 
 		for i, col := range row[1:3] {
 			num, err := strconv.ParseUint(col, 0, 64)

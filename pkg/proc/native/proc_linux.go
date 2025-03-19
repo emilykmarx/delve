@@ -91,7 +91,9 @@ func (dbp *nativeProcess) getSyscallPCs() [3]uint64 {
 // to be supplied to that process. `wd` is working directory of the program.
 // If the DWARF information cannot be found in the binary, Delve will look
 // for external debug files in the directories passed in.
-func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []string, tty string, stdinPath string, stdoutOR proc.OutputRedirect, stderrOR proc.OutputRedirect) (*proc.TargetGroup, error) {
+func Launch(cmd []string, wd string, flags proc.LaunchFlags,
+	debugInfoDirs []string, tty string, stdinPath string, stdoutOR proc.OutputRedirect, stderrOR proc.OutputRedirect,
+	targetConfigFiles []string) (*proc.TargetGroup, error) {
 	var (
 		process *exec.Cmd
 		err     error
@@ -160,7 +162,7 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags, debugInfoDirs []str
 	if err != nil {
 		return nil, fmt.Errorf("waiting for target execve failed: %s", err)
 	}
-	tgt, err := dbp.initialize(cmd[0], debugInfoDirs)
+	tgt, err := dbp.initialize(cmd[0], debugInfoDirs, targetConfigFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +215,7 @@ func Attach(pid int, waitFor *proc.WaitFor, debugInfoDirs []string) (*proc.Targe
 		return nil, err
 	}
 
-	tgt, err := dbp.initialize(findExecutable("", dbp.pid), debugInfoDirs)
+	tgt, err := dbp.initialize(findExecutable("", dbp.pid), debugInfoDirs, nil)
 	if err != nil {
 		_ = detachWithoutGroup(dbp, false)
 		return nil, err
@@ -590,7 +592,7 @@ func trapWaitInternal(procgrp *processGroup, pid int, options trapWaitOptions) (
 			dbp = newChildProcess(procgrp.procs[0], wpid)
 			dbp.followExec = true
 			cmdline, _ := dbp.initializeBasic()
-			tgt, err := procgrp.add(dbp, dbp.pid, dbp.memthread, findExecutable("", dbp.pid), proc.StopLaunched, cmdline)
+			tgt, err := procgrp.add(dbp, dbp.pid, dbp.memthread, findExecutable("", dbp.pid), proc.StopLaunched, cmdline, nil)
 			if err != nil {
 				return nil, err
 			}

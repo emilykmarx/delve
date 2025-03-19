@@ -158,6 +158,8 @@ type Config struct {
 	DisableASLR bool
 
 	RrOnProcessPid int
+
+	TargetConfigFiles []string
 }
 
 // New creates a new Debugger. ProcessArgs specify the commandline arguments for the
@@ -282,7 +284,9 @@ func (d *Debugger) Launch(processArgs []string, wd string) (*proc.TargetGroup, e
 
 	switch d.config.Backend {
 	case "native":
-		return native.Launch(processArgs, wd, launchFlags, d.config.DebugInfoDirectories, d.config.TTY, d.config.Stdin, d.config.Stdout, d.config.Stderr)
+		return native.Launch(processArgs, wd, launchFlags,
+			d.config.DebugInfoDirectories, d.config.TTY, d.config.Stdin, d.config.Stdout, d.config.Stderr,
+			d.config.TargetConfigFiles)
 	case "lldb":
 		return betterGdbserialLaunchError(gdbserial.LLDBLaunch(processArgs, wd, launchFlags, d.config.DebugInfoDirectories, d.config.TTY, [3]string{d.config.Stdin, d.config.Stdout.Path, d.config.Stderr.Path}))
 	case "rr":
@@ -328,7 +332,9 @@ func (d *Debugger) Launch(processArgs []string, wd string) (*proc.TargetGroup, e
 		if runtime.GOOS == "darwin" {
 			return betterGdbserialLaunchError(gdbserial.LLDBLaunch(processArgs, wd, launchFlags, d.config.DebugInfoDirectories, d.config.TTY, [3]string{d.config.Stdin, d.config.Stdout.Path, d.config.Stderr.Path}))
 		}
-		return native.Launch(processArgs, wd, launchFlags, d.config.DebugInfoDirectories, d.config.TTY, d.config.Stdin, d.config.Stdout, d.config.Stderr)
+		return native.Launch(processArgs, wd, launchFlags,
+			d.config.DebugInfoDirectories, d.config.TTY, d.config.Stdin, d.config.Stdout, d.config.Stderr,
+			d.config.TargetConfigFiles)
 	default:
 		return nil, fmt.Errorf("unknown backend %q", d.config.Backend)
 	}

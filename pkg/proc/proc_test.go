@@ -63,6 +63,24 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	logflags.Setup(logConf != "", logConf, "")
+
+	// Set go version used to build target (after building server and client)
+	if err := protest.SetGoVersion(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	goroot := os.Getenv("GOROOT")
+	path := os.Getenv("PATH")
+	target_go := os.Getenv("CT_TARGET_GO")
+	if target_go == "" {
+		fmt.Printf("CT_TARGET_GO unset - should be path to go fork used to build target (must support moving objects)")
+	}
+	defer func() {
+		os.Setenv("GOROOT", goroot)
+		os.Setenv("PATH", path)
+	}()
+	os.Setenv("GOROOT", target_go)
+	os.Setenv("PATH", target_go+"/bin:"+path)
 	os.Exit(protest.RunTestsWithFixtures(m))
 }
 
@@ -109,7 +127,7 @@ func withTestProcessArgs(name string, t testing.TB, wd string, args []string, bu
 
 	switch testBackend {
 	case "native":
-		grp, err = native.Launch(append([]string{fixture.Path}, args...), wd, 0, []string{}, "", "", proc.OutputRedirect{}, proc.OutputRedirect{})
+		grp, err = native.Launch(append([]string{fixture.Path}, args...), wd, 0, []string{}, "", "", proc.OutputRedirect{}, proc.OutputRedirect{}, nil)
 	case "lldb":
 		grp, err = gdbserial.LLDBLaunch(append([]string{fixture.Path}, args...), wd, 0, []string{}, "", [3]string{})
 	case "rr":
@@ -2329,7 +2347,7 @@ func TestUnsupportedArch(t *testing.T) {
 
 	switch testBackend {
 	case "native":
-		p, err = native.Launch([]string{outfile}, ".", 0, []string{}, "", "", proc.OutputRedirect{}, proc.OutputRedirect{})
+		p, err = native.Launch([]string{outfile}, ".", 0, []string{}, "", "", proc.OutputRedirect{}, proc.OutputRedirect{}, nil)
 	case "lldb":
 		p, err = gdbserial.LLDBLaunch([]string{outfile}, ".", 0, []string{}, "", [3]string{})
 	default:

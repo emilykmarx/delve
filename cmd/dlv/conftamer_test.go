@@ -23,16 +23,10 @@ import (
 const (
 	// Message events (and corresponding map updates) are always on syscall bp hits: runtime/internal/syscall.Syscall6 - line 30
 	syscall_entry_line = 30
-	// Name of buf param in syscall.write
-	syscall_recv_buf = "p"
 )
 
 // Notes:
-// Need to build target with fork of go that has allocator changes, so:
-// - If run from IDE, IDE needs to be set to use that fork
-// - Will build delve, client, and target with that fork of go, so they need to be compatible with it
-// (e.g. go 1.20.1 doesn't have max/min builtins)
-// Also, some things compile differently in go 1.20.1 vs 1.22.4 (in ways that matter for tests)
+// When creating two Event{}s, careful of reusing memory for pointer fields
 
 // Build client
 func getClientBin(t *testing.T) string {
@@ -50,7 +44,7 @@ func getClientBin(t *testing.T) string {
 }
 
 func taintingParam() ct.TaintingParam {
-	return ct.TaintingParam{Param: ct.Param{Module: "param_module", Param: "param"}, Flow: ct.ControlFlow}
+	return ct.TaintingParam{Param: ct.Param{Module: "param_module", Param: "param", File: "file"}, Flow: ct.ControlFlow}
 }
 
 func behavior() ct.BehaviorValue {
@@ -89,9 +83,7 @@ func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expecte
 func TestWriteGraph(t *testing.T) {
 	send_param := taintingParam()
 	send_behavior := behavior()
-	send_tainting_vals := ct.TaintingVals{
-		Params: *set.From([]ct.TaintingParam{send_param}),
-	}
+	send_tainting_vals := ct.MakeTaintingVals(&send_param, nil)
 
 	send_behavior_map := ct.BehaviorMap{send_behavior: send_tainting_vals}
 	// tainted ones are reachable => should be combined with sender's node
@@ -106,13 +98,9 @@ func TestWriteGraph(t *testing.T) {
 	send_untainted := send_tainted
 	send_untainted.Offset = send_tainted.Offset + 1
 
-	tainting_vals := ct.TaintingVals{
-		Behaviors: *set.From([]ct.TaintingBehavior{{Behavior: recv_tainted, Flow: ct.DataFlow}}),
-	}
+	tainting_vals := ct.MakeTaintingVals(nil, &ct.TaintingBehavior{Behavior: recv_tainted, Flow: ct.DataFlow})
 	recv_behavior_map := ct.BehaviorMap{send_tainted: tainting_vals, send_untainted: tainting_vals}
-	tainting_vals = ct.TaintingVals{
-		Behaviors: *set.From([]ct.TaintingBehavior{{Behavior: recv_untainted, Flow: ct.DataFlow}}),
-	}
+	tainting_vals = ct.MakeTaintingVals(nil, &ct.TaintingBehavior{Behavior: recv_untainted, Flow: ct.DataFlow})
 	recv_behavior_map[send_untainted] = tainting_vals
 
 	send_file := "fake_send_map.csv"
@@ -126,11 +114,11 @@ func TestWriteGraph(t *testing.T) {
 
 	expected_lines := []string{
 		"strict digraph {",
-		"\"{ {param_module param} {0     }}\" [  weight=0 ];",
-		"\"{ {param_module param} {0     }}\" -> \"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [ EdgeType=\"Control Flow\",  weight=0 ];",
-		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" [  weight=0 ];",
-		"\"{ { } {1 send_endpoint recv_endpoint tcp  }}\" -> \"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
-		"\"{ { } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [  weight=0 ];",
+		"\"{ {param_module file param} {0     }}\" [  weight=0 ];",
+		"\"{ {param_module file param} {0     }}\" -> \"{ {  } {1 send_endpoint recv_endpoint tcp  }}\" [ EdgeType=\"Control Flow\",  weight=0 ];",
+		"\"{ {  } {1 send_endpoint recv_endpoint tcp  }}\" [  weight=0 ];",
+		"\"{ {  } {1 send_endpoint recv_endpoint tcp  }}\" -> \"{ {  } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
+		"\"{ {  } {1 send_endpoint_2 recv_endpoint_2 tcp  }}\" [  weight=0 ];",
 		"}",
 	}
 	checkGraph(t, []string{send_file, recv_file}, "fake_graph.gv", expected_lines)
@@ -157,10 +145,7 @@ func TestReadWriteBehaviorMap(t *testing.T) {
 		Behavior: behavior,
 		Flow:     ct.DataFlow,
 	}
-	tainting_vals := ct.TaintingVals{
-		Params:    *set.From([]ct.TaintingParam{tainting_param}),
-		Behaviors: *set.From([]ct.TaintingBehavior{tainting_behavior}),
-	}
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, &tainting_behavior)
 	behavior_map := make(ct.BehaviorMap)
 	behavior_map[behavior] = tainting_vals
 
@@ -168,10 +153,8 @@ func TestReadWriteBehaviorMap(t *testing.T) {
 
 	// Check inequality (modify flow for behavior)
 	tainting_behavior.Flow = ct.ControlFlow
-	tainting_vals = ct.TaintingVals{
-		Params:    *set.From([]ct.TaintingParam{tainting_param}),
-		Behaviors: *set.From([]ct.TaintingBehavior{tainting_behavior}),
-	}
+	tainting_vals = ct.MakeTaintingVals(&tainting_param, &tainting_behavior)
+
 	behavior_map_modified := make(ct.BehaviorMap)
 	behavior_map_modified[behavior] = tainting_vals
 
@@ -181,7 +164,7 @@ func TestReadWriteBehaviorMap(t *testing.T) {
 	}
 
 	// Check empty sets can still marshal/unmarshal
-	behavior_map[behavior] = ct.TaintingVals{}
+	behavior_map[behavior] = ct.TaintingVals{} // XXX should it be this or NewTaintingValues? (i.e. if empty, has client already created set?)
 
 	readWriteBehaviorMap(t, behavior_map)
 }
@@ -236,7 +219,7 @@ func TestControlFlow(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "j", 1, 40, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 // Tests clear when another sw wp still exists on same page
@@ -261,7 +244,7 @@ func TestCallAndAssign1(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "z", uint64(8), 46, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestCallAndAssign2(t *testing.T) {
@@ -277,7 +260,7 @@ func TestCallAndAssign2(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "a", uint64(8), 22, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestStrings(t *testing.T) {
@@ -292,7 +275,7 @@ func TestStrings(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "i", uint64(1), 19, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestSliceRangeBuiltins(t *testing.T) {
@@ -308,7 +291,7 @@ func TestSliceRangeBuiltins(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "names[1]", uint64(9+5), 22, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 // Slice of slices, array of slices/strings (slice of strings is in TestSliceRangeBuiltins)
@@ -325,7 +308,7 @@ func TestReferenceElems(t *testing.T) {
 		watchpointSet(&config, config.Initial_watchexpr+"[0]", uint64(2), initial_line, ct.DataFlow, nil, nil)
 	expected_events = append(expected_events,
 		watchpointSet(&config, config.Initial_watchexpr+"[1]", uint64(5), initial_line, ct.DataFlow, nil, nil)...)
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 
 	// Array of slices => set on each slice's strings
 	initial_line = 12
@@ -338,7 +321,7 @@ func TestReferenceElems(t *testing.T) {
 		watchpointSet(&config, config.Initial_watchexpr+"[1][0]", uint64(3), initial_line, ct.DataFlow, nil, nil)...)
 	expected_events = append(expected_events,
 		watchpointSet(&config, config.Initial_watchexpr+"[1][1]", uint64(4), initial_line, ct.DataFlow, nil, nil)...)
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 
 	// Slice of slices => set on each inner slice's strings
 	config = Config(dir+"slice_slices.go", "slice_slices", initial_line)
@@ -350,7 +333,7 @@ func TestReferenceElems(t *testing.T) {
 		watchpointSet(&config, config.Initial_watchexpr+"[1][0]", uint64(3), initial_line, ct.DataFlow, nil, nil)...)
 	expected_events = append(expected_events,
 		watchpointSet(&config, config.Initial_watchexpr+"[1][1]", uint64(4), initial_line, ct.DataFlow, nil, nil)...)
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestMethods(t *testing.T) {
@@ -362,7 +345,7 @@ func TestMethods(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "recvr_callee.Data", uint64(2), 27, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestFuncLitGoRoutine(t *testing.T) {
@@ -372,7 +355,7 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	config := Config("funclit_goroutine.go", "fqdn", initial_line)
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(4), initial_line, ct.DataFlow, nil, nil)
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestMultiRound(t *testing.T) {
@@ -386,7 +369,7 @@ func TestMultiRound(t *testing.T) {
 			watchpointSet(&config, "vars[i]", uint64(8), 16, ct.DataFlow, nil, nil)...)
 	}
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestRuntimeHits(t *testing.T) {
@@ -402,7 +385,7 @@ func TestRuntimeHits(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "n_caller.Data", uint64(255), 22, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestCasts(t *testing.T) {
@@ -414,7 +397,7 @@ func TestCasts(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "y", uint64(8), 13, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 // Return TaintingParam corresponding to config.Initial_watchexpr
@@ -426,6 +409,7 @@ func configTaintingParam(config *ct.Config, flow ct.TaintFlow) set.Set[ct.Tainti
 			Param: ct.Param{
 				Module: config.Module,
 				Param:  config.Initial_watchexpr,
+				// No file, since this is meant for passed-in variables rather than file loads
 			},
 			Flow: flow,
 		}
@@ -522,19 +506,70 @@ func messageRecv(recvd_msg ct.TaintingBehavior, msg_bufsz uint64) []ct.Event {
 	}
 	// Set watchpoint on msg buf and update m-c map
 	events = append(events,
-		watchpointSet(nil, syscall_recv_buf, msg_bufsz, syscall_entry_line, ct.DataFlow, nil, &recvd_msg)...)
+		watchpointSet(nil, ct.SyscallRecvBuf, msg_bufsz, syscall_entry_line, ct.DataFlow, nil, &recvd_msg)...)
 
 	return events
+}
+
+// Also tests copy builtin
+func TestLoadConfigParam(t *testing.T) {
+	// Write a config file, tell dlv where it is
+	config_params := []byte("param1\nparam2\n")
+	target_config_file := filepath.Join(t.TempDir(), "target_config.txt")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+
+	config := Config("load_config_param.go", "", 0)
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// Expect config load event, wp set (tainted by module.file), then follow-on wp set (tainted by module.file.param)
+	readbufsz := uint64(512) // ReadFile uses buf of this size for smaller files
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []ct.Event{config_load}
+	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, config_load)
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	param := "param1"
+	tainting_param.Param.Param = param
+	expected_events = append(expected_events,
+		watchpointSet(nil, "param1_var", uint64(len(param)), 23, ct.DataFlow, &tainting_param, nil)...)
+	// The usual syntax for passing args from dlv to target doesn't work in test
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events)
 }
 
 func TestNetworkMessages(t *testing.T) {
 	// SENDER
 	initial_line := 34
-	config := Config("behavior_client.go", "config[1]", initial_line)
-	config.Module = "send_module"
-	config.Event_log_filename = config.Module + "_event_log.csv"
-	config.Behavior_map_filename = config.Module + "_behavior_map.csv"
-	behavior_maps := []string{config.Behavior_map_filename}
+	client_config := Config("behavior_client.go", "config[1]", initial_line)
+	client_config.Module = "send_module"
+	client_config.Event_log_filename = client_config.Module + "_event_log.csv"
+	client_config.Behavior_map_filename = client_config.Module + "_behavior_map.csv"
 
 	client_endpoint := "127.0.0.1:5050"
 	server_endpoint := "127.0.0.1:6060"
@@ -543,27 +578,26 @@ func TestNetworkMessages(t *testing.T) {
 		Send_endpoint: client_endpoint,
 		Recv_endpoint: server_endpoint,
 		Transport:     "tcp",
-		Send_module:   config.Module,
+		Send_module:   client_config.Module,
 	}
 	expected_events :=
-		watchpointSet(&config, config.Initial_watchexpr, uint64(1), initial_line, ct.DataFlow, nil, nil)
+		watchpointSet(&client_config, client_config.Initial_watchexpr, uint64(1), initial_line, ct.DataFlow, nil, nil)
 
-	expected_events = append(expected_events, messageSend(&config, sent_msg, 6, 1, nil)...)
-	go run(t, config, expected_events)
+	expected_events = append(expected_events, messageSend(&client_config, sent_msg, 6, 1, nil)...)
+	go run(t, &client_config, expected_events)
 
 	// RECEIVER
-	config = Config("behavior_server.go", "", 0)
-	config.Module = "recv_module"
-	config.Event_log_filename = config.Module + "_event_log.csv"
-	config.Behavior_map_filename = config.Module + "_behavior_map.csv"
-	behavior_maps = append(behavior_maps, config.Behavior_map_filename)
-	config.Server_endpoint = "localhost:4041"
+	server_config := Config("behavior_server.go", "", 0)
+	server_config.Module = "recv_module"
+	server_config.Event_log_filename = server_config.Module + "_event_log.csv"
+	server_config.Behavior_map_filename = server_config.Module + "_behavior_map.csv"
+	server_config.Server_endpoint = "localhost:4041"
 
 	recvd_msg := ct.BehaviorValue{
 		Send_endpoint: client_endpoint,
 		Recv_endpoint: server_endpoint,
 		Transport:     "tcp",
-		Recv_module:   config.Module,
+		Recv_module:   server_config.Module,
 	}
 	tainting_behavior := ct.TaintingBehavior{
 		Behavior: recvd_msg,
@@ -582,23 +616,25 @@ func TestNetworkMessages(t *testing.T) {
 		Send_endpoint: server_endpoint,
 		Recv_endpoint: client_endpoint,
 		Transport:     "tcp",
-		Send_module:   config.Module,
+		Send_module:   server_config.Module,
 	}
 	tainting_behavior.Behavior.Offset = 0 // msg_B[1] tainted by msg_A[0] (messageSend takes care of rest of msg_B)
 	expected_events = append(expected_events, messageSend(nil, sent_msg, 3, 2, &tainting_behavior)...)
 
-	run(t, config, expected_events)
+	run(t, &server_config, expected_events)
 
 	expected_lines := []string{
 		"strict digraph {",
-		"\"{ {send_module config[1]} {0     }}\" [  weight=0 ];",
-		"\"{ {send_module config[1]} {0     }}\" -> \"{ { } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
-		"\"{ { } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" [  weight=0 ];",
-		"\"{ { } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" -> \"{ { } {2 127.0.0.1:6060 127.0.0.1:5050 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
-		"\"{ { } {2 127.0.0.1:6060 127.0.0.1:5050 tcp  }}\" [  weight=0 ];",
+		"\"{ {send_module  config[1]} {0     }}\" [  weight=0 ];",
+		"\"{ {send_module  config[1]} {0     }}\" -> \"{ {  } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
+		"\"{ {  } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" [  weight=0 ];",
+		"\"{ {  } {1 127.0.0.1:5050 127.0.0.1:6060 tcp  }}\" -> \"{ {  } {2 127.0.0.1:6060 127.0.0.1:5050 tcp  }}\" [ EdgeType=\"Data Flow\",  weight=0 ];",
+		"\"{ {  } {2 127.0.0.1:6060 127.0.0.1:5050 tcp  }}\" [  weight=0 ];",
 		"}",
 	}
 
+	// Get behavior map filenames after run() modifies them
+	behavior_maps := []string{client_config.Behavior_map_filename, server_config.Behavior_map_filename}
 	checkGraph(t, behavior_maps, "behavior_graph.gv", expected_lines)
 }
 
@@ -629,7 +665,7 @@ func TestStructs(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "nested2.name.Data", uint64(2), 44, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 func TestAllocatorHTTP(t *testing.T) {
@@ -642,7 +678,7 @@ func TestAllocatorHTTP(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "x", uint64(8), 31, ct.DataFlow, nil, nil)...)
 
-	run(t, config, expected_events)
+	run(t, &config, expected_events)
 }
 
 /* TODO need to investigate this - per asm, doesn't seem like should be fake...
@@ -660,13 +696,13 @@ func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
 	for ; len(stdout.savedOutput) == 0; time.Sleep(300 * time.Millisecond) {
 	}
 	if !strings.HasPrefix(string(stdout.savedOutput), "API server listening at:") {
-		t.Fatalf("Delve server failed to start listening")
+		t.Fatalf("Delve server failed to start listening; stdout %v", string(stdout.savedOutput))
 	}
 
 	// Check for error
 	// XXX fix this for logging in my fork of go
 	if len(stderr.savedOutput) > 0 {
-		//t.Fatalf("Delve server errored while starting up")
+		t.Fatalf("Delve server errored while starting up")
 	}
 }
 
@@ -680,13 +716,18 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 	return os.Stdout.Write(p)
 }
 
-// Start a dlv server and client for a module, wait for client to exit/timeout.
+// Build dlv server and client with version of go in PATH,
+// and target with version in CT_TARGET_GO.
+// Start server for a module, wait for client to exit/timeout.
 // Note this may be called concurrently for multiple modules.
 // TODO (minor) prefix log msgs with module to make clearer for tests that run multiple modules
-func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
+// Note Fatalf shouldn't be called here - use Fail() instead (since it's called from goroutine)
+func run(t *testing.T, config *ct.Config, expected_events []ct.Event) {
 	// Set up config
 	config.Initial_bp_file = filepath.Join(protest.FindFixturesDir(), "conftamer", config.Initial_bp_file)
-	config.Initial_bp_line = expected_events[0].Line
+	if config.Initial_watchexpr != "" {
+		config.Initial_bp_line = expected_events[0].Line
+	}
 
 	if os.Getenv("CT_KEEP_CSVS") == "" {
 		event_log := filepath.Join(t.TempDir(), config.Event_log_filename)
@@ -696,7 +737,7 @@ func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 	}
 
 	config_file := filepath.Join(t.TempDir(), "client_config.yml")
-	ct.SaveConfig(config_file, config)
+	ct.SaveConfig(config_file, *config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -705,6 +746,8 @@ func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 	var server_out saveOutput
 	var server_err saveOutput
 
+	client_bin := getClientBin(t)
+
 	server := exec.CommandContext(ctx, getDlvBin(t), "debug", "--headless",
 		"--api-version=2", "--accept-multiclient", "--listen", config.Server_endpoint, config.Initial_bp_file)
 	t.Logf("Starting server: %v\n", strings.Join(server.Args, " "))
@@ -712,6 +755,9 @@ func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 	server_err = saveOutput{}
 	server.Stdout = &server_out
 	server.Stderr = &server_err
+
+	// Set go version used to build target (after building server and client)
+	assertNoError(protest.SetGoVersion(), t, "set go version")
 	assertNoError(server.Start(), t, "start headless instance")
 	waitForServer(t, &server_out, &server_err)
 
@@ -720,7 +766,7 @@ func run(t *testing.T, config ct.Config, expected_events []ct.Event) {
 	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()
 
-	client := exec.CommandContext(ctx, getClientBin(t), "-config="+config_file)
+	client := exec.CommandContext(ctx, client_bin, "-config="+config_file)
 	t.Logf("Starting client with timeout %v: %v\n", client_timeout, strings.Join(client.Args, " "))
 
 	var client_out saveOutput
@@ -785,12 +831,12 @@ func checkEvents(t *testing.T, expected []ct.Event, event_log string) {
 				e.Address = addr
 				offset++
 			}
-		} else if actual.EventType == ct.MessageRecv {
+		} else if actual.EventType == ct.MessageRecv || actual.EventType == ct.ConfigLoad {
 			// Don't know what message recv buffer address to expect - but use it to fill in expected wp set address
 			assertEventsEqual(t, expected[expected_i], actual, fmt.Sprintf("expected event %v wrong", expected_i), true)
 
 			expected_wp_set := &expected[expected_i+1]
-			assertEqual(t, ct.WatchpointSet, expected_wp_set.EventType, fmt.Sprintf("expected wp set after msg recv at event %v", expected_i))
+			assertEqual(t, ct.WatchpointSet, expected_wp_set.EventType, fmt.Sprintf("expected wp set after recv at event %v", expected_i))
 			expected_wp_set.Address = actual.Address
 			actual_wp_set := events[expected_i+1]
 			// Check wp set now since above logic will ignore addr

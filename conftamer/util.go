@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	linuxproc "github.com/c9s/goprocinfo/linux"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
@@ -60,6 +59,17 @@ func newTaintingVals() TaintingVals {
 	}
 }
 
+func MakeTaintingVals(tp *TaintingParam, tb *TaintingBehavior) TaintingVals {
+	v := newTaintingVals()
+	if tp != nil {
+		v.Params.Insert(*tp)
+	}
+	if tb != nil {
+		v.Behaviors.Insert(*tb)
+	}
+	return v
+}
+
 func union(tv1 TaintingVals, tv2 TaintingVals) TaintingVals {
 	return TaintingVals{
 		Params:    *tv1.Params.Union(&tv2.Params),
@@ -67,7 +77,7 @@ func union(tv1 TaintingVals, tv2 TaintingVals) TaintingVals {
 	}
 }
 
-// Add tainting_vals to any existing entry in m-p map
+// Add tainting_vals to any existing entry in m-p[watchaddr]
 // If new entry, insert it
 func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals) {
 	if cmp.Equal(tainting_vals, newTaintingVals()) {
@@ -82,6 +92,22 @@ func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals Taintin
 	WriteEvent(tc, tc.event_log, event)
 }
 
+// Fill in any empty params at m-p[watchaddr]
+func (tc *TaintCheck) populateParam(watchaddr uint64, param string) {
+	existing_taint := tc.mem_param_map[watchaddr]
+	new_params := existing_taint.Params
+	existing_taint.Params.ForEach(func(tp TaintingParam) bool {
+		if tp.Param.Param == "" {
+			new_params.Remove(tp)
+			tp.Param.Param = param
+			new_params.Insert(tp)
+		}
+		return true
+	})
+	new_taint := union(TaintingVals{Params: new_params}, TaintingVals{Behaviors: existing_taint.Behaviors})
+	tc.mem_param_map[watchaddr] = new_taint
+}
+
 // If offset is beyond pending_wp's len, append - else union with any existing at offset
 func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offset uint64) {
 	existing_taint := newTaintingVals()
@@ -94,6 +120,41 @@ func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offs
 	} else {
 		pending_wp.tainting_vals = append(pending_wp.tainting_vals, new_taint)
 	}
+}
+
+// Get bytes from target memory in overlap_start:overlap_end
+func (tc *TaintCheck) readParam(overlap_start uint64, overlap_end uint64) string {
+	param := ""
+	for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
+		eval_expr := fmt.Sprintf("*(*uint8)(%#x)", watchaddr)
+		s := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
+		xv, err := tc.client.EvalVariable(s, eval_expr, api.LoadConfig{})
+		if err != nil {
+			log.Panicf("read param char at %#x: %v\n", watchaddr, err)
+		}
+		var char uint8
+		if _, err := fmt.Sscanf(xv.Value, "%d", &char); err != nil {
+			log.Panicf("parse param char at %#x: %v\n", watchaddr, err)
+		}
+		param += string(char)
+	}
+	return param
+}
+
+func hasEmptyParam(tainting_vals TaintingVals) bool {
+	empty := false
+	tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
+		if tp.Param.Param == "" {
+			if !empty {
+				empty = true
+			} else {
+				// multiple empty params at an address - unsure if possible or what to do
+				log.Panicf("mem-param map has multiple empty params: %+v\n", tainting_vals)
+			}
+		}
+		return true
+	})
+	return empty
 }
 
 // pretty-print
@@ -145,25 +206,12 @@ func exprToString(t ast.Expr) string {
 	return buf.String()
 }
 
-func uint64Max(a uint64, b uint64) uint64 {
-	if a >= b {
-		return a
-	}
-	return b
-}
-func uint64Min(a uint64, b uint64) uint64 {
-	if a <= b {
-		return a
-	}
-	return b
-}
-
 // Return overlapping region: start, exclusive end, ok
 func memOverlap(start1 uint64, sz1 uint64, start2 uint64, sz2 uint64) (uint64, uint64, bool) {
 	end1 := start1 + sz1 // exclusive
 	end2 := start2 + sz2
-	overlap_start := uint64Max(start1, start2)
-	overlap_end := uint64Min(end1, end2)
+	overlap_start := max(start1, start2)
+	overlap_end := min(end1, end2)
 	if overlap_start < overlap_end {
 		return overlap_start, overlap_end, true
 	}
@@ -320,52 +368,6 @@ func (tc *TaintCheck) setBp(addr uint64) {
 			log.Fatalf("Failed to create breakpoint at %v: %v\n", addr, err)
 		}
 	}
-}
-
-// Assumes currently at syscall entry,
-// and syscall args are fd, buf, bufsz (e.g. read/write)
-// Return local, remote endpoints, transport protocol
-func (tc *TaintCheck) getSocketEndpoints() (string, string, string) {
-	// 1. fd => inode: cat /proc/<pid>/<fd>
-	fd := tc.register("Rbx")
-	state, err := tc.client.GetState()
-	if err != nil {
-		log.Panicf("GetState: %v", err)
-	}
-
-	fdinfo, err := os.Readlink(fmt.Sprintf("/proc/%v/fd/%v", state.Pid, fd))
-	if err != nil {
-		log.Panicf("Readlink: %v", err)
-	}
-	inode := uint64(0)
-	if suffix, socket := strings.CutPrefix(fdinfo, "socket:"); socket {
-		inode_str := suffix[1 : len(suffix)-1]
-		inode, err = strconv.ParseUint(inode_str, 0, 64)
-		if err != nil {
-			log.Panicf("ParseUint: %v", err)
-		}
-	}
-
-	// 2. Get socket endpoints
-	// XXX ipv6 and other transports too
-	tcp_socks, err := linuxproc.ReadNetTCPSockets("/proc/net/tcp", linuxproc.NetIPv4Decoder)
-	if err != nil {
-		log.Panicf("ReadNetTCPSockets: %v", err)
-	}
-	for _, sock := range tcp_socks.Sockets {
-		if sock.Inode == inode {
-			return sock.LocalAddress, sock.RemoteAddress, "tcp"
-		}
-	}
-	log.Panicf("missing tcp socket info for fd %v", fd)
-	return "", "", ""
-}
-
-// Same assumptions as getSocketEndpoints
-func (tc *TaintCheck) syscallBuf() (uint64, uint64) {
-	bufstart := tc.register("Rcx")
-	bufsz := tc.register("Rdi")
-	return bufstart, bufsz
 }
 
 // Location assuming hit a wp or bp (tc.hit.hit_instr is only set for wp)

@@ -149,7 +149,7 @@ type Breakpoint struct {
 	// Disabled flag, signifying the state of the breakpoint
 	Disabled bool `json:"disabled"`
 
-	UserData interface{} `json:"-"`
+	UserData interface{}
 
 	// RootFuncName is the Root function from where tracing needs to be done
 	RootFuncName string

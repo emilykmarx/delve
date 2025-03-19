@@ -273,8 +273,8 @@ func (procgrp *processGroup) procForPid(pid int) *nativeProcess {
 	return nil
 }
 
-func (procgrp *processGroup) add(p *nativeProcess, pid int, currentThread proc.Thread, path string, stopReason proc.StopReason, cmdline string) (*proc.Target, error) {
-	tgt, err := procgrp.addTarget(p, pid, currentThread, path, stopReason, cmdline)
+func (procgrp *processGroup) add(p *nativeProcess, pid int, currentThread proc.Thread, path string, stopReason proc.StopReason, cmdline string, configFiles []string) (*proc.Target, error) {
+	tgt, err := procgrp.addTarget(p, pid, currentThread, path, stopReason, cmdline, configFiles)
 	if tgt == nil {
 		i := len(procgrp.procs)
 		procgrp.procs = append(procgrp.procs, p)
@@ -636,7 +636,7 @@ func (dbp *nativeProcess) initializeBasic() (string, error) {
 
 // initialize will ensure that all relevant information is loaded
 // so the process is ready to be debugged.
-func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string) (*proc.TargetGroup, error) {
+func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string, targetConfigFiles []string) (*proc.TargetGroup, error) {
 	cmdline, err := dbp.initializeBasic()
 	if err != nil {
 		return nil, err
@@ -671,7 +671,7 @@ func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string) (*proc
 		CanDump:    runtime.GOOS == "linux" || runtime.GOOS == "freebsd" || (runtime.GOOS == "windows" && runtime.GOARCH == "amd64"),
 	})
 	procgrp.addTarget = addTarget
-	tgt, err := procgrp.add(dbp, dbp.pid, dbp.memthread, path, stopReason, cmdline)
+	tgt, err := procgrp.add(dbp, dbp.pid, dbp.memthread, path, stopReason, cmdline, targetConfigFiles)
 	if err != nil {
 		return nil, err
 	}
