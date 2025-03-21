@@ -122,9 +122,11 @@ func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offs
 	}
 }
 
-// Get bytes from target memory in overlap_start:overlap_end
-func (tc *TaintCheck) readParam(overlap_start uint64, overlap_end uint64) string {
-	param := ""
+// Parse params assuming \n-separated. Return offset => param
+func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64) map[uint64]string {
+	param_taint := map[uint64]string{}
+	// 1. Parse all params
+	buf_contents := ""
 	for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
 		eval_expr := fmt.Sprintf("*(*uint8)(%#x)", watchaddr)
 		s := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
@@ -136,9 +138,23 @@ func (tc *TaintCheck) readParam(overlap_start uint64, overlap_end uint64) string
 		if _, err := fmt.Sscanf(xv.Value, "%d", &char); err != nil {
 			log.Panicf("parse param char at %#x: %v\n", watchaddr, err)
 		}
-		param += string(char)
+		buf_contents += string(char)
 	}
-	return param
+	params := strings.Split(buf_contents, "\n")
+	// 2. Map offsets to params
+	param_idx := 0
+	len_consumed := len(params[param_idx])
+	for offset := uint64(0); offset <= overlap_end-overlap_start; offset++ {
+		if offset == uint64(len_consumed) && param_idx < len(params)-1 {
+			// \n (not the last one)
+			param_idx++
+			len_consumed += len(params[param_idx])
+		} else {
+			param_taint[offset] = params[param_idx]
+		}
+	}
+
+	return param_taint
 }
 
 func hasEmptyParam(tainting_vals TaintingVals) bool {

@@ -433,6 +433,10 @@ func (bp *Breakpoint) checkCondition(tgt *Target, thread Thread, bpstate *Breakp
 	}
 	// Inactive bps: Untainted syscall entry, syscall exit, spurious wp
 	// Active bps: Tainted syscall entry, regular bp, non-spurious wp
+	// Note since we stop all threads when any one hits a syscall entry (even if a non-tainted one),
+	// it's possible for it to look to the client that we returned the same wp hit twice in a row, i.e.:
+	// thread A hits wp => return to client, client continue. Right after we resume, thread B hits untainted syscall entry
+	// while A hasn't moved => again return to client, which sees the same state.
 }
 
 func (bpstate *BreakpointState) checkCond(tgt *Target, breaklet *Breaklet, thread Thread) {

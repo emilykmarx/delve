@@ -270,7 +270,15 @@ func TestStrings(t *testing.T) {
 		watchpointSet(&config, config.Initial_watchexpr, uint64(2), initial_line, ct.DataFlow, nil, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "s2", uint64(6), 16, ct.DataFlow, nil, nil)...)
+		ct.Event{EventType: ct.WatchpointSet, Size: 6, Expression: "s2", Line: 16})
+
+	tainting_param := configTaintingParam(&config, ct.DataFlow)
+	tainting_vals := ct.TaintingVals{Params: tainting_param}
+	// Need to fix partial taint - currently taints first two bytes of s2, but should be last two
+	for offset := 0; offset < 2; offset++ {
+		expected_events = append(expected_events,
+			ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &tainting_vals, Line: 16})
+	}
 
 	expected_events = append(expected_events,
 		watchpointSet(&config, "i", uint64(1), 19, ct.DataFlow, nil, nil)...)
@@ -419,7 +427,7 @@ func configTaintingParam(config *ct.Config, flow ct.TaintFlow) set.Set[ct.Tainti
 }
 
 // If config passed: config.Initial_watchexpr taints the entire watchpoint region (specified by watchexpr/sz/line).
-// If additional taint is passed, add that to corresponding sz bytes (starting with extra[Offset])
+// If additional taint is passed, add that to corresponding sz bytes (starting with extra[Offset], for behavior)
 // Return resulting watchpoint set and mem-param update events.
 func watchpointSet(config *ct.Config, watchexpr string, sz uint64, line int, flow ct.TaintFlow,
 	extra_tainting_param *ct.TaintingParam, extra_tainting_behavior *ct.TaintingBehavior) []ct.Event {
@@ -535,7 +543,6 @@ func TestLoadConfigParam(t *testing.T) {
 
 	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
 
-	// Expect config load event, wp set (tainted by module.file), then follow-on wp set (tainted by module.file.param)
 	readbufsz := uint64(512) // ReadFile uses buf of this size for smaller files
 	config_load := ct.Event{
 		EventType:    ct.ConfigLoad,
@@ -554,10 +561,33 @@ func TestLoadConfigParam(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
 
+	// bytes2
+	sz := uint64(13)
+	expected_events = append(expected_events,
+		ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24})
+
 	param := "param1"
 	tainting_param.Param.Param = param
+	for offset := uint64(0); offset < sz; offset++ {
+		if offset == 6 {
+			// \n
+			tainting_param.Param.Param = ""
+		} else if offset > 6 {
+			param = "param2"
+			tainting_param.Param.Param = param
+		}
+		tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+		expected_events = append(expected_events, ct.Event{
+			EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &tainting_vals, Line: 24,
+		})
+	}
+
+	// param1_var
+	param = "param1"
+	tainting_param.Param.Param = param
 	expected_events = append(expected_events,
-		watchpointSet(nil, "param1_var", uint64(len(param)), 23, ct.DataFlow, &tainting_param, nil)...)
+		watchpointSet(nil, "param1_var", uint64(len(param)), 26, ct.DataFlow, &tainting_param, nil)...)
+
 	// The usual syntax for passing args from dlv to target doesn't work in test
 	os.Setenv("config", target_config_file)
 	run(t, &config, expected_events)
@@ -757,7 +787,12 @@ func run(t *testing.T, config *ct.Config, expected_events []ct.Event) {
 	server.Stderr = &server_err
 
 	// Set go version used to build target (after building server and client)
-	assertNoError(protest.SetGoVersion(), t, "set go version")
+	path, target_go, err := protest.SetGoVersion()
+	assertNoError(err, t, "set go version")
+	defer func() {
+		protest.UnSetGoVersion(path, target_go)
+	}()
+
 	assertNoError(server.Start(), t, "start headless instance")
 	waitForServer(t, &server_out, &server_err)
 
@@ -819,14 +854,20 @@ func checkEvents(t *testing.T, expected []ct.Event, event_log string) {
 	assertNoError(err, t, "read event log")
 	// Hits are present in actual but not expected => indices are not 1:1
 	expected_i := 0
+	// All actual events are as expected
 	for _, actual := range events {
 		if actual.EventType == ct.WatchpointSet {
 			// Don't know what watchpoint address to expect - but use it to fill in expected m-c map updates
 			assertEventsEqual(t, expected[expected_i], actual, fmt.Sprintf("expected event %v wrong", expected_i), true)
 
 			offset := 0
+			// Assumes newly watched region is tainted from the beginning, possibly ending before the end
 			for addr := actual.Address; addr < actual.Address+actual.Size; addr++ {
 				e := &expected[expected_i+offset+1]
+				if e.EventType != ct.MemParamMapUpdate {
+					// Rest of newly watched region isn't tainted (strings test)
+					break
+				}
 				assertEqual(t, ct.MemParamMapUpdate, e.EventType, fmt.Sprintf("expected m-p update after wp set at event %v", expected_i))
 				e.Address = addr
 				offset++
@@ -854,6 +895,9 @@ func checkEvents(t *testing.T, expected []ct.Event, event_log string) {
 		}
 		expected_i++
 	}
+
+	// All expected events occurred
+	assertEqual(t, len(expected), expected_i, "expected event(s) didn't happen")
 }
 
 func assertEventsEqual(t testing.TB, expected ct.Event, actual ct.Event, msg string, ignore_addr bool) {

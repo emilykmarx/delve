@@ -46,14 +46,20 @@ var fixtures = make(map[fixtureKey]Fixture)
 // PathsToRemove is a list of files and directories to remove after running all the tests
 var PathsToRemove []string
 
-func SetGoVersion() error {
+func SetGoVersion() (string, string, error) {
 	path := os.Getenv("PATH")
+	old_target_go := os.Getenv("GOROOT")
 	target_go := os.Getenv("CT_TARGET_GO")
 	if target_go == "" {
-		return fmt.Errorf("CT_TARGET_GO unset - should be path to go fork used to build target (must support moving objects)")
+		return "", "", fmt.Errorf("CT_TARGET_GO unset - should be path to go fork used to build target (must support moving objects)")
 	}
 	os.Setenv("GOROOT", target_go)
 	os.Setenv("PATH", target_go+"/bin:"+path)
+	return path, old_target_go, nil
+}
+func UnSetGoVersion(path string, target_go string) error {
+	os.Setenv("GOROOT", target_go)
+	os.Setenv("PATH", path)
 	return nil
 }
 

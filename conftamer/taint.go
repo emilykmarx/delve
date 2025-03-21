@@ -275,8 +275,7 @@ func (tc *TaintCheck) propagateTaint() {
 			call_expr := exprToString(typed_node.Fun)
 			if call_expr == "copy" {
 				if overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Args[1]); overlap_expr != nil {
-					// Copies min(len(new), len(old)). So if old is longer, and this is a config load, shorten overlap to new.
-					// (If not config load, doesn't matter since we'll store old's taint byte-by-byte.)
+					// Copies min(len(new), len(old)). So if new is shorter, shorten overlap and watchexpr.
 					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(typed_node.Args[0]), true)
 					if err != nil {
 						// I think new should always be evaluatable?
@@ -319,7 +318,7 @@ func (tc *TaintCheck) propagateTaint() {
 
 		// May not be next line linearly for := in flow control statement
 		// but if not, var immediately went out of scope so we don't need a wp anyway
-		// TODO except for if/else (e.g. if{x=1}else{x=2}), maybe others
+		// TODO except for if/else (e.g. if{x=1}else{x=2}), maybe others. Logic in proc.next() might be helpful.
 		// And Range: If next line is }, set on next iter
 		// Need to handle case where never enter loop (never hit bp => main never terminates)
 		// ^ When fix this - keep in mind that wps go OOS when exit frame they're set in -

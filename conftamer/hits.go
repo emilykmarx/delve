@@ -108,7 +108,7 @@ const (
 )
 
 // Handle syscall entry bp hit - server returns it to us if tainted
-func (tc *TaintCheck) onSyscallEntryBpHit() {
+func (tc *TaintCheck) handleSyscallEntry() {
 	raw_info := tc.hit.hit_bp.UserData
 	jsonString, _ := json.Marshal(raw_info)
 	info := proc.SyscallBreakpointInfo{}
@@ -153,8 +153,8 @@ func (tc *TaintCheck) onSyscallEntryBpHit() {
 		}
 		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true)
 	} else if info.SyscallName == "syscall.read" {
-		// Read config file => set watchpoint on entire read buffer, tainted by config file
-		// (param name will be filled in when watchpoint hits)
+		// Read config file => set watchpoint on entire read buffer
+		// Each byte is tainted by param of corresponding offset in buffer (assuming params are separated by \n)
 		tainting_param := TaintingParam{
 			Param: Param{
 				File:   info.Filename,
@@ -296,19 +296,21 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
 				// append => handle same as config variable load (put all taint at offset 0)
 				overlap_end = overlap_start + 1
 			}
-			param := ""
+			new_params := map[uint64]string{}
 			for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
 				tainting_vals, ok := tc.mem_param_map[watchaddr]
 				if !ok {
 					log.Panicf("No mem-param map entry for %#x\n", watchaddr)
 				}
 
-				// Check for load param from config file
-				if watchaddr == overlap_start && hasEmptyParam(tainting_vals) {
-					param = tc.readParam(overlap_start, overlap_end)
-				}
-				if param != "" {
-					tc.populateParam(watchaddr, param)
+				// M-c entry has an empty param => presumably we just accessed
+				// (some region of) config read buf for the first time. Populate m-c.
+				if hasEmptyParam(tainting_vals) {
+					if len(new_params) == 0 {
+						new_params = tc.readParams(overlap_start, overlap_end)
+					}
+					// XXX ignore offsets that don't correspond to params (e.g. \n)
+					tc.populateParam(watchaddr, new_params[watchaddr-overlap_start])
 					tainting_vals = tc.mem_param_map[watchaddr]
 				}
 
@@ -387,9 +389,9 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 // Update m-c map:
 // If !syscall_read, add tainting_vals to resulting watched region(s), byte by byte
 // Else, we're tainting the recv buf of a network message or config file =>
-// Network message: record each byte of message as tainting corresponding byte of buf
+// Network message: record each byte of buf as tainted by corresponding offset of message
 // (tainting_vals[0] is recvd msg)
-// Config file: record param as tainting each byte of buf
+// Config file: record each byte of buf as tainted by corresponding param
 // (tainting_vals[0] is param).
 func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVals, syscall_read bool) {
 	if syscall_read {
@@ -416,15 +418,16 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 		WriteEvent(tc, tc.event_log, event)
 
 		if !syscall_read {
-			new_taint := controlFlowTaint(tainting_vals[0])
+			allbytes_taint := controlFlowTaint(tainting_vals[0])
 			// Config variable or append (or one-byte expression, but works for that too)
 			if len(tainting_vals) == 1 {
 				config_taint := tainting_vals[0]
-				new_taint = union(new_taint, config_taint)
+				allbytes_taint = union(allbytes_taint, config_taint)
 			}
 			watch_end := watchpoint.Addrs[0] + watchSize(watchpoint)
 			for watchaddr := watchpoint.Addrs[0]; watchaddr < watch_end; watchaddr++ {
 				offset := watchaddr - watchpoint.Addrs[0]
+				new_taint := allbytes_taint
 
 				// For each byte in new watch region:
 				// Apply any data-flow taint from corresponding byte,
@@ -439,8 +442,11 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 
 	if syscall_read {
 		message := tainting_vals[0].Params.Empty()
-		for offset := uint64(0); offset < watchSize(watchpoints[0]); offset++ {
-			buf_addr := watchpoints[0].Addrs[0] + offset
+		// Can't read the params yet - read hasn't happened
+		buf_start := watchpoints[0].Addrs[0]
+		buf_sz := watchSize(watchpoints[0])
+		for offset := uint64(0); offset < buf_sz; offset++ {
+			buf_addr := buf_start + offset
 			if message {
 				tainting_msg := tainting_vals[0].Behaviors.Slice()[0]
 				tainting_msg.Behavior.Offset = offset
@@ -556,7 +562,7 @@ func (tc *TaintCheck) Run() {
 				tc.thread = thread
 				// TODO see gdoc (Instr that would hit multiple*) - may need more logic here for multiple hits
 				if hit_bp.Name == proc.SyscallEntryBreakpoint {
-					tc.onSyscallEntryBpHit()
+					tc.handleSyscallEntry()
 				} else if hit_bp.WatchExpr != "" {
 					tc.onWatchpointHit()
 				} else {
