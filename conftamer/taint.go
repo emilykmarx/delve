@@ -1,6 +1,7 @@
 package conftamer
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -221,6 +222,7 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) uint64 {
 }
 
 // Add first line of branch body to locs, and return last line of branch body
+// TODO also check for wp hits in each elseif
 func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[]api.Location) int {
 	start := fset.Position(branch.Pos()).Line
 	file := fset.File(branch.Pos()).Name()
@@ -332,22 +334,39 @@ func (tc *TaintCheck) propagateTaint() {
 				}
 			}
 
-		// May not be next line linearly for := in flow control statement
-		// but if not, var immediately went out of scope so we don't need a wp anyway
-		// TODO except for if/else (e.g. if{x=1}else{x=2}), maybe others. Logic in proc.next() might be helpful.
-		// And Range: If next line is }, set on next iter
-		// Need to handle case where never enter loop (never hit bp => main never terminates)
-		// ^ When fix this - keep in mind that wps go OOS when exit frame they're set in -
-		// so don't e.g. set a wp for a runtime hit while in the runtime frame (runtime_hits tests checks this)
 		case *ast.AssignStmt:
+			fmt.Printf("ASSIGN - token %+v\n", typed_node.Tok)
+			fmt.Printf("wp %+v\n", tc.hit.hit_bp.WatchExpr)
+			fmt.Printf("bp %+v\n", tc.hit.hit_bp)
 			for _, rhs := range typed_node.Rhs {
 				// TODO properly handle multiple rhs (unsure of semantics)
 				if overlap_expr, overlap_start, overlap_end := tc.isTainted(rhs); overlap_expr != nil {
 					// Watched location is read on the rhs => taint lhs
-					pending_loc := tc.lineWithStmt(nil, end.Filename, end.Line+1, tc.hit.frame)
+					var body_start, body_end int
 					for _, lhs := range typed_node.Lhs {
 						watchexpr := exprToString(lhs) + *overlap_expr
-						tc.recordPendingWp(watchexpr, pending_loc, nil, 0, 0, overlap_start, overlap_end)
+
+						if typed_node.Tok.String() == "=" {
+							// lhs already declared => set watchpoint now
+							fmt.Println("EQUALS")
+							_, _, cur_pc := tc.hitLocation()
+							existing_info := tc.pending_wps[cur_pc]
+							tc.getTaintingVals(&existing_info, body_start, body_end, overlap_start, overlap_end)
+							// XXX onPendingDone
+							tc.setWatchpoint(watchexpr, existing_info.tainting_vals, false)
+						} else {
+							// Walrus => set watchpoint on next line
+							// (Rest of this comment needs update)
+							// May not be next line linearly for := in flow control statement
+							// but if not, var immediately went out of scope so we don't need a wp anyway
+							// TODO except for if/else (e.g. if{x=1}else{x=2}), maybe others. Logic in proc.next() might be helpful.
+							// And Range: If next line is }, set on next iter
+							// Need to handle case where never enter loop (never hit bp => main never terminates)
+							// ^ When fix this - keep in mind that wps go OOS when exit frame they're set in -
+							// so don't e.g. set a wp for a runtime hit while in the runtime frame (runtime_hits tests checks this)
+							pending_loc := tc.lineWithStmt(nil, end.Filename, end.Line+1, tc.hit.frame)
+							tc.recordPendingWp(watchexpr, pending_loc, nil, body_start, body_end, overlap_start, overlap_end)
+						}
 					}
 				}
 			}
