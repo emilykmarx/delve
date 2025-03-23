@@ -183,19 +183,19 @@ func Config(testfile string, initial_watchexpr string, initial_line int) ct.Conf
 }
 
 func TestControlFlow(t *testing.T) {
-	// 1. Set wp for config
+	// 1. Set wp for config[0]
 	initial_line := 10
-	config := Config("control_flow.go", "config", initial_line)
+	config := Config("control_flow.go", "config[0]", initial_line)
 
 	expected_events :=
-		watchpointSet(&config, config.Initial_watchexpr, uint64(len(config.Initial_watchexpr)), initial_line, ct.DataFlow, nil, nil)
+		watchpointSet(&config, config.Initial_watchexpr, uint64(1), initial_line, ct.DataFlow, nil, nil)
 
 	// 2. Hit wp in if condition => propagate to maybe_tainted
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted", 3, 18, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted", 3, 19, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted_2", 1, 21, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_2", 1, 22, ct.ControlFlow, nil, nil)...)
 
 	dataflow_taint := ct.TaintingParam{
 		Param: ct.Param{
@@ -205,19 +205,22 @@ func TestControlFlow(t *testing.T) {
 		Flow: ct.DataFlow,
 	}
 	expected_events = append(expected_events,
-		watchpointSet(&config, "regular", 1, 22, ct.ControlFlow, &dataflow_taint, nil)...)
+		watchpointSet(&config, "regular", 1, 23, ct.ControlFlow, &dataflow_taint, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted_3", 1, 31, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_3", 1, 32, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted_4", 1, 38, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_4", 1, 39, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "i", 1, 39, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_5", 5, 43, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "j", 1, 40, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "i", 1, 49, ct.ControlFlow, nil, nil)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(&config, "j", 1, 50, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }

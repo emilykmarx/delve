@@ -220,6 +220,30 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) uint64 {
 	return 0
 }
 
+// Add first line of branch body to locs, and return last line of branch body
+func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[]api.Location) int {
+	start := fset.Position(branch.Pos()).Line
+	file := fset.File(branch.Pos()).Name()
+	body_start := tc.lineWithStmt(nil, file, start+1, tc.hit.frame)
+	*locs = append(*locs, body_start)
+	// Will traverse bodies in linear order
+	switch typed_node := branch.(type) {
+	case *ast.IfStmt:
+		// if/elseif
+		body_end := fset.Position(typed_node.Body.Rbrace).Line - 1
+		if typed_node.Else != nil {
+			body_end = tc.handleIfStmt(typed_node.Else, fset, locs)
+		}
+		return body_end
+	case *ast.BlockStmt:
+		// else
+		return fset.Position(typed_node.Rbrace).Line - 1
+	default:
+		log.Panicf("Unhandled branch type %+v\n", typed_node)
+		return 0
+	}
+}
+
 /* Assuming this line hits a watchpoint (or we're in a branch body),
  * record pending watchpoints for newly tainted exprs on line.
  * Accounts for aliased reads (i.e. those that don't match hit_bp.WatchExpr). */
@@ -249,25 +273,17 @@ func (tc *TaintCheck) propagateTaint() {
 		switch typed_node := node.(type) {
 		case *ast.IfStmt:
 			if start.Line == line {
-				else_start := 0
-				// Enter if[else] => record pending wp for beginning of both if and else branch bodies
-				body_end := fset.Position(typed_node.Body.Rbrace).Line - 1
-				if typed_node.Else != nil {
-					else_node := typed_node.Else.(*ast.BlockStmt)
-					body_end = fset.Position(else_node.Rbrace).Line - 1
-					else_start = fset.Position(else_node.Pos()).Line + 1
-				}
-				body_start := line + 1
-				pending_loc := tc.lineWithStmt(nil, start.Filename, body_start, tc.hit.frame)
+				// Enter if[elseif/else] => record pending wp for beginning of all possible branch bodies (if, elseif, else)
+				locs := []api.Location{}
+				body_end := tc.handleIfStmt(typed_node, fset, &locs)
 				overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Cond)
 				if overlap_expr == nil {
 					// Shouldn't be, since we just hit a wp for if condition
 					log.Panicf("Hit wp for ifStmt %+v, but isTainted didn't find taint", typed_node.Cond)
 				}
-				tc.recordPendingWp("", pending_loc, nil, body_start, body_end, overlap_start, overlap_end)
-				if else_start != 0 {
-					pending_loc := tc.lineWithStmt(nil, start.Filename, else_start, tc.hit.frame)
-					tc.recordPendingWp("", pending_loc, nil, body_start, body_end, overlap_start, overlap_end)
+
+				for _, body := range locs {
+					tc.recordPendingWp("", body, nil, locs[0].Line, body_end, overlap_start, overlap_end)
 				}
 			}
 
