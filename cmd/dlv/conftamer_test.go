@@ -698,7 +698,7 @@ func TestStructs(t *testing.T) {
 		watchpointSet(&config, "s_caller.Data", uint64(2), 31, ct.DataFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "multiline_lit.Data", uint64(2), 34, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "multiline_lit.Data", uint64(2), 36, ct.DataFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
 		watchpointSet(&config, "nested.name.Data", uint64(2), 41, ct.DataFlow, nil, nil)...)
