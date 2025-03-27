@@ -12,8 +12,7 @@ func main() {
 		if i > 0 {
 			// hit for vars[i-1] => prop to vars[i]
 			vars[i] = vars[i-1]
-			// put off properly finding when var is in scope (should likely be next TODO...)
-			fmt.Println()
+			fmt.Println() // line to set wp on (unhandled special case - next line is 11, but i isn't in-scope there so can't eval)
 		}
 	}
 }

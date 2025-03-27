@@ -14,6 +14,9 @@ import (
 	set "github.com/hashicorp/go-set"
 )
 
+/* Handlers for breakpoint/watchpoint hits.
+ * Handlers can update state but should not start/stop the target. */
+
 // Data structures used to create the configuration tamer
 
 type Param struct {
@@ -48,12 +51,25 @@ type TaintingVals struct {
 
 type BehaviorMap map[BehaviorValue]TaintingVals
 
-// Things that should be reset for each hit
+// Info about a breakpoint or watchpoint hit
 type Hit struct {
+	thread    *api.Thread
 	hit_bp    *api.Breakpoint
 	hit_instr *api.AsmInstruction
 	// Frame to check taint in (first non-runtime frame)
 	frame int
+	// Length of stack
+	stack_len int
+}
+
+// A command needed before setting a watchpoint,
+// and the criteria for when that command is done
+type Command struct {
+	cmd string
+	// Length of stack when we've reached the destination
+	stack_len int
+	// Line number when recorded
+	lineno int
 }
 
 // Exprs/args we will set a wp on, once they're in scope.
@@ -68,23 +84,29 @@ type PendingWp struct {
 	// Copy from mem_param_map, so we have them even if the hit wp goes OOS
 	// (e.g. hit for return of function local - will set wp after function returns)
 	tainting_vals []TaintingVals
+	threadID      int
 
 	// If this is a bp within an if[else] body,
 	// the start/end lines of the body
 	body_start int
 	body_end   int
+
+	/* Used if need to execute commands to reach in-scope location (vs setting a breakpoint) */
+
+	// The sequence of commands needed
+	cmds []Command
 }
 
 type TaintCheck struct {
-	config   Config
-	hit      Hit
-	client   *rpc2.RPCClient
-	thread   *api.Thread
-	move_wps bool
-	module   string
+	config Config
+	client *rpc2.RPCClient
 
-	// Key: Bp addr where exprs go in scope
-	pending_wps map[uint64]PendingWp
+	// Watchpoints waiting to be set when we hit a breakpoint
+	// Key: Bp addr
+	bp_pending_wps map[uint64]PendingWp
+
+	// Watchpoint waiting to be set after a command sequence completes
+	cmd_pending_wp *PendingWp
 
 	// Note for both mem_param_map and behavior_map, each entry is for a single byte
 	// (memory address or message offset).
@@ -98,8 +120,7 @@ type TaintCheck struct {
 	// Behavior value => config/behavior values that taint it
 	behavior_map BehaviorMap
 
-	event_log             *csv.Writer
-	behavior_map_filename string
+	event_log *csv.Writer
 }
 
 const (
@@ -108,8 +129,8 @@ const (
 )
 
 // Handle syscall entry bp hit - server returns it to us if tainted
-func (tc *TaintCheck) handleSyscallEntry() {
-	raw_info := tc.hit.hit_bp.UserData
+func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
+	raw_info := hit.hit_bp.UserData
 	jsonString, _ := json.Marshal(raw_info)
 	info := proc.SyscallBreakpointInfo{}
 	json.Unmarshal(jsonString, &info)
@@ -121,10 +142,10 @@ func (tc *TaintCheck) handleSyscallEntry() {
 		sent_msg := BehaviorValue{
 			Offset:        0,
 			Send_endpoint: info.Local_endpoint, Recv_endpoint: info.Remote_endpoint, Transport: info.Transport,
-			Send_module: tc.module,
+			Send_module: tc.config.Module,
 		}
 		event := Event{EventType: MessageSend, Address: info.Bufaddr, Size: info.Bufsz, Behavior: &sent_msg}
-		WriteEvent(tc, tc.event_log, event)
+		WriteEvent(hit.thread, tc.event_log, event)
 
 		for buf_addr := info.Bufaddr; buf_addr < info.Bufaddr+info.Bufsz; buf_addr++ {
 			tainting_vals, ok := tc.mem_param_map[buf_addr]
@@ -134,7 +155,7 @@ func (tc *TaintCheck) handleSyscallEntry() {
 			sent_msg.Offset = buf_addr - info.Bufaddr
 			tc.behavior_map[sent_msg] = tainting_vals
 			event := Event{EventType: BehaviorMapUpdate, Size: 1, Behavior: &sent_msg, TaintingVals: &tainting_vals}
-			WriteEvent(tc, tc.event_log, event)
+			WriteEvent(hit.thread, tc.event_log, event)
 		}
 	} else if info.SyscallName == "syscall.read" && socket {
 		// Receive network message => set watchpoint on entire read buffer, tainted by message
@@ -144,14 +165,15 @@ func (tc *TaintCheck) handleSyscallEntry() {
 			Recv_module: tc.config.Module,
 		}
 		event := Event{EventType: MessageRecv, Address: info.Bufaddr, Size: info.Bufsz, Behavior: &recvd_msg}
-		WriteEvent(tc, tc.event_log, event)
+		WriteEvent(hit.thread, tc.event_log, event)
 
 		recvd_msg.Offset = info.Bufsz // Used in setWatchpoint
 		tainting_msg := TaintingBehavior{
 			Behavior: recvd_msg,
 			Flow:     DataFlow,
 		}
-		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true)
+		// frame 3 = syscall.read
+		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true, hit.thread, 3)
 	} else if info.SyscallName == "syscall.read" {
 		// Read config file => set watchpoint on entire read buffer
 		// Each byte is tainted by param of corresponding offset in buffer (assuming params are separated by \n)
@@ -164,8 +186,8 @@ func (tc *TaintCheck) handleSyscallEntry() {
 		}
 		tainting_vals := MakeTaintingVals(&tainting_param, nil)
 		event := Event{EventType: ConfigLoad, Address: info.Bufaddr, Size: info.Bufsz, TaintingVals: &tainting_vals}
-		WriteEvent(tc, tc.event_log, event)
-		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{tainting_vals}, true)
+		WriteEvent(hit.thread, tc.event_log, event)
+		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{tainting_vals}, true, hit.thread, 3)
 	} else {
 		log.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", info.SyscallName)
 	}
@@ -175,15 +197,15 @@ func (tc *TaintCheck) handleSyscallEntry() {
  * record first non-runtime frame as line to check taint in.
  * (Can't assume that line will additionally have a non-runtime hit, e.g. some memmoves.)
  * Return false to ignore.
- * TODO first non-runtime frame isn't always what we want - e.g. syscall arg faults:
- * user code may call Syscall6 directly, or e.g. os.Open().
- * Analyze every non-runtime line? */
-func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
+ * TODO are there any runtime functions we want to treat normally? */
+func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
-	// TODO check for partially loaded (in any calls with LoadConfig)
+	// TODO check for partially loaded (in any calls with LoadConfig), and hitting max depth
 	if err != nil {
 		log.Panicf("Error getting stacktrace: %v\n", err)
 	}
+
+	hit.stack_len = len(stack)
 
 	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
 		log.Println("Runtime watchpoint hit - partial stack (including first non-runtime frame, whose PC is one after call instr)")
@@ -200,7 +222,7 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 				return nil, false
 			}
 			if !strings.HasPrefix(fn, "runtime") {
-				tc.hit.frame = i
+				hit.frame = i
 				return &frame, true
 			}
 
@@ -211,12 +233,12 @@ func (tc *TaintCheck) handleRuntimeHit() (*api.Stackframe, bool) {
 }
 
 /* Get instruction corresponding to hit */
-func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
-	pc := tc.thread.PC
+func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) {
+	pc := hit.thread.PC
 	if non_runtime_frame != nil {
 		pc = non_runtime_frame.PC
 	}
-	fct_instr, err := tc.client.DisassemblePC(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, pc, api.IntelFlavour) // dst, src
+	fct_instr, err := tc.client.DisassemblePC(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, pc, api.IntelFlavour) // dst, src
 	if err != nil {
 		log.Panicf("Error disassembling at PC 0x%x: %v\n", pc, err)
 	}
@@ -225,9 +247,9 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
 		if instr.Loc.PC == pc {
 			if non_runtime_frame != nil {
 				// For runtime hit, pc is one *after* the call instr that ended up in runtime => get previous instr
-				tc.hit.hit_instr = &fct_instr[i-1]
+				hit.hit_instr = &fct_instr[i-1]
 			} else {
-				tc.hit.hit_instr = &fct_instr[i]
+				hit.hit_instr = &fct_instr[i]
 			}
 			return
 		}
@@ -238,23 +260,23 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe) {
 
 /* Get source line corresponding to hit.
  * Return false to ignore this hit. */
-func (tc *TaintCheck) hittingLine() bool {
-	non_runtime_frame, handle := tc.handleRuntimeHit()
+func (tc *TaintCheck) hittingLine(hit *Hit) bool {
+	non_runtime_frame, handle := tc.handleRuntimeHit(hit)
 	// Ignore prints (may be within print, or when calling print) for convenience
 	if tc.hitInPrint() || !handle {
 		return false
 	}
 
-	tc.hittingInstr(non_runtime_frame)
+	tc.hittingInstr(non_runtime_frame, hit)
 
-	src_line := sourceLine(tc.client, tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line)
+	src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 	if strings.Contains(strings.ToLower(src_line), ("print")) {
 		// hitInPrint doesn't catch if src line is calling print
 		return false
 	}
 
 	if src_line == "" {
-		log.Panicf("No source line found for PC 0x%x\n", tc.hit.hit_instr.Loc.PC)
+		log.Panicf("No source line found for PC 0x%x\n", hit.hit_instr.Loc.PC)
 	}
 
 	return true
@@ -278,87 +300,77 @@ func controlFlowTaint(tainting_vals TaintingVals) TaintingVals {
 	return ifstmt_taint
 }
 
-// Set bp for when wp will be in scope, record state
+/* If set a breakpoint for where to set the watchpoint (e.g. function arg), record in bp_pending_wps.
+ * Otherwise, populate cmd_pending_wp (if one exists, update it) with sequence of commands needed to set watchpoint.
+ * e.g. lhs of :=, a reference (since we watch its target which is about to change), runtime hit. */
 func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
-	body_start int, body_end int, overlap_start uint64, overlap_end uint64) {
-	// Set breakpoint where pending watchpoint will be in scope
-	new_bp_addr := loc.PCs[0]
-	tc.setBp(new_bp_addr)
+	body_start int, body_end int, overlap_start uint64, overlap_end uint64, hit *Hit) {
+	existing_info := PendingWp{}
+	new_bp_addr := uint64(0)
+	if loc.PCs != nil {
+		// Passed location for breakpoint => set breakpoint
+		new_bp_addr = loc.PCs[0]
+		tc.setBp(new_bp_addr)
+	} else if tc.cmd_pending_wp != nil {
+		// Passed no location => update existing cmd pending wp (or create new one)
+		existing_info = *tc.cmd_pending_wp
+	}
 
-	existing_info := tc.pending_wps[new_bp_addr]
-
-	if tc.hit.hit_bp != nil {
-		if tc.hit.hit_bp.WatchType != 0 {
-			// Case 1: Hit watchpoint => copy tainting vals from overlapping region's m-c entries
-			// (they may differ across the region)
-			ifstmt_taint := newTaintingVals()
-			if overlap_end == 0 {
-				// append => handle same as config variable load (put all taint at offset 0)
-				overlap_end = overlap_start + 1
-			}
-			new_params := map[uint64]string{}
-			for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
-				tainting_vals, ok := tc.mem_param_map[watchaddr]
-				if !ok {
-					log.Panicf("No mem-param map entry for %#x\n", watchaddr)
-				}
-
-				// M-c entry has an empty param => presumably we just accessed
-				// (some region of) config read buf for the first time. Populate m-c.
-				if hasEmptyParam(tainting_vals) {
-					if len(new_params) == 0 {
-						new_params = tc.readParams(overlap_start, overlap_end)
-					}
-					// XXX ignore offsets that don't correspond to params (e.g. \n)
-					tc.populateParam(watchaddr, new_params[watchaddr-overlap_start])
-					tainting_vals = tc.mem_param_map[watchaddr]
-				}
-
-				if body_start == 0 {
-					// Case 1a: Regular watchpoint => copy overlapping region's vals at each offset
-					// (offset may already have existing ones, e.g. hit a watchpoint within a tainted branch body - union with those if so).
-					existing_info.updateTaintingVals(tainting_vals, watchaddr-overlap_start)
-				} else {
-					// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
-					// to be copied into each byte of expressions in branch body (don't know their size),
-					// and set them to control flow
-					tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
-						tp.Flow = ControlFlow
-						ifstmt_taint.Params.Insert(tp)
-						return true
-					})
-					tainting_vals.Behaviors.ForEach(func(tb TaintingBehavior) bool {
-						tb.Flow = ControlFlow
-						ifstmt_taint.Behaviors.Insert(tb)
-						return true
-					})
-				}
-			}
-
-			if body_start != 0 {
-				existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
-				existing_info.body_start = body_start
-				existing_info.body_end = body_end
-			}
-		} else {
-			// Case 3: Hit breakpoint, presumably in branch body =>
-			// copy CF from this bp's tv[0] to new bp's tv[0]
-			cur_bp_addr := tc.hit.hit_bp.Addrs[0]
-			cur_info, existed := tc.pending_wps[cur_bp_addr]
-			if !existed {
-				log.Panicf("Expected to find pending_wp at addr %#x in branch body\n", cur_bp_addr)
-			}
-
-			ifstmt_taint := controlFlowTaint(cur_info.tainting_vals[0])
-			existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
-			existing_info.body_start = cur_info.body_start
-			existing_info.body_end = cur_info.body_end
+	if hit != nil {
+		// Called for watchpoint hit, instead of finishing next in ifstmt =>
+		// get tainting vals from watch region
+		existing_info.threadID = hit.thread.ID
+		// Case 1: Hit watchpoint => copy tainting vals from overlapping region's m-c entries
+		// (they may differ across the region)
+		ifstmt_taint := newTaintingVals()
+		if overlap_end == 0 {
+			// append => handle same as config variable load (put all taint at offset 0)
+			overlap_end = overlap_start + 1
 		}
-	} else {
-		// Case 4: Load config param from passed-in variable => store it, to be copied into each byte of config variable (don't know its size)
-		tainting_param := TaintingParam{Param: Param{Module: tc.module, Param: expr}, Flow: DataFlow}
-		// If there was already non-param taint at offset 0, will taint whole variable with it - unsure if possible
-		existing_info.updateTaintingVals(MakeTaintingVals(&tainting_param, nil), 0)
+		new_params := map[uint64]string{}
+		for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
+			tainting_vals, ok := tc.mem_param_map[watchaddr]
+			if !ok {
+				log.Panicf("No mem-param map entry for %#x\n", watchaddr)
+			}
+
+			// M-c entry has an empty param => presumably we just accessed
+			// (some region of) config read buf for the first time. Populate m-c.
+			if hasEmptyParam(tainting_vals) {
+				if len(new_params) == 0 {
+					new_params = tc.readParams(overlap_start, overlap_end, hit.frame)
+				}
+				// XXX ignore offsets that don't correspond to params (e.g. \n)
+				tc.populateParam(watchaddr, new_params[watchaddr-overlap_start])
+				tainting_vals = tc.mem_param_map[watchaddr]
+			}
+
+			if body_start == 0 {
+				// Case 1a: Regular watchpoint => copy overlapping region's vals at each offset
+				// (offset may already have existing ones, e.g. hit a watchpoint within a tainted branch body - union with those if so).
+				existing_info.updateTaintingVals(tainting_vals, watchaddr-overlap_start)
+			} else {
+				// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
+				// to be copied into each byte of expressions in branch body (don't know their size),
+				// and set them to control flow
+				tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
+					tp.Flow = ControlFlow
+					ifstmt_taint.Params.Insert(tp)
+					return true
+				})
+				tainting_vals.Behaviors.ForEach(func(tb TaintingBehavior) bool {
+					tb.Flow = ControlFlow
+					ifstmt_taint.Behaviors.Insert(tb)
+					return true
+				})
+			}
+		}
+
+		if body_start != 0 {
+			existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
+			existing_info.body_start = body_start
+			existing_info.body_end = body_end
+		}
 	}
 
 	if argno != nil {
@@ -366,23 +378,43 @@ func (tc *TaintCheck) recordPendingWp(expr string, loc api.Location, argno *int,
 			existing_info.watchargs = make(map[int]string)
 		}
 		existing_info.watchargs[*argno] = expr
-	} else {
+	} else if expr != "" {
 		if existing_info.watchexprs.Empty() {
 			existing_info.watchexprs = *set.New[string](1)
 		}
 		existing_info.watchexprs.Insert(expr)
 	}
 
-	log.Printf("recordPendingWp, line %v: %v\n", loc.Line, existing_info)
-	tc.pending_wps[new_bp_addr] = existing_info
+	if new_bp_addr != 0 {
+		tc.bp_pending_wps[new_bp_addr] = existing_info
+	} else if hit != nil {
+		cmds := []Command{Command{cmd: api.Next, stack_len: hit.stack_len, lineno: hit.hit_instr.Loc.Line}}
+		if hit.frame > 0 {
+			// runtime hit
+			cmds = []Command{}
+			stack_len := hit.stack_len - 1
+			for i := 0; i < hit.frame; i++ {
+				cmds = append(cmds, Command{cmd: api.StepOut, stack_len: stack_len})
+				stack_len--
+			}
+
+			cmds = append(cmds, Command{cmd: api.Next, stack_len: stack_len + 1, lineno: hit.hit_instr.Loc.Line})
+		}
+		existing_info.cmds = cmds
+		tc.cmd_pending_wp = &existing_info
+	} else {
+		// branch body - cmds are already in existing info from previous hit - exec will update line
+		tc.cmd_pending_wp = &existing_info
+	}
+	fmt.Printf("ZZEM: exit recordPendingWp, for line %v: %v\n", loc.Line, existing_info)
 }
 
-func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
-	// Nothing left pending at this bp addr
-	if _, err := tc.client.ClearBreakpoint(tc.hit.hit_bp.ID); err != nil {
+func (tc *TaintCheck) onPendingWpBpHitDone(hit *Hit) {
+	bp_addr := hit.hit_bp.Addrs[0]
+	if _, err := tc.client.ClearBreakpoint(hit.hit_bp.ID); err != nil {
 		log.Panicf("Failed to clear bp at 0x%x: %v\n", bp_addr, err)
 	}
-	delete(tc.pending_wps, bp_addr)
+	delete(tc.bp_pending_wps, bp_addr)
 }
 
 // Move watchexpr to tainted page, and set any watchpoint(s) corresponding to watchexpr
@@ -393,13 +425,10 @@ func (tc *TaintCheck) onPendingWpBpHitDone(bp_addr uint64) {
 // (tainting_vals[0] is recvd msg)
 // Config file: record each byte of buf as tainted by corresponding param
 // (tainting_vals[0] is param).
-func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVals, syscall_read bool) {
-	if syscall_read {
-		tc.hit.frame = 3 // syscall.read
-	}
-	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
+func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVals, syscall_read bool, thread *api.Thread, frame int) {
+	scope := api.EvalScope{GoroutineID: -1, Frame: frame}
 	// We really want a read-only wp, but not supported
-	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.move_wps)
+	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
 	if err != nil {
 		log.Panicf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
 	} else if len(watchpoints) == 0 {
@@ -414,8 +443,9 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 		// For each created or existing watchpoint: update mem-config map, log
 		// TODO test for adding new taint to existing addr
 
+		fmt.Printf("ZZEM Set watchpoint on %v\n", watchpoint.WatchExpr)
 		event := Event{EventType: WatchpointSet, Address: watchpoint.Addr, Size: watchSize(watchpoint), Expression: watchpoint.WatchExpr}
-		WriteEvent(tc, tc.event_log, event)
+		WriteEvent(thread, tc.event_log, event)
 
 		if !syscall_read {
 			allbytes_taint := controlFlowTaint(tainting_vals[0])
@@ -435,7 +465,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 				if uint64(len(tainting_vals)) > offset {
 					new_taint = union(new_taint, tainting_vals[offset])
 				}
-				tc.updateTaintingVals(watchaddr, new_taint)
+				tc.updateTaintingVals(watchaddr, new_taint, thread)
 			}
 		}
 	}
@@ -450,72 +480,63 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 			if message {
 				tainting_msg := tainting_vals[0].Behaviors.Slice()[0]
 				tainting_msg.Behavior.Offset = offset
-				tc.updateTaintingVals(buf_addr, MakeTaintingVals(nil, &tainting_msg))
+				tc.updateTaintingVals(buf_addr, MakeTaintingVals(nil, &tainting_msg), thread)
 			} else {
-				tc.updateTaintingVals(buf_addr, tainting_vals[0])
+				tc.updateTaintingVals(buf_addr, tainting_vals[0], thread)
 			}
 		}
 	}
 }
 
-// Watchpoint hit => record any new pending watchpoints
-func (tc *TaintCheck) onWatchpointHit() {
-	if !tc.hittingLine() {
-		log.Printf("Not propagating taint for watchpoint hit at %#x\n", tc.thread.PC)
+// Watchpoint hit => record any new pending watchpoints.
+func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
+	if !tc.hittingLine(hit) {
+		log.Printf("Not propagating taint for watchpoint hit at %#x\n", hit.thread.PC)
 		return
 	}
-	event := Event{EventType: WatchpointHit, Address: tc.hit.hit_bp.Addr, Size: watchSize(tc.hit.hit_bp), Expression: tc.hit.hit_bp.WatchExpr}
-	WriteEvent(tc, tc.event_log, event)
-	tc.propagateTaint()
+	event := Event{EventType: WatchpointHit, Address: hit.hit_bp.Addr, Size: watchSize(hit.hit_bp), Expression: hit.hit_bp.WatchExpr}
+	WriteEvent(hit.thread, tc.event_log, event)
+	fmt.Printf("ZZEM hit watchpoint %v\n", hit.hit_bp.WatchExpr)
+	tc.propagateTaint(hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line, hit, hit.frame)
 }
 
-// Breakpoint for pending watchpoint hit => set the watchpoint
-func (tc *TaintCheck) onPendingWpBpHit() {
-	if len(tc.hit.hit_bp.Addrs) != 1 {
-		log.Panicf("Wrong number of addrs at pending wp; bp %+v\n", tc.hit.hit_bp)
+// Set all watchpoints corresponding to pendingWp, remove them from pendingWp
+func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, thread *api.Thread, frame int) {
+	if pendingWp.watchexprs.Empty() && len(pendingWp.watchargs) == 0 {
+		log.Panicf("No pending watches found\n")
 	}
-
-	bp_addr := tc.hit.hit_bp.Addrs[0]
-	info := tc.pending_wps[bp_addr]
-	log.Printf("\n\n*** Hit pending wp breakpoint at %v:%v (0x%x)\n", tc.hit.hit_bp.File, tc.hit.hit_bp.Line, bp_addr)
-	defer func() {
-		tc.onPendingWpBpHitDone(bp_addr)
-	}()
-
-	if info.watchexprs.Empty() && len(info.watchargs) == 0 {
-		log.Panicf("No pending watches found after hitting 0x%x\n", bp_addr)
-	}
-
-	line := tc.hit.hit_bp.Line
-	if info.body_start <= line && line <= info.body_end {
-		// Bp in a branch body =>
-		// record pending wp for this line, as if we hit a watchpoint and isTainted was always true
-		tc.propagateTaint()
-		if info.watchexprs.Contains("") {
-			// first line of if/else body => no watchpoint to set yet
-			return
-		}
-	}
-
-	// Just wanted to hit and remove the breakpoint, not set watchpoint
-	if info.watchexprs.Contains("") {
-		return
-	}
-
-	info.watchexprs.ForEach(func(watchexpr string) bool {
-		tc.setWatchpoint(watchexpr, info.tainting_vals, false)
+	pendingWp.watchexprs.ForEach(func(watchexpr string) bool {
+		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, false, thread, frame)
 		return true
 	})
-	scope := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
-	for argno, overlap_expr := range info.watchargs {
+	scope := api.EvalScope{GoroutineID: -1, Frame: frame}
+	for argno, overlap_expr := range pendingWp.watchargs {
 		// if method, args include receiver as arg 0 (as we did when recording argno)
 		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
 		if err != nil {
-			log.Panicf("Failed to list function args at 0x%x: %v\n", bp_addr, err)
+			log.Panicf("Failed to list function args for pending wp %+v: %v\n", pendingWp, err)
 		}
 		watchexpr := args[argno].Name + overlap_expr
-		tc.setWatchpoint(watchexpr, info.tainting_vals, false)
+		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, false, thread, frame)
 	}
+	pendingWp.watchexprs = *set.New[string](0)
+	pendingWp.watchargs = make(map[int]string)
+}
+
+func (tc *TaintCheck) onPendingWpBpHit(hit *Hit) {
+	if len(hit.hit_bp.Addrs) != 1 {
+		log.Panicf("Wrong number of addrs at pending wp; bp %+v\n", hit.hit_bp)
+	}
+
+	bp_addr := hit.hit_bp.Addrs[0]
+	info := tc.bp_pending_wps[bp_addr]
+	fmt.Printf("ZZEM line %v: hit pending wp breakpoint\n", hit.hit_bp.Line)
+	fmt.Printf("info: %+v\n", info)
+	defer func() {
+		tc.onPendingWpBpHitDone(hit)
+	}()
+
+	tc.setPendingWatchpoints(&info, hit.thread, hit.frame)
 }
 
 // Update mem-param map for any watchpoints that moved since last Continue
@@ -542,53 +563,6 @@ func (tc *TaintCheck) updateMovedWps() {
 	}
 }
 
-// Run the target until exit
-func (tc *TaintCheck) Run() {
-	log.Printf("Starting CT-Scan\n\n")
-	defer WriteBehaviorMap(tc.behavior_map_filename, tc.behavior_map)
-
-	state := <-tc.client.Continue()
-
-	for ; !state.Exited; state = <-tc.client.Continue() {
-		if state.Err != nil {
-			log.Panicf("Error in debugger state: %v\n", state.Err)
-		}
-		tc.updateMovedWps()
-
-		for _, thread := range state.Threads {
-			hit_bp := thread.Breakpoint
-			if hit_bp != nil {
-				tc.hit = Hit{hit_bp: hit_bp}
-				tc.thread = thread
-				// TODO see gdoc (Instr that would hit multiple*) - may need more logic here for multiple hits
-				if hit_bp.Name == proc.SyscallEntryBreakpoint {
-					tc.handleSyscallEntry()
-				} else if hit_bp.WatchExpr != "" {
-					tc.onWatchpointHit()
-				} else {
-					// Assumes the hit bp is for a pending wp (but could instead be e.g. fatalpanic)
-					tc.onPendingWpBpHit()
-				}
-			}
-		}
-
-		// TODO also need to remove any PreviousAddrs?
-		for _, wp_oos := range state.WatchOutOfScope {
-			loc := state.SelectedGoroutine.CurrentLoc
-			fmt.Printf("Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x) \n",
-				wp_oos.WatchExpr, loc.File, loc.Line, loc.PC)
-			tc.forEachWatchaddr(wp_oos, func(watchaddr uint64) bool {
-				delete(tc.mem_param_map, watchaddr)
-				return true // unused
-			})
-		}
-	}
-
-	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
-	log.Println("Finished CT-Scan")
-	tc.client.Detach(false) // Also kills server, despite function doc (even on unmodified dlv)
-}
-
 func New(config *Config) (*TaintCheck, error) {
 	client := rpc2.NewClient(config.Server_endpoint)
 
@@ -599,15 +573,12 @@ func New(config *Config) (*TaintCheck, error) {
 
 	// TODO (minor) rename TaintCheck to e.g. ConfTamerModule
 	tc := TaintCheck{
-		config:                *config,
-		client:                client,
-		module:                config.Module,
-		move_wps:              config.Move_wps,
-		pending_wps:           make(map[uint64]PendingWp),
-		mem_param_map:         make(map[uint64]TaintingVals),
-		behavior_map:          make(BehaviorMap),
-		event_log:             csv.NewWriter(event_log_file),
-		behavior_map_filename: config.Behavior_map_filename,
+		config:         *config,
+		client:         client,
+		bp_pending_wps: make(map[uint64]PendingWp),
+		mem_param_map:  make(map[uint64]TaintingVals),
+		behavior_map:   make(BehaviorMap),
+		event_log:      csv.NewWriter(event_log_file),
 	}
 
 	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
@@ -616,7 +587,13 @@ func New(config *Config) (*TaintCheck, error) {
 	if config.Initial_watchexpr != "" {
 		// For testing: pass in an expr to set a watchpoint on
 		init_loc := tc.lineWithStmt(nil, config.Initial_bp_file, config.Initial_bp_line, 0)
-		tc.recordPendingWp(config.Initial_watchexpr, init_loc, nil, 0, 0, 0, 0)
+		tainting_param := TaintingParam{Param: Param{Module: tc.config.Module, Param: config.Initial_watchexpr}, Flow: DataFlow}
+		tc.bp_pending_wps[init_loc.PC] = PendingWp{
+			watchexprs: *set.From([]string{config.Initial_watchexpr}),
+			// Will be copied into each byte of config variable (don't know its size)
+			tainting_vals: []TaintingVals{MakeTaintingVals(&tainting_param, nil)},
+		}
+		tc.setBp(init_loc.PC)
 	}
 	return &tc, nil
 }

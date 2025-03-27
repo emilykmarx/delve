@@ -53,14 +53,14 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr) {
 	return lhs
 }
 
-// If calling line has an assign or range, return corresp lhs and the next line's location
+// Assuming calling line has an assign or range, return corresp lhs and the next line's location
 // (TODO same caveats about linear assumption as for Assign)
-func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
+func (tc *TaintCheck) callerLhs(i int, frame int) (*ast.Expr, api.Location) {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	if err != nil {
 		log.Fatalf("Error getting stacktrace: %v\n", err)
 	}
-	caller_frame := tc.hit.frame + 1
+	caller_frame := frame + 1
 	call_file := stack[caller_frame].File
 	call_line := stack[caller_frame].Line
 	next_line := tc.lineWithStmt(nil, call_file, call_line+1, caller_frame)
@@ -83,9 +83,8 @@ func (tc *TaintCheck) callerLhs(i int) (*ast.Expr, api.Location) {
  * Also return the start&end addresses of the overlapping region.
  * Requires expr to be in scope.
  * If in branch body, always overlap. */
-func (tc *TaintCheck) isTainted(expr ast.Expr) (*string, uint64, uint64) {
-	if tc.hit.hit_bp.WatchType == 0 {
-		// We've been called for a bp hit in a branch body (not a wp hit)
+func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit) (*string, uint64, uint64) {
+	if hit == nil {
 		overlap_expr := ""
 		return &overlap_expr, 0, 0
 	}
@@ -105,7 +104,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) (*string, uint64, uint64) {
 		}
 		switch typed_node := node.(type) {
 		case *ast.CallExpr:
-			if arg_addr := tc.handleAppend(typed_node); arg_addr != 0 {
+			if arg_addr := tc.handleAppend(typed_node, hit); arg_addr != 0 {
 				// For now, just apply taint from start addr of last tainted arg to whole array
 				overlap_expr = &found_overlap
 				overlap_start = arg_addr
@@ -125,12 +124,12 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) (*string, uint64, uint64) {
 			// TODO check for incomplete loads (see client API doc)
 			// If type not supported, still check overlap (e.g. struct)
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set
-			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(node.(ast.Expr)), true)
+			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, exprToString(node.(ast.Expr)), true)
 			if err != nil {
 				// Try evaluating any children (for e.g. `x+1`)
 			} else {
-				watch_addr := tc.hit.hit_bp.Addr
-				watch_size := watchSize(tc.hit.hit_bp)
+				watch_addr := hit.hit_bp.Addr
+				watch_size := watchSize(hit.hit_bp)
 				xv_size := uint64(xv.Watchsz)
 
 				var overlap bool
@@ -144,7 +143,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) (*string, uint64, uint64) {
 						}
 					}
 					if xv.Kind == reflect.Struct {
-						found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size)
+						found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size, hit.frame)
 					}
 
 					overlap_expr = &found_overlap
@@ -163,16 +162,16 @@ func (tc *TaintCheck) isTainted(expr ast.Expr) (*string, uint64, uint64) {
 
 // For struct xv, find the fully-qualified name of its overlapping field, minus `name`
 // (handling nested structs)
-func (tc *TaintCheck) taintedField(name string, xv *api.Variable, watch_addr uint64, watch_size uint64) string {
+func (tc *TaintCheck) taintedField(name string, xv *api.Variable, watch_addr uint64, watch_size uint64, frame int) string {
 	if xv.Kind != reflect.Struct {
 		return ""
 	}
 	for _, field := range xv.Children {
 		eval_name := name + "." + field.Name
-		xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, eval_name, true)
+		xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: frame}, eval_name, true)
 		if err == nil {
 			if _, _, overlap := memOverlap(xv.Addr, uint64(xv.Watchsz), watch_addr, watch_size); overlap {
-				name = "." + field.Name + tc.taintedField(eval_name, xv, watch_addr, watch_size)
+				name = "." + field.Name + tc.taintedField(eval_name, xv, watch_addr, watch_size, frame)
 			}
 		}
 	}
@@ -206,14 +205,14 @@ var casts = set.From([]string{
 })
 
 // If return value is tainted by any arg, return start addr of last tainted arg
-func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) uint64 {
+func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit) uint64 {
 	// Any elem tainted, or slice already tainted => ret tainted
 	// (handles possible realloc)
 	if exprToString(call_node.Fun) != "append" {
 		return 0
 	}
 	for _, arg := range call_node.Args {
-		if overlap_expr, overlap_start, _ := tc.isTainted(arg); overlap_expr != nil {
+		if overlap_expr, overlap_start, _ := tc.isTainted(arg, hit); overlap_expr != nil {
 			return overlap_start
 		}
 	}
@@ -221,10 +220,11 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr) uint64 {
 }
 
 // Add first line of branch body to locs, and return last line of branch body
-func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[]api.Location) int {
+// TODO also check for wp hits in each elseif
+func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[]api.Location, frame int) int {
 	start := fset.Position(branch.Pos()).Line
 	file := fset.File(branch.Pos()).Name()
-	body_start := tc.lineWithStmt(nil, file, start+1, tc.hit.frame)
+	body_start := tc.lineWithStmt(nil, file, start+1, frame)
 	*locs = append(*locs, body_start)
 	// Will traverse bodies in linear order
 	switch typed_node := branch.(type) {
@@ -232,7 +232,7 @@ func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[
 		// if/elseif
 		body_end := fset.Position(typed_node.Body.Rbrace).Line - 1
 		if typed_node.Else != nil {
-			body_end = tc.handleIfStmt(typed_node.Else, fset, locs)
+			body_end = tc.handleIfStmt(typed_node.Else, fset, locs, frame)
 		}
 		return body_end
 	case *ast.BlockStmt:
@@ -245,11 +245,8 @@ func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[
 }
 
 /* Assuming this line hits a watchpoint (or we're in a branch body),
- * record pending watchpoints for newly tainted exprs on line.
- * Accounts for aliased reads (i.e. those that don't match hit_bp.WatchExpr). */
-func (tc *TaintCheck) propagateTaint() {
-	file, line, _ := tc.hitLocation()
-
+ * record pending watchpoints for newly tainted exprs on line. */
+func (tc *TaintCheck) propagateTaint(file string, line int, hit *Hit, frame int) {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -273,26 +270,24 @@ func (tc *TaintCheck) propagateTaint() {
 		switch typed_node := node.(type) {
 		case *ast.IfStmt:
 			if start.Line == line {
-				// Enter if[elseif/else] => record pending wp for beginning of all possible branch bodies (if, elseif, else)
+				// Enter if[elseif/else] => set up state so we'll next through the branch body
 				locs := []api.Location{}
-				body_end := tc.handleIfStmt(typed_node, fset, &locs)
-				overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Cond)
+				body_end := tc.handleIfStmt(typed_node, fset, &locs, frame)
+				overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Cond, hit)
 				if overlap_expr == nil {
 					// Shouldn't be, since we just hit a wp for if condition
 					log.Panicf("Hit wp for ifStmt %+v, but isTainted didn't find taint", typed_node.Cond)
 				}
 
-				for _, body := range locs {
-					tc.recordPendingWp("", body, nil, locs[0].Line, body_end, overlap_start, overlap_end)
-				}
+				tc.recordPendingWp("", api.Location{}, nil, locs[0].Line, body_end, overlap_start, overlap_end, hit)
 			}
 
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
 			if call_expr == "copy" {
-				if overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Args[1]); overlap_expr != nil {
+				if overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.Args[1], hit); overlap_expr != nil {
 					// Copies min(len(new), len(old)). So if new is shorter, shorten overlap and watchexpr.
-					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}, exprToString(typed_node.Args[0]), true)
+					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: frame}, exprToString(typed_node.Args[0]), true)
 					if err != nil {
 						// I think new should always be evaluatable?
 						log.Panicf("eval %v for copy builtin: %v", exprToString(typed_node.Args[0]), err)
@@ -301,20 +296,20 @@ func (tc *TaintCheck) propagateTaint() {
 
 					// Expr will be allocated, but if on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
 					// are set correctly (TODO add test for this)
-					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
-					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil, 0, 0, overlap_start, overlap_end)
+					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, frame)
+					tc.recordPendingWp(exprToString(typed_node.Args[0]), pending_loc, nil, 0, 0, overlap_start, overlap_end, hit)
 				}
 			} else if builtinFcts.Contains(call_expr) || casts.Contains(call_expr) || call_expr == "runtime.KeepAlive" {
 				// builtins will be handled in assign/range
 			} else {
 				// If method: check receiver for taint if non-pointer, and
 				// count it in args to match what we'll do when creating wp
-				pending_loc := tc.lineWithStmt(&call_expr, "", -1, tc.hit.frame)
-				for i, arg := range tc.fullArgs(typed_node) {
-					if overlap_expr, overlap_start, overlap_end := tc.isTainted(arg); overlap_expr != nil { // caller arg tainted => propagate to callee arg
+				pending_loc := tc.lineWithStmt(&call_expr, "", 0, frame)
+				for i, arg := range tc.fullArgs(typed_node, file, frame) {
+					if overlap_expr, overlap_start, overlap_end := tc.isTainted(arg, hit); overlap_expr != nil { // caller arg tainted => propagate to callee arg
 						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 						// First line of function body (params are "fake" at declaration line)
-						tc.recordPendingWp(*overlap_expr, pending_loc, &i, 0, 0, overlap_start, overlap_end)
+						tc.recordPendingWp(*overlap_expr, pending_loc, &i, 0, 0, overlap_start, overlap_end, hit)
 					}
 				}
 			}
@@ -324,41 +319,34 @@ func (tc *TaintCheck) propagateTaint() {
 			// taint corresponding assign lhs/range value in caller, if any
 			// TODO handle function composition (for builtins too - will need diff handling)
 			for i, ret := range typed_node.Results {
-				if overlap_expr, overlap_start, overlap_end := tc.isTainted(ret); overlap_expr != nil {
-					caller_lhs, caller_loc := tc.callerLhs(i)
+				if overlap_expr, overlap_start, overlap_end := tc.isTainted(ret, hit); overlap_expr != nil {
+					caller_lhs, caller_loc := tc.callerLhs(i, frame)
 					// Line after calling line
 					watchexpr := exprToString(*caller_lhs) + *overlap_expr
-					tc.recordPendingWp(watchexpr, caller_loc, nil, 0, 0, overlap_start, overlap_end)
+					tc.recordPendingWp(watchexpr, caller_loc, nil, 0, 0, overlap_start, overlap_end, hit)
 				}
 			}
 
-		// May not be next line linearly for := in flow control statement
-		// but if not, var immediately went out of scope so we don't need a wp anyway
-		// TODO except for if/else (e.g. if{x=1}else{x=2}), maybe others. Logic in proc.next() might be helpful.
-		// And Range: If next line is }, set on next iter
-		// Need to handle case where never enter loop (never hit bp => main never terminates)
-		// ^ When fix this - keep in mind that wps go OOS when exit frame they're set in -
-		// so don't e.g. set a wp for a runtime hit while in the runtime frame (runtime_hits tests checks this)
 		case *ast.AssignStmt:
 			for _, rhs := range typed_node.Rhs {
 				// TODO properly handle multiple rhs (unsure of semantics)
-				if overlap_expr, overlap_start, overlap_end := tc.isTainted(rhs); overlap_expr != nil {
+				if overlap_expr, overlap_start, overlap_end := tc.isTainted(rhs, hit); overlap_expr != nil {
+
 					// Watched location is read on the rhs => taint lhs
-					pending_loc := tc.lineWithStmt(nil, end.Filename, end.Line+1, tc.hit.frame)
 					for _, lhs := range typed_node.Lhs {
 						watchexpr := exprToString(lhs) + *overlap_expr
-						tc.recordPendingWp(watchexpr, pending_loc, nil, 0, 0, overlap_start, overlap_end)
+						tc.recordPendingWp(watchexpr, api.Location{}, nil, 0, 0, overlap_start, overlap_end, hit)
 					}
 				}
 			}
 		case *ast.RangeStmt:
 			// TODO handle Range properly (once support tainted composite types in delve):
 			// If only part of the rhs is tainted, value expr should only be tainted on corresp iters
-			if overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.X); overlap_expr != nil && typed_node.Value != nil {
+			if overlap_expr, overlap_start, overlap_end := tc.isTainted(typed_node.X, hit); overlap_expr != nil && typed_node.Value != nil {
 				// Watched location is read on the rhs =>
 				// taint value expr
-				pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, tc.hit.frame)
-				tc.recordPendingWp(exprToString(typed_node.Value), pending_loc, nil, 0, 0, overlap_start, overlap_end)
+				pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, frame)
+				tc.recordPendingWp(exprToString(typed_node.Value), pending_loc, nil, 0, 0, overlap_start, overlap_end, hit)
 			}
 		} // end switch
 

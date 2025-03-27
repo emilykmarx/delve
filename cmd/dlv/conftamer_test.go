@@ -195,7 +195,7 @@ func TestControlFlow(t *testing.T) {
 		watchpointSet(&config, "maybe_tainted", 3, 19, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted_2", 1, 22, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_2", 1, 21, ct.ControlFlow, nil, nil)...)
 
 	dataflow_taint := ct.TaintingParam{
 		Param: ct.Param{
@@ -205,22 +205,22 @@ func TestControlFlow(t *testing.T) {
 		Flow: ct.DataFlow,
 	}
 	expected_events = append(expected_events,
-		watchpointSet(&config, "regular", 1, 23, ct.ControlFlow, &dataflow_taint, nil)...)
+		watchpointSet(&config, "regular", 1, 25, ct.ControlFlow, &dataflow_taint, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted_3", 1, 32, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_3", 1, 31, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "maybe_tainted_4", 1, 39, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "maybe_tainted_4", 1, 35, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
 		watchpointSet(&config, "maybe_tainted_5", 5, 43, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "i", 1, 49, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "i", 1, 48, ct.ControlFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "j", 1, 50, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "j", 1, 49, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }
@@ -232,8 +232,9 @@ func TestCallAndAssign1(t *testing.T) {
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(8), initial_line, ct.DataFlow, nil, nil)
 
+		// next() skips runtime.KeepAlive (although a user breakpoint for it will hit, and it has a statement, and in structs.go it doesn't) - unsure why
 	expected_events = append(expected_events,
-		watchpointSet(&config, "spacer", uint64(8), 35, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "spacer", uint64(8), 37, ct.DataFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
 		watchpointSet(&config, "tainted_param", uint64(8), 15, ct.DataFlow, nil, nil)...)
@@ -260,8 +261,11 @@ func TestCallAndAssign2(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "tainted_param_2", uint64(8), 10, ct.DataFlow, nil, nil)...)
 
-	expected_events = append(expected_events,
-		watchpointSet(&config, "a", uint64(8), 22, ct.DataFlow, nil, nil)...)
+	for i := 0; i < 2; i++ {
+		// Sets once for hit in call, and once for hit in assign
+		expected_events = append(expected_events,
+			watchpointSet(&config, "a", uint64(8), 22, ct.DataFlow, nil, nil)...)
+	}
 
 	run(t, &config, expected_events)
 }
@@ -296,11 +300,14 @@ func TestSliceRangeBuiltins(t *testing.T) {
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr+"[0]", uint64(2), initial_line, ct.DataFlow, nil, nil)
 	expected_events = append(expected_events,
-		watchpointSet(&config, config.Initial_watchexpr+"[1]", uint64(5), 14, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, config.Initial_watchexpr+"[1]", uint64(5), initial_line, ct.DataFlow, nil, nil)...)
+	// Set dup wp for names[0] on second iter of range
+	for i := 0; i < 2; i++ {
+		expected_events = append(expected_events,
+			watchpointSet(&config, "names[0]", uint64(9+2), 16, ct.DataFlow, nil, nil)...)
+	}
 	expected_events = append(expected_events,
-		watchpointSet(&config, "names[0]", uint64(9+2), 22, ct.DataFlow, nil, nil)...)
-	expected_events = append(expected_events,
-		watchpointSet(&config, "names[1]", uint64(9+5), 22, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "names[1]", uint64(9+5), 16, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }
@@ -377,12 +384,13 @@ func TestMultiRound(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		expected_events = append(expected_events,
-			watchpointSet(&config, "vars[i]", uint64(8), 16, ct.DataFlow, nil, nil)...)
+			watchpointSet(&config, "vars[i]", uint64(8), 15, ct.DataFlow, nil, nil)...)
 	}
 
 	run(t, &config, expected_events)
 }
 
+// Currently broken because of partial taint
 func TestRuntimeHits(t *testing.T) {
 	initial_line := 21
 	config := Config("runtime_hits.go", "name", initial_line)
@@ -690,7 +698,7 @@ func TestStructs(t *testing.T) {
 		watchpointSet(&config, "s_caller.Data", uint64(2), 31, ct.DataFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "multiline_lit.Data", uint64(2), 36, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "multiline_lit.Data", uint64(2), 34, ct.DataFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
 		watchpointSet(&config, "nested.name.Data", uint64(2), 41, ct.DataFlow, nil, nil)...)
@@ -762,14 +770,15 @@ func run(t *testing.T, config *ct.Config, expected_events []ct.Event) {
 		config.Initial_bp_line = expected_events[0].Line
 	}
 
+	config_file := "client_config.yml"
 	if os.Getenv("CT_KEEP_CSVS") == "" {
 		event_log := filepath.Join(t.TempDir(), config.Event_log_filename)
 		behavior_map := filepath.Join(t.TempDir(), config.Behavior_map_filename)
 		config.Event_log_filename = event_log
 		config.Behavior_map_filename = behavior_map
+		config_file = filepath.Join(t.TempDir(), config_file)
 	}
 
-	config_file := filepath.Join(t.TempDir(), "client_config.yml")
 	ct.SaveConfig(config_file, *config)
 
 	ctx, cancel := context.WithCancel(context.Background())

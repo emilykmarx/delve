@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -20,28 +19,9 @@ import (
 	set "github.com/hashicorp/go-set"
 )
 
-// Return value of register reg_name
-func (tc *TaintCheck) register(reg_name string) uint64 {
-	regs, err := tc.client.ListThreadRegisters(tc.thread.ID, false)
-	if err != nil {
-		log.Panicf("get regs to find overlapping region of syscall.write buf")
-	}
-	for _, reg := range regs {
-		if reg.Name == reg_name {
-			val, err := strconv.ParseUint(reg.Value, 0, 64)
-			if err != nil {
-				log.Panicf("convert reg %v to int", reg.Value)
-			}
-			return val
-		}
-	}
-	log.Panicf("reg %v not found", reg_name)
-	return 0
-}
-
 // Call `f` for each addr in watchpoint's region.
 // Return true if f returned true for any addr.
-func (tc *TaintCheck) forEachWatchaddr(watchpoint *api.Breakpoint, f func(watchaddr uint64) bool) bool {
+func forEachWatchaddr(watchpoint *api.Breakpoint, f func(watchaddr uint64) bool) bool {
 	ret := false
 	watch_end := watchpoint.Addrs[0] + watchSize(watchpoint)
 	for watchaddr := watchpoint.Addrs[0]; watchaddr < watch_end; watchaddr++ {
@@ -79,7 +59,7 @@ func union(tv1 TaintingVals, tv2 TaintingVals) TaintingVals {
 
 // Add tainting_vals to any existing entry in m-p[watchaddr]
 // If new entry, insert it
-func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals) {
+func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals, thread *api.Thread) {
 	if cmp.Equal(tainting_vals, newTaintingVals()) {
 		// Ignore if empty
 		return
@@ -89,7 +69,7 @@ func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals Taintin
 	tc.mem_param_map[watchaddr] = new_taint
 
 	event := Event{EventType: MemParamMapUpdate, Address: watchaddr, Size: 1, TaintingVals: &new_taint}
-	WriteEvent(tc, tc.event_log, event)
+	WriteEvent(thread, tc.event_log, event)
 }
 
 // Fill in any empty params at m-p[watchaddr]
@@ -123,13 +103,13 @@ func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offs
 }
 
 // Parse params assuming \n-separated. Return offset => param
-func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64) map[uint64]string {
+func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame int) map[uint64]string {
 	param_taint := map[uint64]string{}
 	// 1. Parse all params
 	buf_contents := ""
 	for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
 		eval_expr := fmt.Sprintf("*(*uint8)(%#x)", watchaddr)
-		s := api.EvalScope{GoroutineID: -1, Frame: tc.hit.frame}
+		s := api.EvalScope{GoroutineID: -1, Frame: frame}
 		xv, err := tc.client.EvalVariable(s, eval_expr, api.LoadConfig{})
 		if err != nil {
 			log.Panicf("read param char at %#x: %v\n", watchaddr, err)
@@ -175,8 +155,8 @@ func hasEmptyParam(tainting_vals TaintingVals) bool {
 
 // pretty-print
 func (pendingwp PendingWp) String() string {
-	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v branch body %v:%v}",
-		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals, pendingwp.body_start, pendingwp.body_end)
+	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v branch body %v:%v commands %+v}",
+		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals, pendingwp.body_start, pendingwp.body_end, pendingwp.cmds)
 }
 
 // Get line of source (as string)
@@ -256,6 +236,16 @@ func printThreads(state *api.DebuggerState) {
 	}
 }
 
+func getThread(ID int, state *api.DebuggerState) *api.Thread {
+	for _, thread := range state.Threads {
+		if ID == thread.ID {
+			return thread
+		}
+	}
+	log.Panicf("thread %v not found", ID)
+	return nil
+}
+
 func (tc *TaintCheck) printStacktrace() {
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	if err != nil {
@@ -286,10 +276,10 @@ func (tc *TaintCheck) hitInPrint() bool {
 }
 
 // Given a callexpr node, return full args including non-pointer receiver name (or "" if pointer receiver)
-func (tc *TaintCheck) fullArgs(node *ast.CallExpr) []ast.Expr {
+func (tc *TaintCheck) fullArgs(node *ast.CallExpr, file string, frame int) []ast.Expr {
 	full_args := node.Args
 	call_expr := exprToString(node.Fun)
-	decl_loc := tc.fnDecl(call_expr, tc.hit.frame)
+	decl_loc := tc.fnDecl(call_expr, file, frame)
 	// Decl:			pkg.<optional recvr type, perhaps ptr>.<fn name>
 	// CallExpr:	<optional pkg>.<optional recvr expr, perhaps with selector(s)>.<fn name>
 
@@ -312,12 +302,12 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr) []ast.Expr {
 
 // Find the function declaration location - e.g. pkg.(*Recvr).f(),
 // given the call expr - e.g. recvr.f() or pkg.f()
-func (tc *TaintCheck) fnDecl(call_expr string, frame int) api.Location {
+func (tc *TaintCheck) fnDecl(call_expr string, file string, frame int) api.Location {
 	locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
 			// Ambiguous name => qualify with package name
-			tokens := strings.Split(tc.hit.hit_instr.Loc.File, "/")
+			tokens := strings.Split(file, "/")
 			pkg := tokens[len(tokens)-2]
 			if pkg == "dlv_config_client" { // running in test
 				pkg = "main"
@@ -346,11 +336,10 @@ func watchSize(wp *api.Breakpoint) uint64 {
 }
 
 // Find the next line on or after this one with a statement, so we can set a bp.
-// TODO May want to consider doing this with PC when handle the non-linear stuff
 func (tc *TaintCheck) lineWithStmt(call_expr *string, file string, lineno int, frame int) api.Location {
 	var loc string
 	if call_expr != nil {
-		decl_loc := tc.fnDecl(*call_expr, frame)
+		decl_loc := tc.fnDecl(*call_expr, file, frame)
 		file = decl_loc.File
 		lineno = decl_loc.Line + 1
 	}
@@ -383,15 +372,5 @@ func (tc *TaintCheck) setBp(addr uint64) {
 		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") {
 			log.Fatalf("Failed to create breakpoint at %v: %v\n", addr, err)
 		}
-	}
-}
-
-// Location assuming hit a wp or bp (tc.hit.hit_instr is only set for wp)
-func (tc *TaintCheck) hitLocation() (string, int, uint64) {
-	// Don't use tc.thread's location since doesn't work for e.g. runtime hits
-	if tc.hit.hit_bp.WatchType != 0 {
-		return tc.hit.hit_instr.Loc.File, tc.hit.hit_instr.Loc.Line, tc.hit.hit_instr.Loc.PC
-	} else {
-		return tc.hit.hit_bp.File, tc.hit.hit_bp.Line, tc.hit.hit_bp.Addr
 	}
 }

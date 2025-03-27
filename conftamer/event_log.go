@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/go-delve/delve/service/api"
 )
 
 type EventType string
@@ -45,7 +47,7 @@ type Event struct {
 }
 
 // Also used in test to print events
-func WriteEvent(tc *TaintCheck, w *csv.Writer, e Event) {
+func WriteEvent(thread *api.Thread, w *csv.Writer, e Event) {
 	behavior := []byte{}
 	var err error
 	if e.Behavior != nil {
@@ -62,10 +64,10 @@ func WriteEvent(tc *TaintCheck, w *csv.Writer, e Event) {
 		}
 	}
 	var loc, goroutine string
-	if tc != nil {
-		file, line, addr := tc.hitLocation()
+	if thread != nil {
+		file, line, addr := thread.File, thread.Line, thread.PC
 		loc = fmt.Sprintf("%v %v %#x", file, line, addr)
-		goroutine = fmt.Sprintf("thread %v goroutine %v", tc.thread.ID, tc.thread.GoroutineID)
+		goroutine = fmt.Sprintf("thread %v goroutine %v", thread.ID, thread.GoroutineID)
 	}
 	row := []string{string(e.EventType), fmt.Sprintf("%#x", e.Address), fmt.Sprintf("%#x", e.Size), e.Expression,
 		string(behavior), string(tainting_vals), time.Now().String(), loc, goroutine}
