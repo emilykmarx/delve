@@ -145,7 +145,7 @@ func (tc *TaintCheck) Run() {
 							}
 							cmd = api.Next
 							tc.propagateTaint(thread.File, thread.Line, nil, 0) // after set previous watchpoint, since this will modify it
-							// Fix lineno - recordPendingWp will copy it from previous
+							// Fix lineno - pendingWatchpoint will copy it from previous
 							tc.cmd_pending_wp.cmds[0].lineno = thread.Line
 						} else {
 							// Exited branch body => set the watchpoints from last line (if any), then stop nexting
