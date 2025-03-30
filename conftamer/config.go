@@ -25,6 +25,9 @@ type Config struct {
 	Behavior_map_filename string `yaml:"behavior_map_filename"`
 	// Delve server endpoint
 	Server_endpoint string `yaml:"server_endpoint"`
+	// Type of flow to propagate taint (default to both)
+	// Currently only support both or data flow only
+	Taint_flow TaintFlow `yaml:"taint_flow"`
 }
 
 func LoadConfig(file string) (*Config, error) {
@@ -45,6 +48,9 @@ func LoadConfig(file string) (*Config, error) {
 		return &Config{}, fmt.Errorf("unable to decode config file: %v", err)
 	}
 
+	if c.Taint_flow != "" && c.Taint_flow != DataFlow {
+		return &Config{}, fmt.Errorf("unknown TaintFlow: %v", c.Taint_flow)
+	}
 	return &c, nil
 }
 

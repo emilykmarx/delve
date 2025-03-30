@@ -8,8 +8,6 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-
 	config_file := flag.String("config", "client_config.yml", "Config filename (yml)")
 	flag.Parse()
 	config, err := conftamer.LoadConfig(*config_file)

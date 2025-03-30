@@ -335,7 +335,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 
 		switch typed_node := node.(type) {
 		case *ast.IfStmt:
-			if start.Line == hit.hit_instr.Loc.Line {
+			if start.Line == hit.hit_instr.Loc.Line && tc.config.Taint_flow != DataFlow {
 				// Enter if[elseif/else] => set up state so we'll next through the branch body
 				tainted_region := tc.isTainted(typed_node.Cond, hit, fset)
 				if tainted_region == nil {
