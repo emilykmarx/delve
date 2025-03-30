@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/go-delve/delve/pkg/locspec"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
@@ -246,11 +247,17 @@ func getThread(ID int, state *api.DebuggerState) *api.Thread {
 	return nil
 }
 
-func (tc *TaintCheck) printStacktrace() {
+func (tc *TaintCheck) stacktrace() []api.Stackframe {
+	// TODO check for partially loaded (in any calls with LoadConfig), and hitting max depth
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	if err != nil {
-		log.Fatalf("Error getting stacktrace: %v\n", err)
+		log.Panicf("Error getting stacktrace: %v\n", err)
 	}
+	return stack
+}
+
+func (tc *TaintCheck) printStacktrace() {
+	stack := tc.stacktrace()
 	for _, frame := range stack {
 		loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 			frame.File, frame.Line, frame.Function.Name(),
@@ -261,10 +268,7 @@ func (tc *TaintCheck) printStacktrace() {
 
 // Whether the stack contains a print-flavored function
 func (tc *TaintCheck) hitInPrint() bool {
-	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
-	if err != nil {
-		log.Fatalf("Error getting stacktrace: %v\n", err)
-	}
+	stack := tc.stacktrace()
 
 	for _, frame := range stack {
 		fn := frame.Function.Name()
@@ -280,11 +284,14 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, file string, frame int) []ast
 	full_args := node.Args
 	call_expr := exprToString(node.Fun)
 	decl_loc := tc.fnDecl(call_expr, file, frame)
-	// Decl:			pkg.<optional recvr type, perhaps ptr>.<fn name>
+	// Decl:			<pkg, may hv .>.<optional recvr type, perhaps ptr>.<fn name>
 	// CallExpr:	<optional pkg>.<optional recvr expr, perhaps with selector(s)>.<fn name>
-
-	decl_tokens := strings.Split(decl_loc.Function.Name(), ".")
-	if len(decl_tokens) > 2 {
+	parsed, err := locspec.Parse(decl_loc.Function.Name())
+	fct := parsed.(*locspec.NormalLocationSpec)
+	if err != nil {
+		log.Panicf("parse fn decl %v: %v", decl_loc.Function.Name(), err)
+	}
+	if fct.FuncBase.ReceiverName != "" {
 		// method
 		recvr := ""
 		if !strings.Contains(decl_loc.Function.Name(), "*") {
@@ -373,4 +380,28 @@ func (tc *TaintCheck) setBp(addr uint64) {
 			log.Fatalf("Failed to create breakpoint at %v: %v\n", addr, err)
 		}
 	}
+}
+
+func (tc *TaintCheck) startTarget(cmd string, state *api.DebuggerState) {
+	var new_state *api.DebuggerState
+	var err error
+	if cmd == api.Next {
+		fmt.Println("Next")
+		new_state, err = tc.client.Next()
+		if err != nil {
+			log.Panicf("Next: %v\n", err)
+		}
+	} else if cmd == api.StepOut {
+		fmt.Println("Stepout")
+		new_state, err = tc.client.StepOut()
+		if err != nil {
+			log.Panicf("Stepout: %v\n", err)
+		}
+	} else if cmd != api.Continue {
+		fmt.Println("Continue")
+		log.Panicf("unsupported cmd in sequence: %v\n", cmd)
+	} else {
+		new_state = <-tc.client.Continue()
+	}
+	*state = *new_state
 }

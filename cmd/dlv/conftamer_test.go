@@ -261,11 +261,8 @@ func TestCallAndAssign2(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "tainted_param_2", uint64(8), 10, ct.DataFlow, nil, nil)...)
 
-	for i := 0; i < 2; i++ {
-		// Sets once for hit in call, and once for hit in assign
-		expected_events = append(expected_events,
-			watchpointSet(&config, "a", uint64(8), 22, ct.DataFlow, nil, nil)...)
-	}
+	expected_events = append(expected_events,
+		watchpointSet(&config, "a", uint64(8), 22, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }

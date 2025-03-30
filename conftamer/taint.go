@@ -1,6 +1,7 @@
 package conftamer
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -21,7 +22,28 @@ const (
 	ControlFlow TaintFlow = "Control Flow"
 )
 
-// Get the ith lhs of an assignment on lineno
+// A tainted memory region to be watched
+type TaintedRegion struct {
+	// The overlapping region
+	overlap_expr  *string // tainted expression (if arg, an expression to be appended to the callee's arg)
+	overlap_arg   *int    // index of tainted arg
+	overlap_start uint64
+	overlap_end   uint64
+
+	// Where watchpoint can be set
+	// Immediately, once found (unless runtime hit)
+	set_now bool
+	// Location, if can be found statically
+	set_location *api.Location
+	// Sequence of commands needed, if must find dynamically
+	cmds []Command
+
+	// If region is in branch condition, the branch body
+	body_start int
+	body_end   int
+}
+
+// Get the ith lhs of an assign/range on lineno, if any
 // TODO test "_"
 func getLhs(i int, file string, lineno int) (lhs *ast.Expr) {
 	fset := token.NewFileSet()
@@ -53,13 +75,9 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr) {
 	return lhs
 }
 
-// Assuming calling line has an assign or range, return corresp lhs and the next line's location
-// (TODO same caveats about linear assumption as for Assign)
+// If calling line has an assign or range, return corresp lhs and the next line's location
 func (tc *TaintCheck) callerLhs(i int, frame int) (*ast.Expr, api.Location) {
-	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
-	if err != nil {
-		log.Fatalf("Error getting stacktrace: %v\n", err)
-	}
+	stack := tc.stacktrace()
 	caller_frame := frame + 1
 	call_file := stack[caller_frame].File
 	call_line := stack[caller_frame].Line
@@ -67,7 +85,8 @@ func (tc *TaintCheck) callerLhs(i int, frame int) (*ast.Expr, api.Location) {
 	caller_lhs := getLhs(i, call_file, call_line)
 	if caller_lhs == nil {
 		tc.printStacktrace()
-		log.Fatalf("Failed to find caller lhs; call file %v, call line %v (stacktrace above)\n", call_file, call_line)
+		// Indicates caller catches tainted return value in a way we haven't handled
+		log.Printf("Failed to find caller lhs; call file %v, call line %v (stacktrace above)\n", call_file, call_line)
 	}
 	return caller_lhs, next_line
 }
@@ -77,26 +96,27 @@ func (tc *TaintCheck) callerLhs(i int, frame int) (*ast.Expr, api.Location) {
 // (e.g. don't have a test for return callexpr/cast)
 
 /* If expr involves memory that overlaps the watched region,
- * ignoring function args (except builtins),
- * return the expression for the overlapping region, or "" if the entire region overlaps
- * (e.g. .field for struct, "" for int).
- * Also return the start&end addresses of the overlapping region, and true if multiline composite lit.
- * Requires expr to be in scope.
- * If in branch body, always overlap. */
-func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (*string, uint64, uint64, bool) {
-	if hit == nil {
-		overlap_expr := ""
-		return &overlap_expr, 0, 0, false
+* ignoring function args (except builtins),
+* return overlapping region (watchexpr will be the overlapping portion of expr, "" if full -
+* propagateTaint will prepend the relevant expr as needed).
+* Requires expr to be in scope.
+* If in branch body, always overlap. */
+func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *TaintedRegion {
+	tainted_region := TaintedRegion{} // to be populated, if region is tainted
+	found_overlap := ""               //  the expression for the overlapping region, or "" if the entire region overlaps
+	// (e.g. .field for struct, "" for int)
+
+	if hit.hit_bp == nil {
+		// Finished next in branch body
+		tainted_region.overlap_expr = &found_overlap
+		return &tainted_region
 	}
 
-	var overlap_expr *string
-	found_overlap := ""
-	var overlap_start, overlap_end uint64
-	var composite_lit, multiline_composite_lit bool
+	composite_lit := false
 	field_names := map[string]string{} // expr used to init field => field name
 
 	ast.Inspect(expr, func(node ast.Node) bool {
-		if overlap_expr != nil {
+		if tainted_region.overlap_expr != nil {
 			return false // we're done
 		}
 		if node == nil {
@@ -106,8 +126,8 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (*
 		case *ast.CallExpr:
 			if arg_addr := tc.handleAppend(typed_node, hit, fset); arg_addr != 0 {
 				// For now, just apply taint from start addr of last tainted arg to whole array
-				overlap_expr = &found_overlap
-				overlap_start = arg_addr
+				tainted_region.overlap_expr = &found_overlap
+				tainted_region.overlap_start = arg_addr
 				// Preserve taint of old slice, append taint of new elems
 			} else if !casts.Contains(exprToString(typed_node.Fun)) {
 				// casted expr is tainted if its arg is
@@ -122,7 +142,8 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (*
 			}
 			rbrace := fset.Position(typed_node.Rbrace).Line
 			lbrace := fset.Position(typed_node.Lbrace).Line
-			multiline_composite_lit = rbrace > lbrace
+			// Multiline composite lit => next can take us back to assign line, but setting immediately seems to work (only if multiline)
+			tainted_region.set_now = rbrace > lbrace
 		case ast.Expr:
 			// TODO check for incomplete loads (see client API doc)
 			// If type not supported, still check overlap (e.g. struct)
@@ -136,7 +157,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (*
 				xv_size := uint64(xv.Watchsz)
 
 				var overlap bool
-				overlap_start, overlap_end, overlap = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
+				tainted_region.overlap_start, tainted_region.overlap_end, overlap = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
 				if overlap {
 					if composite_lit {
 						if tainted_field, ok := field_names[exprToString(node.(ast.Expr))]; !ok {
@@ -149,7 +170,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (*
 						found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size, hit.frame)
 					}
 
-					overlap_expr = &found_overlap
+					tainted_region.overlap_expr = &found_overlap
 				}
 
 				// Don't evaluate children
@@ -160,7 +181,13 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (*
 		return true
 	})
 
-	return overlap_expr, overlap_start, overlap_end, multiline_composite_lit
+	if tainted_region.overlap_expr != nil {
+		fmt.Printf("isTainted return %+v\n", tainted_region)
+		return &tainted_region
+	} else {
+		fmt.Printf("isTainted return nil\n")
+		return nil
+	}
 }
 
 // For struct xv, find the fully-qualified name of its overlapping field, minus `name`
@@ -215,15 +242,14 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *toke
 		return 0
 	}
 	for _, arg := range call_node.Args {
-		if overlap_expr, overlap_start, _, _ := tc.isTainted(arg, hit, fset); overlap_expr != nil {
-			return overlap_start
+		if tainted_region := tc.isTainted(arg, hit, fset); tainted_region != nil {
+			return tainted_region.overlap_start
 		}
 	}
 	return 0
 }
 
 // Add first line of branch body to locs, and return last line of branch body
-// TODO also check for wp hits in each elseif
 func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[]api.Location, frame int) int {
 	start := fset.Position(branch.Pos()).Line
 	file := fset.File(branch.Pos()).Name()
@@ -247,17 +273,50 @@ func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, locs *[
 	}
 }
 
-/* Assuming this line hits a watchpoint (or we're in a branch body),
- * record pending watchpoints for newly tainted exprs on line.
- * Either set a breakpoint for when to set watchpoint (e.g. function args), or
- * record sequence of commands needed - e.g. lhs of :=, or a reference
- * (since we watch its target which is about to change), runtime hit. */
-func (tc *TaintCheck) propagateTaint(file string, line int, hit *Hit, frame int) {
-	fset := token.NewFileSet()
-	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
-	if err != nil {
-		log.Fatalf("Failed to parse source file %v: %v\n", file, err)
+// The command sequence needed to reach the next line in frame, including any stepouts
+func next_cmd_seq(hit *Hit) []Command {
+	next_cmd := Command{cmd: api.Next, stack_len: hit.stack_len, lineno: hit.hit_instr.Loc.Line}
+	if hit.frame == 0 {
+		// non-runtime hit
+		return []Command{next_cmd}
 	}
+	// runtime hit => prepend stepouts and adjust frame for next
+	runtime_cmds := []Command{}
+	for i := 1; i <= hit.frame; i++ {
+		stack_len := hit.stack_len - i
+		runtime_cmds = append(runtime_cmds, Command{cmd: api.StepOut, stack_len: stack_len})
+	}
+	runtime_cmds = append(runtime_cmds,
+		Command{cmd: api.Next, stack_len: hit.stack_len - hit.frame, lineno: hit.hit_instr.Loc.Line})
+	return runtime_cmds
+}
+
+/* Assuming this line hits a watchpoint (or we're in a branch body),
+ * return the expression on the line that is newly tainted as a result (only support one).
+ * Also populate ret with info on when new watchpoint can be set -
+ * either at a breakpoint (e.g. function args), or
+ * after a sequence of commands - e.g. lhs of :=, or a reference
+ * (since we watch its target which is about to change), or runtime hit. */
+func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
+	fset := token.NewFileSet()
+	root, err := parser.ParseFile(fset, hit.hit_instr.Loc.File, nil, parser.SkipObjectResolution)
+	if err != nil {
+		log.Fatalf("Failed to parse source file %v: %v\n", hit.hit_instr.Loc.File, err)
+	}
+
+	// Will be used if location must be determined dynamically
+	// If not setting breakpoint (i.e. "set now" or seq of commands), must always stepout of runtime first
+	runtime_stepout_cmds := []Command{}
+	// XXX any way to get rid of thread in Hit? Is confusing since shouldn't use it for location (bc of runtime hits). At least comment that somewhere...
+
+	var ret *TaintedRegion
+	defer func() {
+		if ret != nil {
+			fmt.Printf("propagateTaint return %+v\n", ret)
+		} else {
+			fmt.Printf("propagateTaint return nil\n")
+		}
+	}()
 
 	// DFS of file's AST
 	ast.Inspect(root, func(node ast.Node) bool {
@@ -268,60 +327,64 @@ func (tc *TaintCheck) propagateTaint(file string, line int, hit *Hit, frame int)
 			start = fset.Position(node.Pos())
 			end = fset.Position(node.End())
 		}
-		if !(start.Line <= line && line <= end.Line) {
+		if !(start.Line <= hit.hit_instr.Loc.Line && hit.hit_instr.Loc.Line <= end.Line) {
 			return true
 		}
 		// hit line is part of node
 
 		switch typed_node := node.(type) {
 		case *ast.IfStmt:
-			if start.Line == line {
+			if start.Line == hit.hit_instr.Loc.Line {
 				// Enter if[elseif/else] => set up state so we'll next through the branch body
-				locs := []api.Location{}
-				body_end := tc.handleIfStmt(typed_node, fset, &locs, frame)
-				overlap_expr, overlap_start, overlap_end, _ := tc.isTainted(typed_node.Cond, hit, fset)
-				if overlap_expr == nil {
+				tainted_region := tc.isTainted(typed_node.Cond, hit, fset)
+				if tainted_region == nil {
 					// Shouldn't be, since we just hit a wp for if condition
 					log.Panicf("Hit wp for ifStmt %+v, but isTainted didn't find taint", typed_node.Cond)
+				} else {
+					locs := []api.Location{}
+					tainted_region.body_end = tc.handleIfStmt(typed_node, fset, &locs, hit.frame)
+					tainted_region.body_start = locs[0].Line
+					tainted_region.overlap_expr = nil // isTainted populated it with ""
+					tainted_region.cmds = next_cmd_seq(hit)
+					ret = tainted_region
 				}
-
-				tc.pendingWatchpoint(tc.cmd_pending_wp, "", nil, locs[0].Line, body_end, overlap_start, overlap_end, hit)
 			}
 
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
 			if call_expr == "copy" {
-				if overlap_expr, overlap_start, overlap_end, _ := tc.isTainted(typed_node.Args[1], hit, fset); overlap_expr != nil {
-					// Copies min(len(new), len(old)). So if new is shorter, shorten overlap and watchexpr.
-					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: frame}, exprToString(typed_node.Args[0]), true)
+				tainted_region := tc.isTainted(typed_node.Args[1], hit, fset)
+				if tainted_region != nil {
+					// Copies min(len(new), len(old)). So if new is shorter, shorten overlap.
+					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, exprToString(typed_node.Args[0]), true)
 					if err != nil {
 						// I think new should always be evaluatable?
 						log.Panicf("eval %v for copy builtin: %v", exprToString(typed_node.Args[0]), err)
 					}
-					overlap_end = min(overlap_start+uint64(xv.Watchsz), overlap_end)
+					tainted_region.overlap_end = min(tainted_region.overlap_start+uint64(xv.Watchsz), tainted_region.overlap_end)
 
 					// Expr will be allocated, but if on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
 					// are set correctly (TODO add test for this)
-					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, frame)
-					existing_info := tc.bp_pending_wps[pending_loc.PCs[0]]
-					tc.pendingWatchpoint(&existing_info, exprToString(typed_node.Args[0]), nil, 0, 0, overlap_start, overlap_end, hit)
-					tc.bp_pending_wps[pending_loc.PCs[0]] = existing_info
-					tc.setBp(pending_loc.PCs[0])
+					pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, hit.frame)
+					tainted_region.set_location = &pending_loc
+					watchexpr := exprToString(typed_node.Args[0])
+					tainted_region.overlap_expr = &watchexpr
+					ret = tainted_region
 				}
 			} else if builtinFcts.Contains(call_expr) || casts.Contains(call_expr) || call_expr == "runtime.KeepAlive" {
 				// builtins will be handled in assign/range
 			} else {
 				// If method: check receiver for taint if non-pointer, and
 				// count it in args to match what we'll do when creating wp
-				pending_loc := tc.lineWithStmt(&call_expr, "", 0, frame)
-				for i, arg := range tc.fullArgs(typed_node, file, frame) {
-					if overlap_expr, overlap_start, overlap_end, _ := tc.isTainted(arg, hit, fset); overlap_expr != nil { // caller arg tainted => propagate to callee arg
+				pending_loc := tc.lineWithStmt(&call_expr, "", 0, hit.frame)
+				for i, arg := range tc.fullArgs(typed_node, hit.hit_instr.Loc.File, hit.frame) {
+					tainted_region := tc.isTainted(arg, hit, fset)
+					if tainted_region != nil { // caller arg tainted => propagate to callee arg
 						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 						// First line of function body (params are "fake" at declaration line)
-						existing_info := tc.bp_pending_wps[pending_loc.PCs[0]]
-						tc.pendingWatchpoint(&existing_info, *overlap_expr, &i, 0, 0, overlap_start, overlap_end, hit)
-						tc.bp_pending_wps[pending_loc.PCs[0]] = existing_info
-						tc.setBp(pending_loc.PCs[0])
+						tainted_region.overlap_arg = &i
+						tainted_region.set_location = &pending_loc
+						ret = tainted_region
 					}
 				}
 			}
@@ -329,51 +392,56 @@ func (tc *TaintCheck) propagateTaint(file string, line int, hit *Hit, frame int)
 		case *ast.ReturnStmt:
 			// Watched location is read in return value =>
 			// taint corresponding assign lhs/range value in caller, if any
-			// TODO handle function composition (for builtins too - will need diff handling)
-			for i, ret := range typed_node.Results {
-				if overlap_expr, overlap_start, overlap_end, _ := tc.isTainted(ret, hit, fset); overlap_expr != nil {
-					caller_lhs, caller_loc := tc.callerLhs(i, frame)
-					// Line after calling line
-					watchexpr := exprToString(*caller_lhs) + *overlap_expr
-					existing_info := tc.bp_pending_wps[caller_loc.PCs[0]]
-					tc.pendingWatchpoint(&existing_info, watchexpr, nil, 0, 0, overlap_start, overlap_end, hit)
-					tc.bp_pending_wps[caller_loc.PCs[0]] = existing_info
-					tc.setBp(caller_loc.PCs[0])
+			// TODO handle function composition (for builtins too - will need diff handling), and
+			// other uses of retval e.g. in if condition (treat as watchpoint hit in if cond)
+			for i, retval := range typed_node.Results {
+				tainted_region := tc.isTainted(retval, hit, fset)
+				if tainted_region != nil {
+					if caller_lhs, caller_loc := tc.callerLhs(i, hit.frame); caller_lhs != nil {
+						// Line after calling line
+						watchexpr := exprToString(*caller_lhs) + *tainted_region.overlap_expr
+						tainted_region.overlap_expr = &watchexpr
+						tainted_region.set_location = &caller_loc
+						ret = tainted_region
+					}
 				}
 			}
 
 		case *ast.AssignStmt:
 			for _, rhs := range typed_node.Rhs {
-				// TODO properly handle multiple rhs (unsure of semantics)
-				if overlap_expr, overlap_start, overlap_end, multiline_composite_lit := tc.isTainted(rhs, hit, fset); overlap_expr != nil {
+				// TODO properly handle multiple rhs (unsure of semantics) - will need to allow this fct to return multiple tainted regions
+				tainted_region := tc.isTainted(rhs, hit, fset)
+				if tainted_region != nil {
 					// Watched location is read on the rhs => taint lhs
 					for _, lhs := range typed_node.Lhs {
-						watchexpr := exprToString(lhs) + *overlap_expr
-						// If multiline composite lit, next can take us back to assign line, but setting immediately seems to work (only if multiline)
-						if multiline_composite_lit {
-							pending_wp := PendingWp{}
-							tc.pendingWatchpoint(&pending_wp, watchexpr, nil, 0, 0, overlap_start, overlap_end, hit)
-							tc.setPendingWatchpoints(&pending_wp, hit.thread, hit.frame)
-						} else {
-							tc.pendingWatchpoint(tc.cmd_pending_wp, watchexpr, nil, 0, 0, overlap_start, overlap_end, hit)
-						}
+						watchexpr := exprToString(lhs) + *tainted_region.overlap_expr
+						tainted_region.overlap_expr = &watchexpr
 					}
+					if !tainted_region.set_now {
+						tainted_region.cmds = next_cmd_seq(hit)
+					} else {
+						tainted_region.cmds = runtime_stepout_cmds
+					}
+					ret = tainted_region
 				}
 			}
 		case *ast.RangeStmt:
 			// TODO handle Range properly (once support tainted composite types in delve):
 			// If only part of the rhs is tainted, value expr should only be tainted on corresp iters
-			if overlap_expr, overlap_start, overlap_end, _ := tc.isTainted(typed_node.X, hit, fset); overlap_expr != nil && typed_node.Value != nil {
+			tainted_region := tc.isTainted(typed_node.X, hit, fset)
+			if tainted_region != nil && typed_node.Value != nil {
 				// Watched location is read on the rhs =>
 				// taint value expr
-				pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, frame)
-				existing_info := tc.bp_pending_wps[pending_loc.PCs[0]]
-				tc.pendingWatchpoint(&existing_info, exprToString(typed_node.Value), nil, 0, 0, overlap_start, overlap_end, hit)
-				tc.bp_pending_wps[pending_loc.PCs[0]] = existing_info
-				tc.setBp(pending_loc.PCs[0])
+				pending_loc := tc.lineWithStmt(nil, start.Filename, start.Line+1, hit.frame)
+				tainted_region.set_location = &pending_loc
+				watchexpr := exprToString(typed_node.Value)
+				tainted_region.overlap_expr = &watchexpr
+				ret = tainted_region
 			}
 		} // end switch
 
 		return true
 	})
+
+	return ret
 }

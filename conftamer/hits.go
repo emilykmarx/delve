@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -199,11 +200,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
  * Return false to ignore.
  * TODO are there any runtime functions we want to treat normally? */
 func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
-	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
-	// TODO check for partially loaded (in any calls with LoadConfig), and hitting max depth
-	if err != nil {
-		log.Panicf("Error getting stacktrace: %v\n", err)
-	}
+	stack := tc.stacktrace()
 
 	hit.stack_len = len(stack)
 
@@ -300,18 +297,17 @@ func controlFlowTaint(tainting_vals TaintingVals) TaintingVals {
 	return ifstmt_taint
 }
 
-func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp,
-	body_start int, body_end int, overlap_start uint64, overlap_end uint64, hit *Hit) {
+/* Populate existing_info with tainting vals from region's m-c entries
+ * (they may differ across the region) */
+func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *TaintedRegion, hit *Hit) {
 	existing_info.threadID = hit.thread.ID
-	// Case 1: Hit watchpoint => copy tainting vals from overlapping region's m-c entries
-	// (they may differ across the region)
 	ifstmt_taint := newTaintingVals()
-	if overlap_end == 0 {
+	if tainted_region.overlap_end == 0 {
 		// append => handle same as config variable load (put all taint at offset 0)
-		overlap_end = overlap_start + 1
+		tainted_region.overlap_end = tainted_region.overlap_start + 1
 	}
 	new_params := map[uint64]string{}
-	for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
+	for watchaddr := tainted_region.overlap_start; watchaddr < tainted_region.overlap_end; watchaddr++ {
 		tainting_vals, ok := tc.mem_param_map[watchaddr]
 		if !ok {
 			log.Panicf("No mem-param map entry for %#x\n", watchaddr)
@@ -321,17 +317,17 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp,
 		// (some region of) config read buf for the first time. Populate m-c.
 		if hasEmptyParam(tainting_vals) {
 			if len(new_params) == 0 {
-				new_params = tc.readParams(overlap_start, overlap_end, hit.frame)
+				new_params = tc.readParams(tainted_region.overlap_start, tainted_region.overlap_end, hit.frame)
 			}
 			// XXX ignore offsets that don't correspond to params (e.g. \n)
-			tc.populateParam(watchaddr, new_params[watchaddr-overlap_start])
+			tc.populateParam(watchaddr, new_params[watchaddr-tainted_region.overlap_start])
 			tainting_vals = tc.mem_param_map[watchaddr]
 		}
 
-		if body_start == 0 {
-			// Case 1a: Regular watchpoint => copy overlapping region's vals at each offset
+		if tainted_region.body_start == 0 {
+			// Case 1a: Regular watchpoint => copy tainted_region vals at each offset
 			// (offset may already have existing ones, e.g. hit a watchpoint within a tainted branch body - union with those if so).
-			existing_info.updateTaintingVals(tainting_vals, watchaddr-overlap_start)
+			existing_info.updateTaintingVals(tainting_vals, watchaddr-tainted_region.overlap_start)
 		} else {
 			// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
 			// to be copied into each byte of expressions in branch body (don't know their size),
@@ -349,61 +345,11 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp,
 		}
 	}
 
-	if body_start != 0 {
+	if tainted_region.body_start != 0 {
 		existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
-		existing_info.body_start = body_start
-		existing_info.body_end = body_end
+		existing_info.body_start = tainted_region.body_start
+		existing_info.body_end = tainted_region.body_end
 	}
-}
-
-/* Populate existing_info with tainting vals from overlapping region, expr/argno,
- * and command sequence if applicable. */
-func (tc *TaintCheck) pendingWatchpoint(existing_info *PendingWp, expr string, argno *int,
-	body_start int, body_end int, overlap_start uint64, overlap_end uint64, hit *Hit) {
-	if existing_info == nil {
-		// Presumably tc.cmd_pending_wp
-		existing_info = &PendingWp{}
-		tc.cmd_pending_wp = existing_info
-	}
-
-	if hit != nil {
-		// Called for watchpoint hit, instead of finishing next in ifstmt =>
-		// get tainting vals from watch region
-		tc.getTaintingVals(existing_info, body_start, body_end, overlap_start, overlap_end, hit)
-	}
-
-	// Insert argno/expr
-	if argno != nil {
-		if len(existing_info.watchargs) == 0 {
-			existing_info.watchargs = make(map[int]string)
-		}
-		existing_info.watchargs[*argno] = expr
-	} else if expr != "" {
-		if existing_info.watchexprs.Empty() {
-			existing_info.watchexprs = *set.New[string](1)
-		}
-		existing_info.watchexprs.Insert(expr)
-	}
-
-	// Update commands
-	if hit != nil {
-		cmds := []Command{Command{cmd: api.Next, stack_len: hit.stack_len, lineno: hit.hit_instr.Loc.Line}}
-		if hit.frame > 0 {
-			// runtime hit
-			cmds = []Command{}
-			stack_len := hit.stack_len - 1
-			for i := 0; i < hit.frame; i++ {
-				cmds = append(cmds, Command{cmd: api.StepOut, stack_len: stack_len})
-				stack_len--
-			}
-
-			cmds = append(cmds, Command{cmd: api.Next, stack_len: stack_len + 1, lineno: hit.hit_instr.Loc.Line})
-		}
-		existing_info.cmds = cmds
-	} else {
-		// branch body - cmds are already in existing info from previous hit - exec will update line
-	}
-	fmt.Printf("ZZEM: exit pendingWatchpoint: %v\n", existing_info)
 }
 
 func (tc *TaintCheck) onPendingWpBpHitDone(hit *Hit) {
@@ -485,6 +431,71 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 	}
 }
 
+/* Record a pending watchpoint for the newly tainted region. */
+func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit) {
+	// Get existing pending watchpoint for location (if any)
+	pending_watchpoint := PendingWp{}
+	if tainted_region.set_location != nil {
+		// Breakpoint
+		pending_watchpoint = tc.bp_pending_wps[tainted_region.set_location.PC]
+	} else if tc.cmd_pending_wp != nil {
+		// Existing cmd sequence, if any
+		pending_watchpoint = *tc.cmd_pending_wp
+		// Currently only supporting single cmd_pending_wp
+		if pending_watchpoint.cmds != nil && !reflect.DeepEqual(tainted_region.cmds, pending_watchpoint.cmds) {
+			// When advancing through branch body, this is ok (we keep updating the same one throughout branch body)
+			fmt.Printf("existing cmd_pending_wp %+v has different command sequence than current %+v\n",
+				pending_watchpoint.cmds, tainted_region.cmds)
+		}
+	}
+	pending_watchpoint.cmds = tainted_region.cmds
+
+	// Populate tainting values
+	if hit.hit_bp != nil {
+		// Watchpoint hit => copy from region overlapping with hit
+		tc.getTaintingVals(&pending_watchpoint, tainted_region, hit)
+	} else {
+		// Fake "hit" from finishing next in branch body => tainting vals are already in cmd_pending_wp
+		// (created for hit in condition)
+	}
+
+	// Insert argno/expr
+	if tainted_region.overlap_arg != nil {
+		if len(pending_watchpoint.watchargs) == 0 {
+			pending_watchpoint.watchargs = make(map[int]string)
+		}
+		pending_watchpoint.watchargs[*tainted_region.overlap_arg] = *tainted_region.overlap_expr
+	} else if tainted_region.overlap_expr != nil {
+		if pending_watchpoint.watchexprs.Empty() {
+			pending_watchpoint.watchexprs = *set.New[string](1)
+		}
+		pending_watchpoint.watchexprs.Insert(*tainted_region.overlap_expr)
+	}
+	fmt.Printf("pendingWatchpoint about to record %+v\n", pending_watchpoint)
+
+	// Record pending watchpoint (or set now, if possible)
+	if tainted_region.set_now && len(tainted_region.cmds) == 0 {
+		// non-runtime hit, can set now
+		fmt.Printf("set pendingwp now\n")
+		tc.setPendingWatchpoints(&pending_watchpoint, hit.thread, hit.frame)
+		// Cleanup if there was already a pending watchpoint at this location
+		if tainted_region.set_location != nil {
+			delete(tc.bp_pending_wps, tainted_region.set_location.PC)
+		} else {
+			// cmd-pending - cleaned up in Run()
+		}
+	} else {
+		if tainted_region.set_location != nil {
+			tc.setBp(tainted_region.set_location.PC)
+			fmt.Printf("set bp at %v\n", tainted_region.set_location.Line)
+			tc.bp_pending_wps[tainted_region.set_location.PC] = pending_watchpoint
+		} else {
+			tc.cmd_pending_wp = &pending_watchpoint
+			fmt.Println("RECORDED CMD PENDING")
+		}
+	}
+}
+
 // Watchpoint hit => record any new pending watchpoints.
 func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
 	if !tc.hittingLine(hit) {
@@ -493,8 +504,12 @@ func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
 	}
 	event := Event{EventType: WatchpointHit, Address: hit.hit_bp.Addr, Size: watchSize(hit.hit_bp), Expression: hit.hit_bp.WatchExpr}
 	WriteEvent(hit.thread, tc.event_log, event)
-	fmt.Printf("ZZEM hit watchpoint %v\n", hit.hit_bp.WatchExpr)
-	tc.propagateTaint(hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line, hit, hit.frame)
+	fmt.Printf("ZZEM hit watchpoint on %v at %v:%v\n", hit.hit_bp.WatchExpr, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
+	tainted_region := tc.propagateTaint(hit)
+	if tainted_region != nil {
+		tc.pendingWatchpoint(tainted_region, hit)
+	}
+	fmt.Printf("ZZEM propagated taint for watchpoint hit on %v\n", hit.hit_bp.WatchExpr)
 }
 
 // Set all watchpoints corresponding to pendingWp, remove them from pendingWp
@@ -527,7 +542,7 @@ func (tc *TaintCheck) onPendingWpBpHit(hit *Hit) {
 
 	bp_addr := hit.hit_bp.Addrs[0]
 	info := tc.bp_pending_wps[bp_addr]
-	fmt.Printf("ZZEM line %v: hit pending wp breakpoint\n", hit.hit_bp.Line)
+	fmt.Printf("ZZEM file %v line %v: hit pending wp breakpoint\n", hit.hit_bp.File, hit.hit_bp.Line)
 	fmt.Printf("info: %+v\n", info)
 	defer func() {
 		tc.onPendingWpBpHitDone(hit)

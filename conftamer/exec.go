@@ -24,8 +24,10 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 				tc.handleSyscallEntry(hit)
 			} else if hit_bp.WatchExpr != "" {
 				tc.onWatchpointHit(hit)
+			} else if hit_bp.Name == proc.UnrecoveredPanic || hit_bp.Name == proc.FatalThrow || hit_bp.Name == proc.HardcodedBreakpoint ||
+				hit_bp.Name == proc.SyscallExitBreakpoint {
+				log.Panicf("Hit unexpected breakpoint %+v on thread %v\n", hit_bp, thread.ID)
 			} else {
-				// Assumes the hit bp is for a pending wp (but could instead be e.g. fatalpanic)
 				tc.onPendingWpBpHit(hit)
 			}
 		}
@@ -45,14 +47,7 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 
 // If command not done (i.e. was interrupted by some other hit), return what command to execute next
 func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread *api.Thread) string {
-	fmt.Printf("ZZEM enter commandDone; cmd %v\n", cmd)
-	defer func() {
-		fmt.Printf("ZZEM exit commandDone\n")
-	}()
-	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
-	if err != nil {
-		log.Panicf("Error getting stacktrace: %v\n", err)
-	}
+	stack := tc.stacktrace()
 	if state.NextInProgress {
 		// Hit on another goroutine => continue (next is not allowed - continue will act as next)
 		return api.Continue
@@ -69,11 +64,12 @@ func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread 
 }
 
 // Run the target until exit
+// TODOs for command requests: handle multiple outstanding command requests and goroutine switching (see notebook),
+// switch ReturnStmt and copy builtin from assuming linear flow
 func (tc *TaintCheck) Run() {
 	log.Printf("Starting CT-Scan\n\n")
 	defer WriteBehaviorMap(tc.config.Behavior_map_filename, tc.behavior_map)
 
-	var err error
 	state := &api.DebuggerState{}
 	// The command to execute on next target start
 	cmd := api.Continue
@@ -81,27 +77,8 @@ func (tc *TaintCheck) Run() {
 	cmd_idx := 0
 
 	for {
-		// Start target
-		if cmd == api.Next {
-			loc := state.SelectedGoroutine.CurrentLoc
-			fmt.Printf("ZZEM next from %v\n", loc.Line)
-			state, err = tc.client.Next()
-			if err != nil {
-				log.Panicf("Next: %v\n", err)
-			}
-		} else if cmd == api.StepOut {
-			loc := state.SelectedGoroutine.CurrentLoc
-			fmt.Printf("ZZEM stepout from %v\n", loc.Line)
-			state, err = tc.client.StepOut()
-			if err != nil {
-				log.Panicf("Stepout: %v\n", err)
-			}
-		} else if cmd != api.Continue {
-			log.Panicf("unsupported cmd in sequence: %v\n", cmd)
-		} else {
-			fmt.Printf("ZZEM continue\n")
-			state = <-tc.client.Continue()
-		}
+		// Start target, wait for stop
+		tc.startTarget(cmd, state)
 		if state.Exited {
 			break
 		}
@@ -109,29 +86,18 @@ func (tc *TaintCheck) Run() {
 			log.Panicf("Error in debugger state: %v\n", state.Err)
 		}
 
-		// Target stopped => handle hits, which may generate requests to execute commands needed to set watchpoints.
-		// TODOs for command requests: handle multiple outstanding command requests and goroutine switching (see notebook),
-		// switch ReturnStmt and copy builtin from assuming linear flow
-		prev_cmd_pending_wp := tc.cmd_pending_wp
-		// May populate/update tc.cmd_pending_wp
-		tc.handleTargetStop(state)
-
-		fmt.Printf("ZZEM handledTargetStop; cmd idx %v\n", cmd_idx)
-		cmd = api.Continue
-
-		if prev_cmd_pending_wp != nil {
-			// Trying to finish a command in sequence => check if it's done
+		// Target stopped => check if last start finished the command we were executing
+		// (if any besides Continue)
+		if tc.cmd_pending_wp != nil {
 			thread := getThread(tc.cmd_pending_wp.threadID, state)
 			cmd = tc.commandDone(tc.cmd_pending_wp.cmds[cmd_idx], state, thread)
 			if cmd == "" {
-				cmd = api.Continue
 				if cmd_idx == len(tc.cmd_pending_wp.cmds)-1 {
-					fmt.Println("ZZEM finished command sequence => set watchpoints")
 					// Finished command sequence => set watchpoints
+					fmt.Printf("ZZEM finished sequence - at line %v; pending wp %+v\n", thread.Line, tc.cmd_pending_wp)
 					if tc.cmd_pending_wp.body_start != 0 {
 						// Finished next in branch body
 						if tc.cmd_pending_wp.body_start <= thread.Line && thread.Line <= tc.cmd_pending_wp.body_end {
-							fmt.Printf("ZZEM line %v: Finished next in branch body - will propagate taint, then set wp (if any)\n", thread.Line)
 							// Still in branch body =>
 							// Set pending watchpoint from previous line
 							// Record new pending watchpoint for this line, as if we hit a watchpoint and isTainted was always true
@@ -139,38 +105,53 @@ func (tc *TaintCheck) Run() {
 							if tc.cmd_pending_wp.watchexprs.Empty() {
 								// First line of a branch body => no watchpoint to set yet - or,
 								// propagateTaint from previous line found no exprs that required nexting to set wp
+								fmt.Printf("ZZEM first line\n")
 							} else {
 								// Keep rest of cmd_pending_wp for next line
+								fmt.Printf("ZZEM non-first line\n")
 								tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
 							}
-							cmd = api.Next
-							tc.propagateTaint(thread.File, thread.Line, nil, 0) // after set previous watchpoint, since this will modify it
-							// Fix lineno - pendingWatchpoint will copy it from previous
-							tc.cmd_pending_wp.cmds[0].lineno = thread.Line
+							// Make a "hit" with the info propagateTaint needs
+							instr := api.AsmInstruction{Loc: api.Location{File: thread.File, Line: thread.Line}}
+							hit := Hit{thread: thread, hit_instr: &instr, stack_len: len(tc.stacktrace())}
+							tainted_region := tc.propagateTaint(&hit) // after set previous watchpoint, since this will modify it
+							if tainted_region != nil {
+								tc.pendingWatchpoint(tainted_region, &hit)
+							}
 						} else {
 							// Exited branch body => set the watchpoints from last line (if any), then stop nexting
+							fmt.Printf("exited branch body\n")
 							if !tc.cmd_pending_wp.watchexprs.Empty() {
 								tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
 							}
 							tc.cmd_pending_wp = nil
+							cmd_idx = 0
 						}
 					} else {
+						fmt.Printf("ZZEM not in branch body - set cmd pending wp\n")
 						// Not in branch body
 						tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
 						tc.cmd_pending_wp = nil
+						cmd_idx = 0
 					}
 				} else {
 					// Finished command, but not the whole sequence => do next command in sequence
+					fmt.Printf("ZZEM finished command but not whole sequence\n")
 					cmd_idx++
-					cmd = tc.cmd_pending_wp.cmds[cmd_idx].cmd
 				}
 			}
-		} else if tc.cmd_pending_wp != nil {
-			// New request for sequence of commands
-			fmt.Printf("ZZEM new request %+v\n", tc.cmd_pending_wp)
-			cmd_idx = 0
+		}
+
+		// Handle hits, which may generate requests to execute commands needed to set watchpoints.
+		// May populate/update tc.cmd_pending_wp
+		tc.handleTargetStop(state)
+
+		if tc.cmd_pending_wp != nil {
 			cmd = tc.cmd_pending_wp.cmds[cmd_idx].cmd
-			fmt.Printf("ZZEM starting sequence %+v\n", tc.cmd_pending_wp.cmds)
+			fmt.Printf("ZZEM doing next cmd in seq: %+v\n", cmd)
+		} else {
+			fmt.Printf("ZZEM doing continue\n")
+			cmd = api.Continue
 		}
 	}
 
