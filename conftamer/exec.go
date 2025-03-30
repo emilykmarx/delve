@@ -45,22 +45,26 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 	}
 }
 
-// If command not done (i.e. was interrupted by some other hit), return what command to execute next
-func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread *api.Thread) string {
+// If command not done (i.e. was interrupted by some other hit), return what command to execute next.
+// Return true if have exited the command's frame (i.e. stack shorter, vs longer indicating interrupted by function call).
+func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread *api.Thread) (string, bool) {
 	stack := tc.stacktrace()
 	if state.NextInProgress {
 		// Hit on another goroutine => continue (next is not allowed - continue will act as next)
-		return api.Continue
-	} else if len(stack) != cmd.stack_len {
-		fmt.Println("ZZEM interrupted, not at right frame yet => stepout")
-		return api.StepOut
+		return api.Continue, false
+	} else if len(stack) > cmd.stack_len {
+		fmt.Printf("ZZEM interrupted at line %v, not at right frame yet => stepout\n", thread.Line)
+		return api.StepOut, false
+	} else if len(stack) < cmd.stack_len {
+		fmt.Printf("ZZEM exited command frame at line %v\n", thread.Line)
+		return api.Continue, true
 	} else if cmd.cmd == api.Next && thread.Line == cmd.lineno {
-		fmt.Println("ZZEM interrupted, not at right line yet => next again")
-		return api.Next
+		fmt.Printf("ZZEM interrupted at line %v, not at right line yet => next again", thread.Line)
+		return api.Next, false
 	}
 
 	// Command done
-	return ""
+	return "", false
 }
 
 // Run the target until exit
@@ -75,6 +79,8 @@ func (tc *TaintCheck) Run() {
 	cmd := api.Continue
 	// If executing a command sequence, the index in the sequence
 	cmd_idx := 0
+	// Whether we've exited the command's frame
+	exited_frame := false
 
 	for {
 		// Start target, wait for stop
@@ -90,14 +96,14 @@ func (tc *TaintCheck) Run() {
 		// (if any besides Continue)
 		if tc.cmd_pending_wp != nil {
 			thread := getThread(tc.cmd_pending_wp.threadID, state)
-			cmd = tc.commandDone(tc.cmd_pending_wp.cmds[cmd_idx], state, thread)
-			if cmd == "" {
+			cmd, exited_frame = tc.commandDone(tc.cmd_pending_wp.cmds[cmd_idx], state, thread)
+			if cmd == "" || exited_frame {
 				if cmd_idx == len(tc.cmd_pending_wp.cmds)-1 {
 					// Finished command sequence => set watchpoints
 					fmt.Printf("ZZEM finished sequence - at line %v; pending wp %+v\n", thread.Line, tc.cmd_pending_wp)
 					if tc.cmd_pending_wp.body_start != 0 {
 						// Finished next in branch body
-						if tc.cmd_pending_wp.body_start <= thread.Line && thread.Line <= tc.cmd_pending_wp.body_end {
+						if tc.cmd_pending_wp.body_start <= thread.Line && thread.Line <= tc.cmd_pending_wp.body_end && !exited_frame {
 							// Still in branch body =>
 							// Set pending watchpoint from previous line
 							// Record new pending watchpoint for this line, as if we hit a watchpoint and isTainted was always true
@@ -107,7 +113,8 @@ func (tc *TaintCheck) Run() {
 								// propagateTaint from previous line found no exprs that required nexting to set wp
 								fmt.Printf("ZZEM first line\n")
 							} else {
-								// Keep rest of cmd_pending_wp for next line
+								// Keep rest of cmd_pending_wp, including its tainting values and command =>
+								// will keep nexting and setting watchpoints tainted by condition until exit body
 								fmt.Printf("ZZEM non-first line\n")
 								tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
 							}
@@ -119,7 +126,8 @@ func (tc *TaintCheck) Run() {
 								tc.pendingWatchpoint(tainted_region, &hit)
 							}
 						} else {
-							// Exited branch body => set the watchpoints from last line (if any), then stop nexting
+							// Exited branch body, either by nexting past last line or returning from it =>
+							// Set the watchpoints from last line (if any), then stop nexting
 							fmt.Printf("exited branch body\n")
 							if !tc.cmd_pending_wp.watchexprs.Empty() {
 								tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)

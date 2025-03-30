@@ -431,11 +431,14 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 	}
 }
 
-/* Record a pending watchpoint for the newly tainted region. */
+/* Record a pending watchpoint for the newly tainted region.
+ * Create or update from breakpoint- or command-pending watchpoints,
+ * depending on set location. */
 func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit) {
+	set_at_bp := tainted_region.set_location != nil
 	// Get existing pending watchpoint for location (if any)
 	pending_watchpoint := PendingWp{}
-	if tainted_region.set_location != nil {
+	if set_at_bp {
 		// Breakpoint
 		pending_watchpoint = tc.bp_pending_wps[tainted_region.set_location.PC]
 	} else if tc.cmd_pending_wp != nil {
@@ -456,7 +459,11 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 		tc.getTaintingVals(&pending_watchpoint, tainted_region, hit)
 	} else {
 		// Fake "hit" from finishing next in branch body => tainting vals are already in cmd_pending_wp
-		// (created for hit in condition)
+		// (created for hit in condition).
+		// If new watchpoint is also in cmd_pending, will use those - else, copy them to bp_pending
+		if set_at_bp {
+			pending_watchpoint.updateTaintingVals(tc.cmd_pending_wp.tainting_vals[0], 0) // all at offset 0
+		}
 	}
 
 	// Insert argno/expr
@@ -479,13 +486,13 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 		fmt.Printf("set pendingwp now\n")
 		tc.setPendingWatchpoints(&pending_watchpoint, hit.thread, hit.frame)
 		// Cleanup if there was already a pending watchpoint at this location
-		if tainted_region.set_location != nil {
+		if set_at_bp {
 			delete(tc.bp_pending_wps, tainted_region.set_location.PC)
 		} else {
 			// cmd-pending - cleaned up in Run()
 		}
 	} else {
-		if tainted_region.set_location != nil {
+		if set_at_bp {
 			tc.setBp(tainted_region.set_location.PC)
 			fmt.Printf("set bp at %v\n", tainted_region.set_location.Line)
 			tc.bp_pending_wps[tainted_region.set_location.PC] = pending_watchpoint

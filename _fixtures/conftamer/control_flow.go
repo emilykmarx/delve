@@ -50,10 +50,20 @@ func main() {
 	fmt.Println(i)
 	fmt.Println(j)
 	fmt.Println(k)
+
 	fmt.Println(maybe_tainted)
 	fmt.Println(maybe_tainted_2)
 	fmt.Println(maybe_tainted_3)
 	fmt.Println(maybe_tainted_4)
 	fmt.Println(maybe_tainted_5)
 	fmt.Println(regular)
+	x := f(config)
+	fmt.Println(x)
+}
+
+func f(config string) int {
+	if config[0] == 'c' { // hit for config in if condition that returns
+		return 1
+	}
+	return 0
 }

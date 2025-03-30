@@ -222,6 +222,9 @@ func TestControlFlow(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, "j", 1, 49, ct.DataFlow, nil, nil)...)
 
+	expected_events = append(expected_events,
+		watchpointSet(&config, "x", 8, 61, ct.ControlFlow, nil, nil)...)
+
 	run(t, &config, expected_events)
 }
 

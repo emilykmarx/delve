@@ -398,9 +398,9 @@ func (tc *TaintCheck) startTarget(cmd string, state *api.DebuggerState) {
 			log.Panicf("Stepout: %v\n", err)
 		}
 	} else if cmd != api.Continue {
-		fmt.Println("Continue")
 		log.Panicf("unsupported cmd in sequence: %v\n", cmd)
 	} else {
+		fmt.Println("Continue")
 		new_state = <-tc.client.Continue()
 	}
 	*state = *new_state
