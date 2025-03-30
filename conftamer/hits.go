@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"reflect"
 	"strings"
@@ -122,6 +123,8 @@ type TaintCheck struct {
 	behavior_map BehaviorMap
 
 	event_log *csv.Writer
+
+	logger *slog.Logger
 }
 
 const (
@@ -600,6 +603,9 @@ func New(config *Config) (*TaintCheck, error) {
 		event_log:      csv.NewWriter(event_log_file),
 	}
 
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)                    // for log.Printf
+	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})) // default min level is info
+
 	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
 		"Timestamp", "Breakpoint/Watchpoint Hit Location (File Line PC)", "Thread"})
 
@@ -614,5 +620,6 @@ func New(config *Config) (*TaintCheck, error) {
 		}
 		tc.setBp(init_loc.PC)
 	}
+
 	return &tc, nil
 }

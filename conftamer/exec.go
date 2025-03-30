@@ -59,7 +59,7 @@ func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread 
 		fmt.Printf("ZZEM exited command frame at line %v\n", thread.Line)
 		return api.Continue, true
 	} else if cmd.cmd == api.Next && thread.Line == cmd.lineno {
-		fmt.Printf("ZZEM interrupted at line %v, not at right line yet => next again", thread.Line)
+		fmt.Printf("ZZEM interrupted at line %v, not at right line yet => next again\n", thread.Line)
 		return api.Next, false
 	}
 

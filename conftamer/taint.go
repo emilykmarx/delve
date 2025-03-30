@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"log"
+	"log/slog"
 	"reflect"
 	"strings"
 
@@ -76,9 +77,9 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr) {
 }
 
 // If calling line has an assign or range, return corresp lhs and the next line's location
-func (tc *TaintCheck) callerLhs(i int, frame int) (*ast.Expr, api.Location) {
+func (tc *TaintCheck) callerLhs(i int, hit *Hit) (*ast.Expr, api.Location) {
 	stack := tc.stacktrace()
-	caller_frame := frame + 1
+	caller_frame := hit.frame + 1
 	call_file := stack[caller_frame].File
 	call_line := stack[caller_frame].Line
 	next_line := tc.lineWithStmt(nil, call_file, call_line+1, caller_frame)
@@ -86,7 +87,7 @@ func (tc *TaintCheck) callerLhs(i int, frame int) (*ast.Expr, api.Location) {
 	if caller_lhs == nil {
 		tc.printStacktrace()
 		// Indicates caller catches tainted return value in a way we haven't handled
-		log.Printf("Failed to find caller lhs; call file %v, call line %v (stacktrace above)\n", call_file, call_line)
+		tc.Logf(slog.LevelWarn, hit, "Failed to find caller lhs; call file %v, call line %v (stacktrace above)\n", call_file, call_line)
 	}
 	return caller_lhs, next_line
 }
@@ -301,7 +302,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, hit.hit_instr.Loc.File, nil, parser.SkipObjectResolution)
 	if err != nil {
-		log.Fatalf("Failed to parse source file %v: %v\n", hit.hit_instr.Loc.File, err)
+		log.Panicf("Failed to parse source file %v: %v\n", hit.hit_instr.Loc.File, err)
 	}
 
 	// Will be used if location must be determined dynamically
@@ -338,8 +339,8 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 				// Enter if[elseif/else] => set up state so we'll next through the branch body
 				tainted_region := tc.isTainted(typed_node.Cond, hit, fset)
 				if tainted_region == nil {
-					// Shouldn't be, since we just hit a wp for if condition
-					log.Panicf("Hit wp for ifStmt %+v, but isTainted didn't find taint", typed_node.Cond)
+					// Can happen when watchpoint hits for a case we don't consider tainted - e.g. index into array
+					tc.Logf(slog.LevelWarn, hit, "Hit wp for ifStmt %+v, but isTainted didn't find taint", exprToString(typed_node.Cond))
 				} else {
 					locs := []api.Location{}
 					tainted_region.body_end = tc.handleIfStmt(typed_node, fset, &locs, hit.frame)
@@ -397,7 +398,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 			for i, retval := range typed_node.Results {
 				tainted_region := tc.isTainted(retval, hit, fset)
 				if tainted_region != nil {
-					if caller_lhs, caller_loc := tc.callerLhs(i, hit.frame); caller_lhs != nil {
+					if caller_lhs, caller_loc := tc.callerLhs(i, hit); caller_lhs != nil {
 						// Line after calling line
 						watchexpr := exprToString(*caller_lhs) + *tainted_region.overlap_expr
 						tainted_region.overlap_expr = &watchexpr

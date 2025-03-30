@@ -2,14 +2,18 @@ package conftamer
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"go/ast"
 	"go/printer"
 	"go/token"
 	"log"
+	"log/slog"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/go-delve/delve/pkg/locspec"
 	"github.com/go-delve/delve/pkg/proc"
@@ -404,4 +408,18 @@ func (tc *TaintCheck) startTarget(cmd string, state *api.DebuggerState) {
 		new_state = <-tc.client.Continue()
 	}
 	*state = *new_state
+}
+
+// Get client and target source line (based on hit_instr)
+func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any) {
+	if !tc.logger.Enabled(context.Background(), lvl) {
+		return
+	}
+	var pcs [1]uintptr
+	runtime.Callers(2, pcs[:])
+	r := slog.NewRecord(time.Now(), lvl, fmt.Sprintf(format, args...), pcs[0])
+	if hit != nil {
+		r.Add("target_file", hit.hit_instr.Loc.File, "target_line", hit.hit_instr.Loc.Line)
+	}
+	_ = tc.logger.Handler().Handle(context.Background(), r)
 }
