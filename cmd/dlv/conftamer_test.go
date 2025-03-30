@@ -757,7 +757,7 @@ func (so *saveOutput) Write(p []byte) (n int, err error) {
 // Build dlv server and client with version of go in PATH,
 // and target with version in CT_TARGET_GO.
 // Start server for a module, wait for client to exit/timeout.
-// Note this may be called concurrently for multiple modules.
+// Note this may be called concurrently for multiple modules, so don't hardcode resources like filenames.
 // TODO (minor) prefix log msgs with module to make clearer for tests that run multiple modules
 // Note Fatalf shouldn't be called here - use Fail() instead (since it's called from goroutine)
 func run(t *testing.T, config *ct.Config, expected_events []ct.Event) {
@@ -767,7 +767,7 @@ func run(t *testing.T, config *ct.Config, expected_events []ct.Event) {
 		config.Initial_bp_line = expected_events[0].Line
 	}
 
-	config_file := "client_config.yml"
+	config_file := config.Module + "_client_config.yml"
 	if os.Getenv("CT_KEEP_CSVS") == "" {
 		event_log := filepath.Join(t.TempDir(), config.Event_log_filename)
 		behavior_map := filepath.Join(t.TempDir(), config.Behavior_map_filename)
