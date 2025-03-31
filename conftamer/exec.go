@@ -98,6 +98,10 @@ func (tc *TaintCheck) Run() {
 			thread := getThread(tc.cmd_pending_wp.threadID, state)
 			cmd, exited_frame = tc.commandDone(tc.cmd_pending_wp.cmds[cmd_idx], state, thread)
 			if cmd == "" || exited_frame {
+				// Make a "hit" with the relevant info
+				instr := api.AsmInstruction{Loc: api.Location{File: thread.File, Line: thread.Line}}
+				hit := Hit{thread: thread, hit_instr: &instr, stack_len: len(tc.stacktrace())}
+
 				if cmd_idx == len(tc.cmd_pending_wp.cmds)-1 {
 					// Finished command sequence => set watchpoints
 					fmt.Printf("ZZEM finished sequence - at line %v; pending wp %+v\n", thread.Line, tc.cmd_pending_wp)
@@ -116,11 +120,8 @@ func (tc *TaintCheck) Run() {
 								// Keep rest of cmd_pending_wp, including its tainting values and command =>
 								// will keep nexting and setting watchpoints tainted by condition until exit body
 								fmt.Printf("ZZEM non-first line\n")
-								tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
+								tc.setPendingWatchpoints(tc.cmd_pending_wp, &hit)
 							}
-							// Make a "hit" with the info propagateTaint needs
-							instr := api.AsmInstruction{Loc: api.Location{File: thread.File, Line: thread.Line}}
-							hit := Hit{thread: thread, hit_instr: &instr, stack_len: len(tc.stacktrace())}
 							tainted_region := tc.propagateTaint(&hit) // after set previous watchpoint, since this will modify it
 							if tainted_region != nil {
 								tc.pendingWatchpoint(tainted_region, &hit)
@@ -130,7 +131,7 @@ func (tc *TaintCheck) Run() {
 							// Set the watchpoints from last line (if any), then stop nexting
 							fmt.Printf("exited branch body\n")
 							if !tc.cmd_pending_wp.watchexprs.Empty() {
-								tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
+								tc.setPendingWatchpoints(tc.cmd_pending_wp, &hit)
 							}
 							tc.cmd_pending_wp = nil
 							cmd_idx = 0
@@ -138,7 +139,7 @@ func (tc *TaintCheck) Run() {
 					} else {
 						fmt.Printf("ZZEM not in branch body - set cmd pending wp\n")
 						// Not in branch body
-						tc.setPendingWatchpoints(tc.cmd_pending_wp, thread, 0)
+						tc.setPendingWatchpoints(tc.cmd_pending_wp, &hit)
 						tc.cmd_pending_wp = nil
 						cmd_idx = 0
 					}

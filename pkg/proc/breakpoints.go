@@ -888,7 +888,8 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		return xv, err
 	}
 	// TODO support other types - for types with elements e.g. structs, need to do the ElemsAreReferences thing
-	// and pass capacity (not watchsz) to MoveObject below
+	// (but only for fields that are references - for structs, not all may be)
+	// and pass capacity (not watchsz) to MoveObject below.
 
 	xv.Watchsz = sz
 	return xv, nil

@@ -284,13 +284,13 @@ func (tc *TaintCheck) hitInPrint() bool {
 }
 
 // Given a callexpr node, return full args including non-pointer receiver name (or "" if pointer receiver)
-func (tc *TaintCheck) fullArgs(node *ast.CallExpr, file string, frame int) []ast.Expr {
+func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 	full_args := node.Args
 	call_expr := exprToString(node.Fun)
-	decl_loc := tc.fnDecl(call_expr, file, frame)
+	decl_loc := tc.fnDecl(call_expr, hit)
 	// Decl:			<pkg, may hv .>.<optional recvr type, perhaps ptr>.<fn name>
 	// CallExpr:	<optional pkg>.<optional recvr expr, perhaps with selector(s)>.<fn name>
-	if parseFn(decl_loc.Function).ReceiverName != "" {
+	if parseFn(decl_loc.Function.Name()).ReceiverName != "" {
 		// method
 		recvr := ""
 		if !strings.Contains(decl_loc.Function.Name(), "*") {
@@ -306,7 +306,7 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, file string, frame int) []ast
 	return full_args
 }
 
-// Whether we're running in `go test`
+// Whether we're running in `go test`, per file
 func inGoTest(file string) bool {
 	tokens := strings.Split(file, "/")
 	pkg := tokens[len(tokens)-2]
@@ -315,23 +315,24 @@ func inGoTest(file string) bool {
 
 // Find the function declaration location - e.g. pkg.(*Recvr).f(),
 // given the call expr - e.g. recvr.f() or pkg.f()
-func (tc *TaintCheck) fnDecl(call_expr string, file string, frame int) api.Location {
-	locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, call_expr, true, nil)
+func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
+	locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
 			// Ambiguous name => qualify with package name
-			tokens := strings.Split(file, "/")
-			pkg := tokens[len(tokens)-2]
-			if inGoTest(file) {
+			fn := tc.stacktrace()[hit.frame].Function.Name()
+			parsed := parseFn(fn)
+			pkg := parsed.PackageName
+			if inGoTest(hit.hit_instr.Loc.File) {
 				pkg = "main"
 			}
 			qualified_fn := pkg + "." + call_expr
-			locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: frame}, qualified_fn, true, nil)
+			locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, qualified_fn, true, nil)
 			if err != nil {
-				log.Fatalf("Error finding function %v in frame %v: %v\n", qualified_fn, frame, err)
+				log.Fatalf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.frame, err)
 			}
 		} else {
-			log.Fatalf("Error finding function %v in frame %v: %v\n", call_expr, frame, err)
+			log.Fatalf("Error finding function %v in frame %v: %v\n", call_expr, hit.frame, err)
 		}
 	}
 	// Don't check loc's PCs here - won't use them, and
@@ -349,13 +350,8 @@ func watchSize(wp *api.Breakpoint) uint64 {
 }
 
 // Find the next line on or after this one with a statement, so we can set a bp.
-func (tc *TaintCheck) lineWithStmt(call_expr *string, file string, lineno int, frame int) api.Location {
+func (tc *TaintCheck) lineWithStmt(file string, lineno int, frame int) api.Location {
 	var loc string
-	if call_expr != nil {
-		decl_loc := tc.fnDecl(*call_expr, file, frame)
-		file = decl_loc.File
-		lineno = decl_loc.Line + 1
-	}
 
 	for i := 0; i < 100; i++ { // Likely won't need to skip more than a few lines?
 		loc = fmt.Sprintf("%v:%v", file, lineno)
@@ -426,11 +422,32 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 	_ = tc.logger.Handler().Handle(context.Background(), r)
 }
 
-func parseFn(fn *api.Function) locspec.FuncLocationSpec {
-	parsed, err := locspec.Parse(fn.Name())
+func parseFn(fn string) locspec.FuncLocationSpec {
+	parsed, err := locspec.Parse(fn)
 	fct := parsed.(*locspec.NormalLocationSpec)
 	if err != nil {
-		log.Panicf("parse fn %+v: %v", *fn, err)
+		log.Panicf("parse fn %v: %v", fn, err)
 	}
 	return *fct.FuncBase
+}
+
+func (tc *TaintCheck) isCast(call_expr_node ast.Expr) bool {
+	call_expr := exprToString(call_expr_node)
+	if casts.Contains(call_expr) {
+		// Primitive type (`types` doesn't list the aliased primitive types)
+		return true
+	}
+
+	types, err := tc.client.ListTypes(call_expr)
+	if err != nil {
+		log.Panicf("list types for %v: %v\n", call_expr, err)
+	}
+	for _, found_type := range types {
+		// If <>.<fn name> or <fn name> is a type, assume it's a cast
+		tokens := strings.Split(found_type, ".")
+		if tokens[len(tokens)-1] == call_expr {
+			return true
+		}
+	}
+	return false
 }

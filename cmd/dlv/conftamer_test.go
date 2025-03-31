@@ -408,13 +408,16 @@ func TestRuntimeHits(t *testing.T) {
 }
 
 func TestCasts(t *testing.T) {
-	initial_line := 11
+	initial_line := 13
 	config := Config("casts.go", "x", initial_line)
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(8), initial_line, ct.DataFlow, nil, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "y", uint64(8), 13, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "y", uint64(8), 15, ct.DataFlow, nil, nil)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(&config, "z", uint64(8), 17, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }
@@ -741,7 +744,6 @@ func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
 	}
 
 	// Check for error
-	// XXX fix this for logging in my fork of go
 	if len(stderr.savedOutput) > 0 {
 		t.Fatalf("Delve server errored while starting up")
 	}
