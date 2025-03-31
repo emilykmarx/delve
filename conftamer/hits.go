@@ -197,35 +197,39 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 	}
 }
 
-/* If hit was in runtime, either ignore (e.g. newstack), or
- * record first non-runtime frame as line to check taint in.
+/* If hit was in runtime or internal, either ignore (e.g. newstack), or
+ * record first non-runtime/internal frame as line to check taint in.
+ * (Assumption is function was called implicitly by target code, so we should go to the first explicit frame.
+ * Also, these functions are often optimized or written in asm.)
  * (Can't assume that line will additionally have a non-runtime hit, e.g. some memmoves.)
  * Return false to ignore.
- * TODO are there any runtime functions we want to treat normally? */
+ * TODO are there any runtime functions we want to treat normally (maybe some exported ones?) */
 func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 	stack := tc.stacktrace()
 
 	hit.stack_len = len(stack)
 
-	if strings.HasPrefix(stack[0].Function.Name(), "runtime") {
-		log.Println("Runtime watchpoint hit - partial stack (including first non-runtime frame, whose PC is one after call instr)")
+	// At least for Unmarshal, Parse gives package name iff not runtime or internal
+	skip := parseFn(stack[0].Function).PackageName == "" && !inGoTest(stack[0].File)
+	if skip {
+		log.Println("Watchpoint hit in runtime or internal - partial stack (including first non-runtime frame, whose PC is one after call instr)")
 		for i, frame := range stack {
 			fn := frame.Function.Name()
+
+			skip := parseFn(frame.Function).PackageName == ""
 			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 				frame.File, frame.Line, fn, frame.PC)
 			log.Println(loc)
 
-			// TODO skip all hits from go runtime goroutines (sw wp commit may hv a test for sysmon?)
-			// (but not hits in go runtime from program thread)
-			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
+			// TODO can go runtime goroutines ever cause hits? (maybe sysmon in early sw wp commit, but may have been due to mprotecting dlv's pages instead)
 			if fn == "runtime.newstack" {
 				return nil, false
 			}
-			if !strings.HasPrefix(fn, "runtime") {
+			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
+			if !skip || inGoTest(frame.File) { // parseFn gives empty pkg name in go test
 				hit.frame = i
 				return &frame, true
 			}
-
 		}
 	}
 

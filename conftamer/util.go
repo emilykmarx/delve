@@ -290,12 +290,7 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, file string, frame int) []ast
 	decl_loc := tc.fnDecl(call_expr, file, frame)
 	// Decl:			<pkg, may hv .>.<optional recvr type, perhaps ptr>.<fn name>
 	// CallExpr:	<optional pkg>.<optional recvr expr, perhaps with selector(s)>.<fn name>
-	parsed, err := locspec.Parse(decl_loc.Function.Name())
-	fct := parsed.(*locspec.NormalLocationSpec)
-	if err != nil {
-		log.Panicf("parse fn decl %v: %v", decl_loc.Function.Name(), err)
-	}
-	if fct.FuncBase.ReceiverName != "" {
+	if parseFn(decl_loc.Function).ReceiverName != "" {
 		// method
 		recvr := ""
 		if !strings.Contains(decl_loc.Function.Name(), "*") {
@@ -311,6 +306,13 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, file string, frame int) []ast
 	return full_args
 }
 
+// Whether we're running in `go test`
+func inGoTest(file string) bool {
+	tokens := strings.Split(file, "/")
+	pkg := tokens[len(tokens)-2]
+	return pkg == "conftamer"
+}
+
 // Find the function declaration location - e.g. pkg.(*Recvr).f(),
 // given the call expr - e.g. recvr.f() or pkg.f()
 func (tc *TaintCheck) fnDecl(call_expr string, file string, frame int) api.Location {
@@ -320,7 +322,7 @@ func (tc *TaintCheck) fnDecl(call_expr string, file string, frame int) api.Locat
 			// Ambiguous name => qualify with package name
 			tokens := strings.Split(file, "/")
 			pkg := tokens[len(tokens)-2]
-			if pkg == "dlv_config_client" { // running in test
+			if inGoTest(file) {
 				pkg = "main"
 			}
 			qualified_fn := pkg + "." + call_expr
@@ -422,4 +424,13 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 		r.Add("target_file", hit.hit_instr.Loc.File, "target_line", hit.hit_instr.Loc.Line)
 	}
 	_ = tc.logger.Handler().Handle(context.Background(), r)
+}
+
+func parseFn(fn *api.Function) locspec.FuncLocationSpec {
+	parsed, err := locspec.Parse(fn.Name())
+	fct := parsed.(*locspec.NormalLocationSpec)
+	if err != nil {
+		log.Panicf("parse fn %+v: %v", *fn, err)
+	}
+	return *fct.FuncBase
 }
