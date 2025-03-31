@@ -417,7 +417,12 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 	runtime.Callers(2, pcs[:])
 	r := slog.NewRecord(time.Now(), lvl, fmt.Sprintf(format, args...), pcs[0])
 	if hit != nil {
-		r.Add("target_file", hit.hit_instr.Loc.File, "target_line", hit.hit_instr.Loc.Line)
+		// May be called from bp hit or wp hit (where wp hit may not have hit_bp, if called from Run())
+		if hit.hit_instr != nil {
+			r.Add("target_file", hit.hit_instr.Loc.File, "target_line", hit.hit_instr.Loc.Line)
+		} else {
+			r.Add("target_file", hit.hit_bp.File, "target_line", hit.hit_bp.Line)
+		}
 	}
 	_ = tc.logger.Handler().Handle(context.Background(), r)
 }

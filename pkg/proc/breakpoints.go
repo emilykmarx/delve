@@ -835,9 +835,12 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 	if err != nil {
 		return nil, err
 	}
-	if xv.Addr == 0 || xv.Addr == FakeAddressBase || xv.Flags&VariableFakeAddress != 0 || xv.DwarfType == nil {
-		// Can be non-fake but still have beef addr
-		return xv, fmt.Errorf("can not watch %q; Addr 0x%x, Fake %v, DwarfType nil %v", expr, xv.Addr, xv.Flags&VariableFakeAddress != 0, xv.DwarfType == nil)
+	if xv.Addr == 0 || xv.DwarfType == nil {
+		return xv, fmt.Errorf("can not watch %q; Addr 0x%x, DwarfType nil %v", expr, xv.Addr, xv.DwarfType == nil)
+	}
+	if xv.Flags&VariableFakeAddress != 0 || xv.Addr == FakeAddressBase {
+		// This happens sometimes at first line of function, despite asm saying it's allocated in memory - unsure why
+		return xv, fmt.Errorf("can not watch %q; has fake address", expr)
 	}
 	if xv.Unreadable != nil {
 		return xv, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
@@ -868,6 +871,10 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		}
 	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		// watch backing array - but not past len, since only initialized data is tainted
+		if xv.Base == 0 {
+			// nil slice => no underlying data to watch (strings cannot be nil)
+			return nil, errors.New("nil slice")
+		}
 		xv.Addr = xv.Base
 		sz = xv.Len
 		// If slice elements are a reference type (string or slice),

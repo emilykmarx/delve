@@ -384,7 +384,8 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVa
 	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
 	if err != nil {
 		errstr := fmt.Sprintf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
-		if strings.Contains(err.Error(), "type not supported") {
+		if strings.Contains(err.Error(), "type not supported") || strings.Contains(err.Error(), "nil slice") ||
+			strings.Contains(err.Error(), "fake address") {
 			tc.Logf(slog.LevelWarn, hit, errstr)
 		} else {
 			log.Panicln(errstr)

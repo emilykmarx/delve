@@ -3,7 +3,7 @@ package main
 import "runtime"
 
 func sortByRFC6724withSrcs(addrs int) {
-	if addrs == 0 { // addrs gets an addr only after executing first instr in line
+	if addrs == 0 { // addrs gets an addr only after executing first instr in line (with go 1.22.4 - ok w/ go 1.20.1)
 		panic("internal error")
 	}
 }
