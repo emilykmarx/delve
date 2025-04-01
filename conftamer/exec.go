@@ -94,6 +94,7 @@ func (tc *TaintCheck) Run() {
 
 		// Target stopped => check if last start finished the command we were executing
 		// (if any besides Continue)
+		cmd = ""
 		if tc.cmd_pending_wp != nil {
 			thread := getThread(tc.cmd_pending_wp.threadID, state)
 			cmd, exited_frame = tc.commandDone(tc.cmd_pending_wp.cmds[cmd_idx], state, thread)
@@ -155,11 +156,15 @@ func (tc *TaintCheck) Run() {
 		// May populate/update tc.cmd_pending_wp
 		tc.handleTargetStop(state)
 
+		// Decide command for upcoming target start (may not be next command in sequence, if that command was interrupted)
 		if tc.cmd_pending_wp != nil {
-			cmd = tc.cmd_pending_wp.cmds[cmd_idx].cmd
-			fmt.Printf("ZZEM doing next cmd in seq: %+v\n", cmd)
+			if cmd == "" {
+				// Next command in sequence
+				cmd = tc.cmd_pending_wp.cmds[cmd_idx].cmd
+			} else {
+				// Command was interrupted
+			}
 		} else {
-			fmt.Printf("ZZEM doing continue\n")
 			cmd = api.Continue
 		}
 	}
