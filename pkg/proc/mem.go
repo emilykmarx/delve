@@ -8,7 +8,7 @@ import (
 	"github.com/go-delve/delve/pkg/dwarf/op"
 )
 
-const cacheEnabled = true
+const cacheEnabled = false
 
 // MemoryReader is like io.ReaderAt, but the offset is a uint64 so that it
 // can address all of 64-bit memory.
