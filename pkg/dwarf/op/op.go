@@ -60,7 +60,7 @@ const arbitraryExecutionLimitFactor = 10
 // ExecuteStackProgram executes a DWARF location expression and returns
 // either an address (int64), or a slice of Pieces for location expressions
 // that don't evaluate to an address (such as register and composite expressions).
-func ExecuteStackProgram(regs DwarfRegisters, instructions []byte, ptrSize int, readMemory ReadMemoryFunc) (int64, []Piece, error) {
+func ExecuteStackProgram(regs DwarfRegisters, instructions []byte, ptrSize int, readMemory ReadMemoryFunc, print bool) (int64, []Piece, error) {
 	ctxt := &context{
 		buf:            bytes.NewBuffer(instructions),
 		prog:           instructions,
@@ -68,6 +68,10 @@ func ExecuteStackProgram(regs DwarfRegisters, instructions []byte, ptrSize int, 
 		DwarfRegisters: regs,
 		ptrSize:        ptrSize,
 		readMemory:     readMemory,
+	}
+
+	if print {
+		fmt.Printf("instructions: %#x\n", instructions)
 	}
 
 	for tick := 0; tick < len(instructions)*arbitraryExecutionLimitFactor; tick++ {
@@ -78,6 +82,9 @@ func ExecuteStackProgram(regs DwarfRegisters, instructions []byte, ptrSize int, 
 		opcode := Opcode(opcodeByte)
 		if opcode == DW_OP_nop {
 			continue
+		}
+		if print {
+			fmt.Printf("opcode %#x\n", opcode)
 		}
 		fn, ok := oplut[opcode]
 		if !ok {
@@ -92,7 +99,14 @@ func ExecuteStackProgram(regs DwarfRegisters, instructions []byte, ptrSize int, 
 
 	if ctxt.pieces != nil {
 		if len(ctxt.pieces) == 1 && ctxt.pieces[0].Kind == RegPiece {
+			if print {
+				fmt.Printf("ctxt has one piece, it's a reg: %+v\n", ctxt.pieces[0])
+				fmt.Printf("stack: %+v\n", ctxt.stack) // stack is in fact empty
+			}
 			return int64(regs.Uint64Val(ctxt.pieces[0].Val)), ctxt.pieces, nil
+		}
+		if print {
+			fmt.Printf("ctxt has multiple pieces\n")
 		}
 		return 0, ctxt.pieces, nil
 	}

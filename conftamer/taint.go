@@ -103,6 +103,14 @@ func (tc *TaintCheck) callerLhs(i int, hit *Hit) (*ast.Expr, api.Location) {
 * Requires expr to be in scope.
 * If in branch body, always overlap. */
 func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *TaintedRegion {
+	should_log := hit.hit_instr.Loc.File == "/home/emily/projects/config_tracing/delve/vendor/gopkg.in/yaml.v2/scannerc.go" &&
+		hit.hit_instr.Loc.Line == 525 &&
+		hit.hit_bp != nil && hit.hit_bp.WatchExpr == "parser.buffer[buffer_len+0]"
+
+	if should_log {
+		fmt.Printf("AAH isTainted; expr %v\n", exprToString(expr))
+	}
+
 	tainted_region := TaintedRegion{} // to be populated, if region is tainted
 	found_overlap := ""               //  the expression for the overlapping region, or "" if the entire region overlaps
 	// (e.g. .field for struct, "" for int)
@@ -125,6 +133,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 		}
 		switch typed_node := node.(type) {
 		case *ast.CallExpr:
+			fmt.Println("CALLEXPR")
 			if arg_addr := tc.handleAppend(typed_node, hit, fset); arg_addr != 0 {
 				// For now, just apply taint from start addr of last tainted arg to whole array
 				tainted_region.overlap_expr = &found_overlap
@@ -135,6 +144,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 				return false
 			}
 		case *ast.CompositeLit:
+			fmt.Println("CompositeLit")
 			// Evaluate children to check which field is tainted
 			composite_lit = true
 			for _, elt := range typed_node.Elts {
@@ -146,16 +156,21 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 			// Multiline composite lit => next can take us back to assign line, but setting immediately seems to work (only if multiline)
 			tainted_region.set_now = rbrace > lbrace
 		case ast.Expr:
+			fmt.Printf("EXPR %v\n", exprToString(node.(ast.Expr)))
 			// TODO check for incomplete loads (see client API doc)
 			// If type not supported, still check overlap (e.g. struct)
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set
 			xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, exprToString(node.(ast.Expr)), true)
 			if err != nil {
+				fmt.Printf("eval err: %v\n", err.Error())
+				fmt.Printf("frame: %v\n", hit.frame)
 				// Try evaluating any children (for e.g. `x+1`)
 			} else {
 				watch_addr := hit.hit_bp.Addr
 				watch_size := watchSize(hit.hit_bp)
 				xv_size := uint64(xv.Watchsz)
+				fmt.Printf("new var: %#x, %x\n", xv.Addr, xv_size)
+				fmt.Printf("watch: %#x, %x\n", watch_addr, watch_size)
 
 				var overlap bool
 				tainted_region.overlap_start, tainted_region.overlap_end, overlap = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)

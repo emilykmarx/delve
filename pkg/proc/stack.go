@@ -314,6 +314,7 @@ func (it *stackIterator) frameBase(fn *Function) int64 {
 	if err != nil {
 		return 0
 	}
+	//fmt.Printf("Call Location() from frameBase\n")
 	fb, _, _, _ := it.bi.Location(dwarfTree.Entry, dwarf.AttrFrameBase, it.pc, it.regs, it.mem)
 	return fb
 }
@@ -567,13 +568,13 @@ func (it *stackIterator) executeFrameRegRule(regnum uint64, rule frame.DWRule, c
 	case frame.RuleRegister:
 		return it.regs.Reg(rule.Reg), nil
 	case frame.RuleExpression:
-		v, _, err := op.ExecuteStackProgram(it.regs, rule.Expression, it.bi.Arch.PtrSize(), it.mem.ReadMemory)
+		v, _, err := op.ExecuteStackProgram(it.regs, rule.Expression, it.bi.Arch.PtrSize(), it.mem.ReadMemory, false)
 		if err != nil {
 			return nil, err
 		}
 		return it.readRegisterAt(regnum, uint64(v))
 	case frame.RuleValExpression:
-		v, _, err := op.ExecuteStackProgram(it.regs, rule.Expression, it.bi.Arch.PtrSize(), it.mem.ReadMemory)
+		v, _, err := op.ExecuteStackProgram(it.regs, rule.Expression, it.bi.Arch.PtrSize(), it.mem.ReadMemory, false)
 		if err != nil {
 			return nil, err
 		}
@@ -823,6 +824,7 @@ func (d *Defer) EvalScope(t *Target, thread Thread) (*EvalScope, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not read DWARF function entry: %v", err)
 	}
+	fmt.Printf("Call Location() from EvalScope\n")
 	scope.Regs.FrameBase, _, _, _ = bi.Location(e, dwarf.AttrFrameBase, scope.PC, scope.Regs, scope.Mem)
 	scope.Mem = cacheMemory(scope.Mem, uint64(scope.Regs.CFA), int(d.argSz))
 

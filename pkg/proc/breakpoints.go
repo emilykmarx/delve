@@ -749,6 +749,7 @@ func (t *Target) setEBPFTracepointOnFunc(fn *Function, goidOffset int64) error {
 			return err
 		}
 
+		fmt.Printf("Call Location() from setEBPFTracepointOnFunc\n")
 		offset, pieces, _, err := t.BinInfo().Location(entry, dwarf.AttrLocation, fn.Entry, op.DwarfRegisters{}, nil)
 		if err != nil {
 			return err
@@ -822,6 +823,8 @@ func (s ElemsAreReferences) Error() string {
 // If ignoreUnsupported, don't return error if type isn't supported
 // (for client - if err != nil, xv returned to client is nil even if it's not here)
 func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool) (*Variable, error) {
+	print := expr == "parser.buffer[parser.buffer_pos]"
+
 	// To eval slice, must remove [x:y] syntax
 	if strings.Contains(expr, ":") {
 		expr = strings.Split(expr, "[")[0]
@@ -829,10 +832,14 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 
 	n, err := parser.ParseExpr(expr)
 	if err != nil {
+		if print {
+			fmt.Printf("err from ParseExpr: %v\n", err.Error())
+		}
 		return nil, err
 	}
 	xv, err := scope.evalAST(n, true) // need load for e.g. Children
 	if err != nil {
+		fmt.Printf("err from evalAST: %v\n", err.Error())
 		return nil, err
 	}
 	if xv.Addr == 0 || xv.DwarfType == nil {
@@ -1280,6 +1287,7 @@ func (rbpi *returnBreakpointInfo) Collect(t *Target, thread Thread) []*Variable 
 
 	oldFrameOffset := rbpi.frameOffset + int64(g.stack.hi)
 	oldSP := uint64(rbpi.spOffset + int64(g.stack.hi))
+	fmt.Printf("call fakeFunctionEntryScope from Collect\n")
 	err = fakeFunctionEntryScope(scope, rbpi.fn, oldFrameOffset, oldSP)
 	if err != nil {
 		return returnInfoError("could not read function entry", err, thread.ProcessMemory())

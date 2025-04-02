@@ -1226,14 +1226,27 @@ func (stack *evalStack) pushIdent(scope *EvalScope, name string) (found bool) {
 	v.Flags = VariableCPURegister
 	v.reg = reg
 	stack.push(v)
+	print := name == "parser"
+	if print {
+		fmt.Printf("pushed %+v\n", *v)
+	}
 	return true
 }
 
 // load: Whether to load value of Variable (to get e.g. Children)
 func (scope *EvalScope) evalAST(t ast.Expr, load bool) (*Variable, error) {
+	print := exprToString(t) == "parser.buffer[parser.buffer_pos]"
 	ops, err := evalop.CompileAST(scopeToEvalLookup{scope}, t)
 	if err != nil {
+		if print {
+			fmt.Printf("err from CompileAST: %v\n", err.Error())
+		}
 		return nil, err
+	}
+	if print {
+		for _, op := range ops {
+			fmt.Printf("op: %v\n", reflect.TypeOf(op))
+		}
 	}
 	stack := &evalStack{}
 	stack.eval(scope, ops)
@@ -1872,7 +1885,11 @@ func minmaxBuiltin(name string, op token.Token, args []*Variable, nodeargs []ast
 
 // Evaluates expressions <subexpr>.<field name> where subexpr is not a package name
 func (scope *EvalScope) evalStructSelector(op *evalop.Select, stack *evalStack) {
+	print := op.Name == "buffer"
 	xv := stack.pop()
+	if print {
+		fmt.Printf("xv in evalStructSelector %+v\n", *xv)
+	}
 	// Prevent abuse, attempting to call "nil.member" directly.
 	if xv.Addr == 0 && xv.Name == "nil" {
 		stack.err = fmt.Errorf("%s (type %s) is not a struct", xv.Name, xv.TypeString())

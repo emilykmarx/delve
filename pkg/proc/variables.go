@@ -1088,6 +1088,7 @@ func (a *Ancestor) Stack(n int) ([]Stackframe, error) {
 }
 
 func (v *Variable) structMember(memberName string) (*Variable, error) {
+	print := memberName == "buffer"
 	if v.Unreadable != nil {
 		return v.clone(), nil
 	}
@@ -1123,7 +1124,13 @@ func (v *Variable) structMember(memberName string) (*Variable, error) {
 		}
 		seen[v.RealType.String()] = struct{}{}
 
+		if print {
+			fmt.Printf("v in structMember: %+v\n", *v)
+		}
 		structVar := v.maybeDereference()
+		if print {
+			fmt.Printf("structVar in structMember: %+v\n", *structVar)
+		}
 		structVar.Name = v.Name
 		if structVar.Unreadable != nil {
 			return structVar, nil
@@ -1199,6 +1206,12 @@ func extractVarInfoFromEntry(tgt *Target, bi *BinaryInfo, image *Image, regs op.
 		logflags.DebuggerLogger().Errorf("could not resolve parametric type of %s: %v", n, err)
 	}
 
+	/*
+		fmt.Printf("Call Location() from extractVarInfoFromEntry\n")
+		fmt.Printf("entry %+v\n", entry.Entry)
+		fmt.Printf("name: %v\n", entry.Val(dwarf.AttrName)) // same as n
+		fmt.Printf("rest of entry %+v\n", *entry)
+	*/
 	addr, pieces, descr, err := bi.Location(entry, dwarf.AttrLocation, regs.PC(), regs, mem)
 	if pieces != nil {
 		var cmem *compositeMemory
@@ -1241,6 +1254,10 @@ func (v *Variable) maybeDereference() *Variable {
 			return &v.Children[0]
 		}
 		ptrval, err := readUintRaw(v.mem, v.Addr, t.ByteSize)
+		print := v.Name == "parser"
+		if print {
+			fmt.Printf("ptrval in maybeDereference: %#x\n", ptrval)
+		}
 		r := v.newVariable("", ptrval, t.Type, DereferenceMemory(v.mem))
 		if err != nil {
 			r.Unreadable = err
