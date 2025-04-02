@@ -1253,8 +1253,11 @@ func (v *Variable) maybeDereference() *Variable {
 			// fake pointer variable constructed by casting an integer to a pointer type
 			return &v.Children[0]
 		}
-		ptrval, err := readUintRaw(v.mem, v.Addr, t.ByteSize)
 		print := v.Name == "parser"
+		if print {
+			fmt.Printf("type of mem in maybeDereference: %v\n", reflect.TypeOf(v.mem))
+		}
+		ptrval, err := readUintRaw(v.mem, v.Addr, t.ByteSize)
 		if print {
 			fmt.Printf("ptrval in maybeDereference: %#x\n", ptrval)
 		}
