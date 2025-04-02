@@ -1164,18 +1164,27 @@ func (bi *BinaryInfo) LoadImageFromData(dwdata *dwarf.Data, debugFrameBytes, deb
 	bi.Images = append(bi.Images, image)
 }
 
-func (bi *BinaryInfo) locationExpr(entry godwarf.Entry, attr dwarf.Attr, pc uint64) ([]byte, *locationExpr, error) {
+func (bi *BinaryInfo) locationExpr(entry godwarf.Entry, attr dwarf.Attr, pc uint64, print bool) ([]byte, *locationExpr, error) {
 	//TODO(aarzilli): handle DW_FORM_loclistx attribute form new in DWARFv5
 	a := entry.Val(attr)
 	if a == nil {
 		return nil, nil, fmt.Errorf("no location attribute %s", attr)
 	}
+	if print {
+		fmt.Printf("a: %#x\n", a)
+	}
 	if instr, ok := a.([]byte); ok {
+		if print {
+			fmt.Printf("a ok, returning it\n")
+		}
 		return instr, &locationExpr{isBlock: true, instr: instr, regnumToName: bi.Arch.RegnumToString}, nil
 	}
 	off, ok := a.(int64)
 	if !ok {
 		return nil, nil, fmt.Errorf("could not interpret location attribute %s", attr)
+	}
+	if print {
+		fmt.Printf("a not ok, returning loclistEntry at off %#x\n", off)
 	}
 	instr := bi.loclistEntry(off, pc)
 	if instr == nil {
@@ -1261,7 +1270,8 @@ func (bi *BinaryInfo) LocationCovers(entry *dwarf.Entry, attr dwarf.Attr) ([][2]
 // that don't correspond to a single memory address (registers, composite
 // locations).
 func (bi *BinaryInfo) Location(entry godwarf.Entry, attr dwarf.Attr, pc uint64, regs op.DwarfRegisters, mem MemoryReadWriter) (int64, []op.Piece, *locationExpr, error) {
-	instr, descr, err := bi.locationExpr(entry, attr, pc)
+	print := entry.Val(dwarf.AttrName) == "addrs"
+	instr, descr, err := bi.locationExpr(entry, attr, pc, print)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -1269,7 +1279,8 @@ func (bi *BinaryInfo) Location(entry godwarf.Entry, attr dwarf.Attr, pc uint64, 
 	if mem != nil {
 		readMemory = mem.ReadMemory
 	}
-	addr, pieces, err := op.ExecuteStackProgram(regs, instr, bi.Arch.PtrSize(), readMemory)
+	addr, pieces, err := op.ExecuteStackProgram(regs, instr, bi.Arch.PtrSize(), readMemory, print)
+
 	return addr, pieces, descr, err
 }
 

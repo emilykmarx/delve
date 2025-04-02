@@ -644,12 +644,12 @@ func funcCallArgOldABI(fn *Function, bi *BinaryInfo, entry reader.Variable, argn
 	const CFA = 0x1000
 	var off int64
 
-	locprog, _, err := bi.locationExpr(entry, dwarf.AttrLocation, fn.Entry)
+	locprog, _, err := bi.locationExpr(entry, dwarf.AttrLocation, fn.Entry, false)
 	if err != nil {
 		err = fmt.Errorf("could not get argument location of %s: %v", argname, err)
 	} else {
 		var pieces []op.Piece
-		off, pieces, err = op.ExecuteStackProgram(op.DwarfRegisters{CFA: CFA, FrameBase: CFA}, locprog, bi.Arch.PtrSize(), nil)
+		off, pieces, err = op.ExecuteStackProgram(op.DwarfRegisters{CFA: CFA, FrameBase: CFA}, locprog, bi.Arch.PtrSize(), nil, false)
 		if err != nil {
 			err = fmt.Errorf("unsupported location expression for argument %s: %v", argname, err)
 		}
