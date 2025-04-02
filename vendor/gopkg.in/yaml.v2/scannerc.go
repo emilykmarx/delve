@@ -523,8 +523,6 @@ func read(parser *yaml_parser_t, s []byte) []byte {
 	if w == 1 && len(s)+w <= cap(s) {
 		s = s[:len(s)+1]
 		s[len(s)-1] = parser.buffer[parser.buffer_pos]
-		fmt.Printf("parser in read: %p\n", parser)
-		fmt.Printf("&parser in read: %p\n", &parser)
 		parser.buffer_pos++
 	} else {
 		s = append(s, parser.buffer[parser.buffer_pos:parser.buffer_pos+w]...)
