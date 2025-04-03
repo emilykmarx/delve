@@ -10,10 +10,10 @@ type Recvr struct {
 	X int
 }
 
-func (r Recvr) ret_untainted(tainted_param int) int {
+func ret_untainted(addrs int) int {
 	// line w/o stmt
-	runtime.KeepAlive(tainted_param)
-	fmt.Printf("Reading tainted_param %v\n", tainted_param)
+	runtime.KeepAlive(addrs)
+	fmt.Printf("Reading tainted_param %v\n", addrs)
 	return 2
 }
 
@@ -34,14 +34,14 @@ func main() {
 	spacer = stack            // Assign => propagate to spacer
 	runtime.KeepAlive(spacer) // Need for param passing to read spacer
 	// Hit for spacer, tainted_param
-	y := recvr.ret_untainted(spacer+1) + 3 // Call+assign, hit in call, untainted ret => propagate to tainted_param
+	y := ret_untainted(spacer+1) + 3 // Call+assign, hit in call, untainted ret => propagate to tainted_param
 	runtime.KeepAlive(y)
 	// Hit for spacer, tainted_param_2 x 2
 	y = recvr.ret_tainted(spacer+1) + 3 // Call+assign, hit in call (twice), tainted ret => propagate to tainted_param_2 and y
 	// Ignored hit for y
 	fmt.Printf("Using y%v\n", y)
 	// Hit for spacer
-	z := recvr.ret_untainted(3) + spacer // Call+assign, hit in assign rhs => propagate to z
+	z := ret_untainted(3) + spacer // Call+assign, hit in assign rhs => propagate to z
 	// Hit for z
 	fmt.Printf("Using z%v\n", z)
 	// Hit for z

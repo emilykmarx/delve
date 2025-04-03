@@ -1199,6 +1199,13 @@ func extractVarInfoFromEntry(tgt *Target, bi *BinaryInfo, image *Image, regs op.
 		logflags.DebuggerLogger().Errorf("could not resolve parametric type of %s: %v", n, err)
 	}
 
+	print := entry.Val(dwarf.AttrName) == "addrs"
+	if print {
+		fmt.Printf("extractVarInfoFromEntry; entry: %+v\n", *entry)  // same before and after next
+		fmt.Printf("entry.Entry: %+v\n", entry.Entry)                // same before and after
+		fmt.Printf("contains pc: %v\n", entry.ContainsPC(regs.PC())) // same before and after
+		fmt.Printf("type of mem: %v\n", reflect.TypeOf(mem))         // nativeThread
+	}
 	addr, pieces, descr, err := bi.Location(entry, dwarf.AttrLocation, regs.PC(), regs, mem)
 	if pieces != nil {
 		var cmem *compositeMemory

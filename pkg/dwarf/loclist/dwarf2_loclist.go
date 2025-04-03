@@ -2,13 +2,14 @@ package loclist
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/go-delve/delve/pkg/dwarf/godwarf"
 )
 
 // Reader represents a loclist reader.
 type Reader interface {
-	Find(off int, staticBase, base, pc uint64, debugAddr *godwarf.DebugAddr) (*Entry, error)
+	Find(off int, staticBase, base, pc uint64, debugAddr *godwarf.DebugAddr, print bool) (*Entry, error)
 	Empty() bool
 }
 
@@ -57,15 +58,36 @@ func (rdr *Dwarf2Reader) Next(e *Entry) bool {
 // Find returns the loclist entry for the specified PC address, inside the
 // loclist stating at off. Base is the base address of the compile unit and
 // staticBase is the static base at which the image is loaded.
-func (rdr *Dwarf2Reader) Find(off int, staticBase, base, pc uint64, debugAddr *godwarf.DebugAddr) (*Entry, error) {
+func (rdr *Dwarf2Reader) Find(off int, staticBase, base, pc uint64, debugAddr *godwarf.DebugAddr, print bool) (*Entry, error) {
+	if print {
+		// all args same before and after except pc
+		fmt.Printf("args to Find in loclistEntry: off %#x, staticBase %#x, base %#x, pc %#x\n",
+			off, staticBase, base, pc)
+		fmt.Printf("ptr size: %v\n", rdr.ptrSz)
+		if debugAddr != nil {
+			fmt.Printf("debugAddr %+v\n", *debugAddr)
+		} else {
+			fmt.Printf("debugAddr nil\n")
+		}
+	}
 	rdr.Seek(off)
 	var e Entry
 	for rdr.Next(&e) {
+		if print {
+			fmt.Printf("Find considering entry %+v\n", e)
+		}
 		if e.BaseAddressSelection() {
 			base = e.HighPC + staticBase
+			if print {
+				fmt.Printf("BaseAddressSelection; set base to %#x\n", base)
+			}
 			continue
 		}
 		if pc >= e.LowPC+base && pc < e.HighPC+base {
+			if print {
+				fmt.Printf("Find about to return entry %+v\n", e) // after returns the next one
+				fmt.Printf("base: %#x\n", base)                   // same before and after
+			}
 			return &e, nil
 		}
 	}

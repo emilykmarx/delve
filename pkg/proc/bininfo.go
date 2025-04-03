@@ -1171,7 +1171,8 @@ func (bi *BinaryInfo) locationExpr(entry godwarf.Entry, attr dwarf.Attr, pc uint
 		return nil, nil, fmt.Errorf("no location attribute %s", attr)
 	}
 	if print {
-		fmt.Printf("a: %#x\n", a)
+		fmt.Printf("attr: %v\n", attr.String()) // Location for both
+		fmt.Printf("a: %#x\n", a)               // same for both - should it be if it's used as offset from pc?
 	}
 	if instr, ok := a.([]byte); ok {
 		if print {
@@ -1186,7 +1187,7 @@ func (bi *BinaryInfo) locationExpr(entry godwarf.Entry, attr dwarf.Attr, pc uint
 	if print {
 		fmt.Printf("a not ok, returning loclistEntry at off %#x\n", off)
 	}
-	instr := bi.loclistEntry(off, pc)
+	instr := bi.loclistEntry(off, pc, print)
 	if instr == nil {
 		return nil, nil, fmt.Errorf("could not find loclist entry at %#x for address %#x", off, pc)
 	}
@@ -1286,7 +1287,7 @@ func (bi *BinaryInfo) Location(entry godwarf.Entry, attr dwarf.Attr, pc uint64, 
 
 // loclistEntry returns the loclist entry in the loclist starting at off,
 // for address pc.
-func (bi *BinaryInfo) loclistEntry(off int64, pc uint64) []byte {
+func (bi *BinaryInfo) loclistEntry(off int64, pc uint64, print bool) []byte {
 	var base uint64
 	image := bi.Images[0]
 	cu := bi.findCompileUnit(pc)
@@ -1311,7 +1312,7 @@ func (bi *BinaryInfo) loclistEntry(off int64, pc uint64) []byte {
 		return nil
 	}
 
-	e, err := loclist.Find(int(off), image.StaticBase, base, pc, debugAddr)
+	e, err := loclist.Find(int(off), image.StaticBase, base, pc, debugAddr, print)
 	if err != nil {
 		bi.logger.Errorf("error reading loclist section: %v", err)
 		return nil

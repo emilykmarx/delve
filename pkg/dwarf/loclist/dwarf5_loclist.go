@@ -50,7 +50,7 @@ func (rdr *Dwarf5Reader) Empty() bool {
 // Find returns the loclist entry for the specified PC address, inside the
 // loclist stating at off. Base is the base address of the compile unit and
 // staticBase is the static base at which the image is loaded.
-func (rdr *Dwarf5Reader) Find(off int, staticBase, base, pc uint64, debugAddr *godwarf.DebugAddr) (*Entry, error) {
+func (rdr *Dwarf5Reader) Find(off int, staticBase, base, pc uint64, debugAddr *godwarf.DebugAddr, print bool) (*Entry, error) {
 	it := &loclistsIterator{rdr: rdr, debugAddr: debugAddr, buf: bytes.NewBuffer(rdr.data), base: base, staticBase: staticBase}
 	it.buf.Next(off)
 
