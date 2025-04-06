@@ -9,6 +9,9 @@ import (
 	"github.com/go-delve/delve/pkg/logflags"
 )
 
+// TODO enable followExec (and check if works - may have broken it in places I manually make a Target{}) -
+// needed to allow target to fork/exec, and to scan its child which may also access module's config
+
 // TargetGroup represents a group of target processes being debugged that
 // will be resumed and stopped simultaneously.
 // New targets are automatically added to the group if exec catching is
