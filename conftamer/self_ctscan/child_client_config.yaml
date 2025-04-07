@@ -1,6 +1,6 @@
 module: child_dlv
 move_wps: false
-event_log_filename: event_log.csv
-behavior_map_filename: behavior_map.csv
+event_log_filename: child_event_log.csv
+behavior_map_filename: child_behavior_map.csv
 server_endpoint: localhost:4040
 taint_flow: Data Flow

@@ -41,18 +41,18 @@ config=$SCANNEE_DIR/dlv/target_config.txt XDG_CONFIG_HOME=$SCANNEE_DIR \
 ## Rest is manual for now
 
 # 4b. Launch CT-scanner and attach to CT-scannee
-# dlv attach $(pgrep dlv)
+# dlv attach --headless --api-version=2 --accept-multiclient --listen localhost:4041 $(pgrep dlv)
 
-# 4c. Set initial watchpoint for scannee
+# 4c. Set initial watchpoint for scannee - for now, with dlv connect (should update client to allow setting initial wp immediately)
+# dlv connect localhost:4041
 # goroutine 1 frame 2 watch -rw -sw -nomove conf.TargetConfigFiles
 
-# 4c. Continue CT-scannee - needed to be able to type in its CLI (because attach stops the process?). <= update - needed for headless too?
-# Parent dlv tab: c
-# Parent appears to hang while waiting for child to continue its target
+# 4c. Launch parent client - will continue child dlv (needed because attach stops the process?)
+# ./conftamer_main --config=$DIR/parent_client_config.yaml
 
 # 4d. Launch child client - will continue target => target reads its config, hitting watchpoint
 # ./conftamer_main --config=$DIR/child_client_config.yaml
 
-# Parent dlv catches watchpoint hit in proc.(*Breakpoint).taintedSyscallEntry (takes ~13 sec)
+# Parent client catches watchpoint hit in proc.(*Breakpoint).taintedSyscallEntry (takes ~40 sec)
 # Keep continuing in parent until child hits syscall entry bp =>
 # child client sets watchpoint on read buf and continues
