@@ -376,6 +376,16 @@ func TestFuncLitGoRoutine(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
+func TestParseFn(t *testing.T) {
+	initial_line := 16
+	config := Config("parsefn.go", "s", initial_line)
+	expected_events :=
+		watchpointSet(&config, config.Initial_watchexpr, uint64(8), initial_line, ct.DataFlow, nil, nil)
+	expected_events = append(expected_events,
+		watchpointSet(&config, "s_caller", uint64(8), 10, ct.DataFlow, nil, nil)...)
+	run(t, &config, expected_events)
+}
+
 func TestMultiRound(t *testing.T) {
 	initial_line := 11
 	config := Config("multiround.go", "vars[0]", initial_line)

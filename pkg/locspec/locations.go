@@ -174,6 +174,12 @@ func readRegex(in string) (rx string, rest string) {
 
 func parseFuncLocationSpec(in string) *FuncLocationSpec {
 	var v []string
+	type_param_tokens := strings.Split(in, "[")
+	if len(type_param_tokens) > 1 {
+		// Handle type-parameterized function
+		tokens2 := strings.Split(in, "]")
+		in = strings.Join([]string{type_param_tokens[0], tokens2[len(tokens2)-1]}, "")
+	}
 	pathend := strings.LastIndex(in, "/")
 	if pathend < 0 {
 		v = strings.Split(in, ".")
