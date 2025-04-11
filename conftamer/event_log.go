@@ -53,14 +53,14 @@ func WriteEvent(thread *api.Thread, w *csv.Writer, e Event) {
 	if e.Behavior != nil {
 		behavior, err = json.Marshal(e.Behavior)
 		if err != nil {
-			log.Fatalf("marshaling %v: %v\n", behavior, err.Error())
+			log.Panicf("marshaling %v: %v\n", behavior, err.Error())
 		}
 	}
 	tainting_vals := []byte{}
 	if e.TaintingVals != nil {
 		tainting_vals, err = json.Marshal(e.TaintingVals)
 		if err != nil {
-			log.Fatalf("marshaling %v: %v\n", e.TaintingVals, err.Error())
+			log.Panicf("marshaling %v: %v\n", e.TaintingVals, err.Error())
 		}
 	}
 	var loc, goroutine string
@@ -73,7 +73,7 @@ func WriteEvent(thread *api.Thread, w *csv.Writer, e Event) {
 		string(behavior), string(tainting_vals), time.Now().String(), loc, goroutine}
 
 	if err := w.WriteAll([][]string{row}); err != nil {
-		log.Fatalf("writing event %v: %v\n", row, err.Error())
+		log.Panicf("writing event %v: %v\n", row, err.Error())
 	}
 }
 

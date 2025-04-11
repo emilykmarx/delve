@@ -529,10 +529,17 @@ type EvalOut struct {
 
 func (s *RPCServer) EvalWatchexpr(arg EvalIn, out *EvalOut) error {
 	v, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.IgnoreUnsupported)
+	if v != nil {
+		out.Variable = api.ConvertVar(v)
+	}
+	if _, ok := err.(proc.ElemsAreReferences); ok {
+		// Client will call recursively, using # of elements in v
+		out.Variable.ElemsAreReferences = true
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
-	out.Variable = api.ConvertVar(v)
 	return nil
 }
 

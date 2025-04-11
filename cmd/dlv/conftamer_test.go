@@ -354,6 +354,21 @@ func TestReferenceElems(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
+/* Tests propagating from return in tainted branch body,
+ * through another return in caller, to another branch body. */
+func TestPropagateReturn(t *testing.T) {
+	initial_line := 14
+	config := Config("propagate_return.go", "arr", initial_line)
+	// Array of strings => set on each string
+	expected_events :=
+		watchpointSet(&config, config.Initial_watchexpr+"[0]", uint64(1), initial_line, ct.DataFlow, nil, nil)
+	expected_events = append(expected_events,
+		watchpointSet(&config, "x", uint64(8), 16, ct.ControlFlow, nil, nil)...)
+	expected_events = append(expected_events,
+		watchpointSet(&config, "y", uint64(8), 17, ct.ControlFlow, nil, nil)...)
+	run(t, &config, expected_events)
+}
+
 func TestMethods(t *testing.T) {
 	initial_line := 39
 	config := Config("methods.go", "nested.name.Data", initial_line)

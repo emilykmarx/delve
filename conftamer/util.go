@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-delve/delve/pkg/locspec"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
@@ -160,21 +159,21 @@ func hasEmptyParam(tainting_vals TaintingVals) bool {
 
 // pretty-print
 func (pendingwp PendingWp) String() string {
-	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v branch body %v:%v commands %+v}",
-		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals, pendingwp.body_start, pendingwp.body_end, pendingwp.cmds)
+	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v commands %+v}",
+		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals, pendingwp.cmds)
 }
 
 // Get line of source (as string)
 func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 	if os.Setenv("TERM", "dumb") != nil {
-		log.Fatalf("Error setting TERM=dumb")
+		log.Panicf("Error setting TERM=dumb")
 	}
 
 	t := terminal.New(client, nil)
 	// PERF faster way to do this?
 	lines, err := t.GetOutput(fmt.Sprintf("list %v:%v", file, lineno))
 	if err != nil {
-		log.Fatalf("Error getting source code for %v:%v: %v\n", file, lineno, err)
+		log.Panicf("Error getting source code for %v:%v: %v\n", file, lineno, err)
 	}
 
 	var src_line string
@@ -184,7 +183,7 @@ func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 			continue
 		}
 		if _, err := fmt.Sscanf(line, " %d:", &curline); err != nil {
-			log.Fatalf("Failed to parse line number from %v:%v: %v\n", file, line, err)
+			log.Panicf("Failed to parse line number from %v:%v: %v\n", file, line, err)
 		}
 		if curline != lineno {
 			continue
@@ -194,7 +193,7 @@ func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 		if src_start <= len(line)-1 {
 			src_line = line[src_start:]
 		} else {
-			log.Fatalf("Empty line at %v:%v\n", file, line)
+			log.Panicf("Empty line at %v:%v\n", file, line)
 		}
 	}
 
@@ -222,7 +221,7 @@ func memOverlap(start1 uint64, sz1 uint64, start2 uint64, sz2 uint64) (uint64, u
 func (tc *TaintCheck) printBps() {
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
-		log.Fatalf("Error listing breakpoints: %v\n", list_err)
+		log.Panicf("Error listing breakpoints: %v\n", list_err)
 	}
 	for _, bp := range bps {
 		if bp.WatchExpr != "" {
@@ -288,12 +287,12 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 	full_args := node.Args
 	call_expr := exprToString(node.Fun)
 	decl_loc := tc.fnDecl(call_expr, hit)
-	// Decl:			<pkg, may hv .>.<optional recvr type, perhaps ptr>.<fn name>
-	// CallExpr:	<optional pkg>.<optional recvr expr, perhaps with selector(s)>.<fn name>
-	if parseFn(decl_loc.Function.Name()).ReceiverName != "" {
+	decl_tokens := strings.Split(sourceLine(tc.client, decl_loc.File, decl_loc.Line), " ")
+
+	if decl_tokens[1][0] == '(' {
 		// method
 		recvr := ""
-		if !strings.Contains(decl_loc.Function.Name(), "*") {
+		if !strings.Contains(decl_tokens[2], "*") {
 			// non-pointer receiver => get its name from the callexpr
 			// remove fn name
 			call_tokens := strings.Split(exprToString(node.Fun), ".")
@@ -306,33 +305,21 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 	return full_args
 }
 
-// Whether we're running in `go test`, per file
-func inGoTest(file string) bool {
-	tokens := strings.Split(file, "/")
-	pkg := tokens[len(tokens)-2]
-	return pkg == "conftamer"
-}
-
-// Find the function declaration location - e.g. pkg.(*Recvr).f(),
+// Find the function declaration location,
 // given the call expr - e.g. recvr.f() or pkg.f()
 func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 	locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
 			// Ambiguous name => qualify with package name
-			fn := tc.stacktrace()[hit.frame].Function.Name()
-			parsed := parseFn(fn)
-			pkg := parsed.PackageName
-			if inGoTest(hit.hit_instr.Loc.File) {
-				pkg = "main"
-			}
+			pkg := strings.Split(sourceLine(tc.client, hit.hit_instr.Loc.File, 1), " ")[1]
 			qualified_fn := pkg + "." + call_expr
 			locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, qualified_fn, true, nil)
 			if err != nil {
-				log.Fatalf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.frame, err)
+				log.Panicf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.frame, err)
 			}
 		} else {
-			log.Fatalf("Error finding function %v in frame %v: %v\n", call_expr, hit.frame, err)
+			log.Panicf("Error finding function %v in frame %v: %v\n", call_expr, hit.frame, err)
 		}
 	}
 	// Don't check loc's PCs here - won't use them, and
@@ -340,7 +327,7 @@ func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 	// (at least for call_assign_1.go)
 	if len(locs) > 1 {
 		// Unsure when this would happen - don't support for now
-		log.Fatalf("Too many locations: %v\n", locs)
+		log.Panicf("Too many locations: %v\n", locs)
 	}
 	return locs[0]
 }
@@ -362,16 +349,16 @@ func (tc *TaintCheck) lineWithStmt(file string, lineno int, frame int) api.Locat
 			return locs[0]
 		}
 		if err != nil && !strings.HasPrefix(err.Error(), "could not find statement") {
-			log.Fatalf("Error finding location: %v\n", err)
+			log.Panicf("Error finding location: %v\n", err)
 		}
 		if len(locs) > 1 || (len(locs) > 0 && len(locs[0].PCs) != 1) {
 			// Unsure when this would happen - don't support for now
-			log.Fatalf("Too many locations: %v\n", locs)
+			log.Panicf("Too many locations: %v\n", locs)
 		}
 		lineno += 1
 	}
 
-	log.Fatalf("Failed to find location %v in frame %v\n", loc, frame)
+	log.Panicf("Failed to find location %v in frame %v\n", loc, frame)
 	return api.Location{}
 }
 
@@ -379,7 +366,7 @@ func (tc *TaintCheck) setBp(addr uint64) {
 	bp := api.Breakpoint{Addrs: []uint64{addr}}
 	if _, err := tc.client.CreateBreakpoint(&bp); err != nil {
 		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") {
-			log.Fatalf("Failed to create breakpoint at %v: %v\n", addr, err)
+			log.Panicf("Failed to create breakpoint at %v: %v\n", addr, err)
 		}
 	}
 }
@@ -425,15 +412,6 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 		}
 	}
 	_ = tc.logger.Handler().Handle(context.Background(), r)
-}
-
-func parseFn(fn string) locspec.FuncLocationSpec {
-	parsed, err := locspec.Parse(fn)
-	fct := parsed.(*locspec.NormalLocationSpec)
-	if err != nil {
-		log.Panicf("parse fn %v: %v", fn, err)
-	}
-	return *fct.FuncBase
 }
 
 func (tc *TaintCheck) isCast(call_expr_node ast.Expr) bool {

@@ -1,0 +1,20 @@
+package main
+
+import (
+	"fmt"
+	"math/rand"
+	"slices"
+	_ "syscall"
+)
+
+func main() {
+	b := byte(rand.Intn(1)) // always 0 - just tricks compiler so watchpoint hits
+	arr := []string{string([]byte{b})}
+	fmt.Printf("ARR: %v\n", arr[0][0])
+	if slices.Contains(arr, string(0)) {
+		x := 4 // propagate to x
+		y := 5 // propagate to y
+		fmt.Println(x)
+		fmt.Println(y)
+	}
+}

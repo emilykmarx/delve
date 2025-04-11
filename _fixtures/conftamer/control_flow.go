@@ -62,7 +62,7 @@ func main() {
 }
 
 func f(config string) int {
-	if config[0] == 'c' { // hit for config in if condition that returns
+	if config[0] == 'c' { // hit for config in if condition that returns => propagate to x
 		return 1
 	}
 	return 0

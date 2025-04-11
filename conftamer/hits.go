@@ -88,15 +88,12 @@ type PendingWp struct {
 	tainting_vals []TaintingVals
 	threadID      int
 
-	// If this is a bp within an if[else] body,
-	// the start/end lines of the body
-	body_start int
-	body_end   int
-
 	/* Used if need to execute commands to reach in-scope location (vs setting a breakpoint) */
 
 	// The sequence of commands needed
 	cmds []Command
+	// If executing a command sequence, the index in the sequence
+	cmd_idx int
 }
 
 type TaintCheck struct {
@@ -109,6 +106,9 @@ type TaintCheck struct {
 
 	// Watchpoint waiting to be set after a command sequence completes
 	cmd_pending_wp *PendingWp
+	// If we're in a branch body, the start/end lines
+	body_start int
+	body_end   int
 
 	// Note for both mem_param_map and behavior_map, each entry is for a single byte
 	// (memory address or message offset).
@@ -211,24 +211,26 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 
 	hit.stack_len = len(stack)
 
-	// At least for Unmarshal, Parse gives package name iff not runtime or internal
-	skip := parseFn(stack[0].Function.Name()).PackageName == "" && !inGoTest(stack[0].File)
+	// Don't use parseFn, since some runtime functions get reflect.X linkname
+	// TODO (minor) take path to go src as config item (for now assume any path containing /src/internal or /src/runtime is in go src)
+	skip := strings.Contains(stack[0].File, "/src/internal") || strings.Contains(stack[0].File, "/src/runtime")
 	if skip {
-		log.Println("Watchpoint hit in runtime or internal - partial stack (including first non-runtime frame, whose PC is one after call instr)")
+		log.Printf("Watchpoint hit in runtime or internal, stack len %v - "+
+			"partial stack (including first non-runtime frame, whose PC is one after call instr)\n", len(stack))
 		for i, frame := range stack {
 			fn := frame.Function.Name()
 
-			skip := parseFn(frame.Function.Name()).PackageName == ""
+			skip = strings.Contains(frame.File, "/src/internal") || strings.Contains(frame.File, "/src/runtime")
 			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 				frame.File, frame.Line, fn, frame.PC)
 			log.Println(loc)
 
 			// TODO can go runtime goroutines ever cause hits? (maybe sysmon in early sw wp commit, but may have been due to mprotecting dlv's pages instead)
+			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
 			if fn == "runtime.newstack" {
 				return nil, false
 			}
-			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
-			if !skip || inGoTest(frame.File) { // parseFn gives empty pkg name in go test
+			if !skip {
 				hit.frame = i
 				return &frame, true
 			}
@@ -268,7 +270,7 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) 
  * Return false to ignore this hit. */
 func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	non_runtime_frame, handle := tc.handleRuntimeHit(hit)
-	// Ignore prints (may be within print, or when calling print) for convenience
+	// Ignore prints (may be within print, or when setting up to call print) for convenience
 	if tc.hitInPrint() || !handle {
 		return false
 	}
@@ -278,7 +280,6 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 	if strings.Contains(strings.ToLower(src_line), ("print")) {
 		fmt.Printf("IGNORING PRINT: %v\n", src_line)
-		// hitInPrint doesn't catch if src line is calling print
 		return false
 	}
 
@@ -357,8 +358,6 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 
 	if tainted_region.body_start != 0 {
 		existing_info.updateTaintingVals(ifstmt_taint, 0) // put them all at offset 0 - setWatchpoint will pick them out
-		existing_info.body_start = tainted_region.body_start
-		existing_info.body_end = tainted_region.body_end
 	}
 }
 
@@ -469,7 +468,9 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 				pending_watchpoint.cmds, tainted_region.cmds)
 		}
 	}
+	// Update commands and branch body info (can change, e.g. if handling a return inside tainted if)
 	pending_watchpoint.cmds = tainted_region.cmds
+	pending_watchpoint.cmd_idx = 0
 
 	// Populate tainting values
 	if hit.hit_bp != nil {
