@@ -3,4 +3,6 @@ move_wps: false
 event_log_filename: parent_event_log.csv
 behavior_map_filename: parent_behavior_map.csv
 server_endpoint: localhost:4041
-taint_flow: Data Flow
+initial_goroutine: 1
+initial_frame: 2
+initial_watchexpr: conf.TargetConfigFiles

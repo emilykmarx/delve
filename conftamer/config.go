@@ -9,12 +9,18 @@ import (
 )
 
 type Config struct {
+	/* Test params */
+	// If setting initial watchpoint immediately, the goroutine and frame
+	Initial_goroutine int64 `yaml:"initial_goroutine"`
+	Initial_frame     int   `yaml:"initial_frame"`
 	// File to set initial breakpoint
 	Initial_bp_file string `yaml:"initial_bp_file"`
 	// Line number to set initial breakpoint
 	Initial_bp_line int `yaml:"initial_bp_line"`
 	// Expression to set initial watchpoint
 	Initial_watchexpr string `yaml:"initial_watchexpr"`
+
+	/* Other params */
 	// Target module name
 	Module string `yaml:"module"`
 	// Whether to request move object on setting software watchpoint

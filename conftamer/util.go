@@ -308,18 +308,18 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 // Find the function declaration location,
 // given the call expr - e.g. recvr.f() or pkg.f()
 func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
-	locs, _, err := tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, call_expr, true, nil)
+	locs, _, err := tc.client.FindLocation(hit.scope, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
 			// Ambiguous name => qualify with package name
 			pkg := strings.Split(sourceLine(tc.client, hit.hit_instr.Loc.File, 1), " ")[1]
 			qualified_fn := pkg + "." + call_expr
-			locs, _, err = tc.client.FindLocation(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, qualified_fn, true, nil)
+			locs, _, err = tc.client.FindLocation(hit.scope, qualified_fn, true, nil)
 			if err != nil {
-				log.Panicf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.frame, err)
+				log.Panicf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.scope.Frame, err)
 			}
 		} else {
-			log.Panicf("Error finding function %v in frame %v: %v\n", call_expr, hit.frame, err)
+			log.Panicf("Error finding function %v in frame %v: %v\n", call_expr, hit.scope.Frame, err)
 		}
 	}
 	// Don't check loc's PCs here - won't use them, and

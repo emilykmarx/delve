@@ -19,7 +19,7 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 	for _, thread := range state.Threads {
 		hit_bp := thread.Breakpoint
 		if hit_bp != nil {
-			hit := &Hit{hit_bp: hit_bp, thread: thread}
+			hit := &Hit{hit_bp: hit_bp, thread: thread, scope: api.EvalScope{GoroutineID: -1}}
 			// TODO see gdoc (Instr that would hit multiple*) - may need more logic here for multiple hits
 			if hit_bp.Name == proc.SyscallEntryBreakpoint {
 				tc.handleSyscallEntry(hit)
@@ -96,7 +96,7 @@ func (tc *TaintCheck) Run() {
 			if cmd == "" {
 				// Make a "hit" with the relevant info (frame 0 since not a runtime hit)
 				instr := api.AsmInstruction{Loc: api.Location{File: thread.File, Line: thread.Line}}
-				hit := Hit{thread: thread, hit_instr: &instr, stack_len: len(tc.stacktrace())}
+				hit := Hit{thread: thread, hit_instr: &instr, stack_len: len(tc.stacktrace()), scope: api.EvalScope{GoroutineID: -1}}
 
 				if tc.cmd_pending_wp.cmd_idx == len(tc.cmd_pending_wp.cmds)-1 {
 					// Finished command sequence => set watchpoints

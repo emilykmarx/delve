@@ -225,7 +225,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set
 			xvs := []*api.Variable{}
 			fmt.Printf("ZZEM eval %v\n", exprToString(node.(ast.Expr)))
-			err := tc.evalWatchExprRecursive(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, exprToString(node.(ast.Expr)), &xvs)
+			err := tc.evalWatchExprRecursive(hit.scope, exprToString(node.(ast.Expr)), &xvs)
 			if err != nil {
 				fmt.Printf("eval err: %v\n", err.Error())
 				// Try evaluating any AST children (for e.g. `x+1`)
@@ -247,7 +247,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 							}
 						}
 						if xv.Kind == reflect.Struct {
-							found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size, hit.frame)
+							found_overlap += tc.taintedField(xv.Name, xv, watch_addr, watch_size, hit.scope.Frame)
 						}
 
 						tainted_region.overlap_expr = &found_overlap
@@ -359,7 +359,7 @@ func (tc *TaintCheck) handleIfStmt(branch ast.Node, fset *token.FileSet, body_st
 
 // The command sequence needed to reach the next line in first non-runtime frame
 func next_cmd_seq(hit *Hit) []Command {
-	next_cmd := Command{cmd: api.Next, stack_len: hit.stack_len - hit.frame, lineno: hit.hit_instr.Loc.Line}
+	next_cmd := Command{cmd: api.Next, stack_len: hit.stack_len - hit.scope.Frame, lineno: hit.hit_instr.Loc.Line}
 	return append(runtime_stepout_cmd_seq(hit), next_cmd)
 }
 
@@ -367,9 +367,9 @@ func next_cmd_seq(hit *Hit) []Command {
 // If not setting breakpoint (i.e. "set now" or seq of commands), must always stepout of runtime first
 func runtime_stepout_cmd_seq(hit *Hit) []Command {
 	runtime_cmds := []Command{}
-	if hit.frame > 0 {
+	if hit.scope.Frame > 0 {
 		// runtime hit => prepend stepouts and adjust frame for next
-		for i := 1; i <= hit.frame; i++ {
+		for i := 1; i <= hit.scope.Frame; i++ {
 			stack_len := hit.stack_len - i
 			runtime_cmds = append(runtime_cmds, Command{cmd: api.StepOut, stack_len: stack_len})
 		}
@@ -425,7 +425,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 					tc.Logf(slog.LevelWarn, hit, "Hit wp for ifStmt %+v, but isTainted didn't find taint", exprToString(typed_node.Cond))
 				} else {
 					locs := []int{}
-					tc.handleIfStmt(typed_node, fset, &locs, tainted_region, hit.frame)
+					tc.handleIfStmt(typed_node, fset, &locs, tainted_region, hit.scope.Frame)
 					tainted_region.cmds = next_cmd_seq(hit)
 					ret = tainted_region
 				}
@@ -437,7 +437,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 				tainted_region := tc.isTainted(typed_node.Args[1], hit, fset)
 				if tainted_region != nil {
 					// Copies min(len(new), len(old)). So if new is shorter, shorten overlap.
-					xv, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, exprToString(typed_node.Args[0]), true)
+					xv, err := tc.client.EvalWatchexpr(hit.scope, exprToString(typed_node.Args[0]), true)
 					if err != nil {
 						// I think new should always be evaluatable?
 						log.Panicf("eval %v for copy builtin: %v", exprToString(typed_node.Args[0]), err)
@@ -446,7 +446,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 
 					// Expr will be allocated, but if on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
 					// are set correctly (TODO add test for this)
-					pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.frame)
+					pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
 					tainted_region.set_location = &pending_loc
 					watchexpr := exprToString(typed_node.Args[0])
 					tainted_region.overlap_expr = &watchexpr
@@ -460,7 +460,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 				decl_loc := tc.fnDecl(call_expr, hit)
 				file := decl_loc.File
 				lineno := decl_loc.Line + 1
-				pending_loc := tc.lineWithStmt(file, lineno, hit.frame)
+				pending_loc := tc.lineWithStmt(file, lineno, hit.scope.Frame)
 				for i, arg := range tc.fullArgs(typed_node, hit) {
 					tainted_region := tc.isTainted(arg, hit, fset)
 					if tainted_region != nil { // caller arg tainted => propagate to callee arg
@@ -510,7 +510,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 			if tainted_region != nil && typed_node.Value != nil {
 				// Watched location is read on the rhs =>
 				// taint value expr
-				pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.frame)
+				pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
 				tainted_region.set_location = &pending_loc
 				watchexpr := exprToString(typed_node.Value)
 				tainted_region.overlap_expr = &watchexpr

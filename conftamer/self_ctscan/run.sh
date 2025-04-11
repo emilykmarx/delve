@@ -43,10 +43,6 @@ config=$SCANNEE_DIR/dlv/target_config.txt XDG_CONFIG_HOME=$SCANNEE_DIR \
 # 4b. Launch CT-scanner and attach to CT-scannee
 # dlv attach --headless --api-version=2 --accept-multiclient --listen localhost:4041 $(pgrep dlv)
 
-# 4c. Set initial watchpoint for scannee - for now, with dlv connect (should update client to allow setting initial wp immediately)
-# dlv connect localhost:4041
-# goroutine 1 frame 2 watch -rw -sw -nomove conf.TargetConfigFiles
-
 # 4c. Launch parent client - will continue child dlv (needed because attach stops the process?)
 # ./conftamer_main --config=$DIR/parent_client_config.yaml
 

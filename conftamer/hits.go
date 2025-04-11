@@ -58,8 +58,8 @@ type Hit struct {
 	thread    *api.Thread
 	hit_bp    *api.Breakpoint
 	hit_instr *api.AsmInstruction
-	// Frame to check taint in (first non-runtime frame)
-	frame int
+	// Scope to check taint in (first non-runtime frame)
+	scope api.EvalScope
 	// Length of stack
 	stack_len int
 }
@@ -177,7 +177,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 			Flow:     DataFlow,
 		}
 		// frame 3 = syscall.read
-		hit.frame = 3
+		hit.scope.Frame = 3
 		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true, hit)
 	} else if info.SyscallName == "syscall.read" {
 		// Read config file => set watchpoint on entire read buffer
@@ -192,7 +192,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		tainting_vals := MakeTaintingVals(&tainting_param, nil)
 		event := Event{EventType: ConfigLoad, Address: info.Bufaddr, Size: info.Bufsz, TaintingVals: &tainting_vals}
 		WriteEvent(hit.thread, tc.event_log, event)
-		hit.frame = 3
+		hit.scope.Frame = 3
 		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{tainting_vals}, true, hit)
 	} else {
 		log.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", info.SyscallName)
@@ -231,7 +231,7 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 				return nil, false
 			}
 			if !skip {
-				hit.frame = i
+				hit.scope.Frame = i
 				return &frame, true
 			}
 		}
@@ -246,7 +246,7 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) 
 	if non_runtime_frame != nil {
 		pc = non_runtime_frame.PC
 	}
-	fct_instr, err := tc.client.DisassemblePC(api.EvalScope{GoroutineID: -1, Frame: hit.frame}, pc, api.IntelFlavour) // dst, src
+	fct_instr, err := tc.client.DisassemblePC(hit.scope, pc, api.IntelFlavour) // dst, src
 	if err != nil {
 		log.Panicf("Error disassembling at PC 0x%x: %v\n", pc, err)
 	}
@@ -328,7 +328,7 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 		// (some region of) config read buf for the first time. Populate m-c.
 		if hasEmptyParam(tainting_vals) {
 			if len(new_params) == 0 {
-				new_params = tc.readParams(tainted_region.overlap_start, tainted_region.overlap_end, hit.frame)
+				new_params = tc.readParams(tainted_region.overlap_start, tainted_region.overlap_end, hit.scope.Frame)
 			}
 			// XXX ignore offsets that don't correspond to params (e.g. \n)
 			tc.populateParam(watchaddr, new_params[watchaddr-tainted_region.overlap_start])
@@ -378,9 +378,8 @@ func (tc *TaintCheck) onPendingWpBpHitDone(hit *Hit) {
 // Config file: record each byte of buf as tainted by corresponding param
 // (tainting_vals[0] is param).
 func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals []TaintingVals, syscall_read bool, hit *Hit) {
-	scope := api.EvalScope{GoroutineID: -1, Frame: hit.frame}
 	// We really want a read-only wp, but not supported
-	watchpoints, err := tc.client.CreateWatchpoint(scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
+	watchpoints, err := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
 	if err != nil {
 		errstr := fmt.Sprintf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
 		if strings.Contains(err.Error(), "type not supported") || strings.Contains(err.Error(), "nil slice") ||
@@ -547,10 +546,9 @@ func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, false, hit)
 		return true
 	})
-	scope := api.EvalScope{GoroutineID: -1, Frame: hit.frame}
 	for argno, overlap_expr := range pendingWp.watchargs {
 		// if method, args include receiver as arg 0 (as we did when recording argno)
-		args, err := tc.client.ListFunctionArgs(scope, api.LoadConfig{})
+		args, err := tc.client.ListFunctionArgs(hit.scope, api.LoadConfig{})
 		if err != nil {
 			log.Panicf("Failed to list function args for pending wp %+v: %v\n", pendingWp, err)
 		}
@@ -627,15 +625,23 @@ func New(config *Config) (*TaintCheck, error) {
 
 	if config.Initial_watchexpr != "" {
 		// For testing: pass in an expr to set a watchpoint on
-		// Make a "hit" with the relevant info
-		init_loc := tc.lineWithStmt(config.Initial_bp_file, config.Initial_bp_line, 0)
 		tainting_param := TaintingParam{Param: Param{Module: tc.config.Module, Param: config.Initial_watchexpr}, Flow: DataFlow}
-		tc.bp_pending_wps[init_loc.PC] = PendingWp{
-			watchexprs: *set.From([]string{config.Initial_watchexpr}),
-			// Will be copied into each byte of config variable (don't know its size)
-			tainting_vals: []TaintingVals{MakeTaintingVals(&tainting_param, nil)},
+		tainting_vals := []TaintingVals{MakeTaintingVals(&tainting_param, nil)}
+		if config.Initial_bp_file != "" {
+			// Config specifies initial location => set bp there
+			init_loc := tc.lineWithStmt(config.Initial_bp_file, config.Initial_bp_line, 0)
+			tc.bp_pending_wps[init_loc.PC] = PendingWp{
+				watchexprs: *set.From([]string{config.Initial_watchexpr}),
+				// Will be copied into each byte of config variable (don't know its size)
+				tainting_vals: tainting_vals,
+			}
+			tc.setBp(init_loc.PC)
+		} else {
+			// No initial location => set it now (assumes server is already attached to the target - for self-CTscan)
+			tc.setWatchpoint(config.Initial_watchexpr, tainting_vals, false, &Hit{
+				scope: api.EvalScope{GoroutineID: config.Initial_goroutine, Frame: config.Initial_frame},
+			})
 		}
-		tc.setBp(init_loc.PC)
 	}
 
 	return &tc, nil
