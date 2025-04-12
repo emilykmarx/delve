@@ -678,6 +678,7 @@ func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string, target
 	if dbp.bi.Arch.Name == "arm64" || dbp.bi.Arch.Name == "ppc64le" {
 		dbp.iscgo = tgt.IsCgo()
 	}
+	dbp.setupSyscallHandling()
 	return grp, nil
 }
 
@@ -737,15 +738,6 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	mprotect_regs := regs.(*linutil.AMD64Registers)
 
 	syscall_pc := thread.dbp.syscallPCs[1]
-	if syscall_pc == 0 {
-		// Not set yet - presumably we're doing a self-CT scan where parent dlv attached to child dlv
-		// (so Launch() wasn't called in child dlv)
-		fmt.Printf("Syscall PC not set in pid %v (I am %v) - will get it now\n", thread.dbp.pid, os.Getpid())
-		thread.dbp.syscallPCs = thread.dbp.getSyscallPCs()
-		fmt.Printf("Got syscall PCs %#x %#x %#x for child\n",
-			thread.dbp.syscallPCs[0], thread.dbp.syscallPCs[1], thread.dbp.syscallPCs[2])
-		syscall_pc = thread.dbp.syscallPCs[1]
-	}
 	mprotect_regs.Regs.Rip = syscall_pc
 	mprotect_regs.Regs.Rax = sys.SYS_MPROTECT
 	mprotect_regs.Regs.Rdi = pageAddr(addr)

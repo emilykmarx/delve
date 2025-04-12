@@ -86,6 +86,21 @@ func (dbp *nativeProcess) getSyscallPCs() [3]uint64 {
 	return pcs
 }
 
+// one-time setup for syscall-related stuff
+func (dbp *nativeProcess) setupSyscallHandling() error {
+	dbp.syscallPCs = dbp.getSyscallPCs()
+	// Break on syscall entry (use cond that always evaluates false so Continue() doesn't return to client)
+	false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
+	target := proc.Target{Process: dbp, Proc: dbp}
+	if entry_bp, err := target.SetBreakpoint(proc.SyscallEntryBreakpointID, dbp.syscallPCs[0], proc.UserBreakpoint, false_cond); err != nil {
+		return fmt.Errorf("set breakpoint on syscall entry: %v", err)
+	} else {
+		entry_bp.Logical.Name = proc.SyscallEntryBreakpoint
+	}
+
+	return nil
+}
+
 // Launch creates and begins debugging a new process. First entry in
 // `cmd` is the program to run, and then rest are the arguments
 // to be supplied to that process. `wd` is working directory of the program.
@@ -170,15 +185,6 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags,
 	if First_launch {
 		Start_time = time.Now()
 		First_launch = false
-		dbp.syscallPCs = dbp.getSyscallPCs()
-		// Break on syscall entry (use cond that always evaluates false so Continue() doesn't return to client)
-		false_cond := astutil.Eql(astutil.Int(0), astutil.Int(1))
-		target := proc.Target{Process: dbp, Proc: dbp}
-		if entry_bp, err := target.SetBreakpoint(proc.SyscallEntryBreakpointID, dbp.syscallPCs[0], proc.UserBreakpoint, false_cond); err != nil {
-			return nil, fmt.Errorf("set breakpoint on syscall entry: %v", err)
-		} else {
-			entry_bp.Logical.Name = proc.SyscallEntryBreakpoint
-		}
 	} else {
 		runtime_s := time.Since(Start_time).Seconds()
 		// TODO for metrics: Investigate where Launch() is called - ah, from (d *Debugger) Launch()
