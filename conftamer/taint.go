@@ -204,7 +204,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 				tainted_region.overlap_expr = &found_overlap
 				tainted_region.overlap_start = arg_addr
 				// Preserve taint of old slice, append taint of new elems
-			} else if !tc.isCast(typed_node.Fun) {
+			} else if !tc.isCast(typed_node) {
 				// casted expr is tainted if its arg is
 				return false
 			}
@@ -452,7 +452,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 					tainted_region.overlap_expr = &watchexpr
 					ret = tainted_region
 				}
-			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node.Fun) || call_expr == "runtime.KeepAlive" {
+			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node) || call_expr == "runtime.KeepAlive" {
 				// builtins will be handled in assign/range
 			} else {
 				// If method: check receiver for taint if non-pointer, and

@@ -411,7 +411,9 @@ func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) *SyscallBr
 		return &info
 	} else {
 		// Non-network read
+		fmt.Printf("READ FILE; fdinfo %v\n", fdinfo)
 		if slices.Contains(tgt.ConfigFiles, fdinfo) {
+			fmt.Println("READ CONFIG FILE")
 			info.Filename = fdinfo
 			return &info
 		}
@@ -885,14 +887,18 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		if _, ok := slice.ElemType.(*godwarf.SliceType); ok {
 			return xv, ElemsAreReferences{Xv: xv}
 		}
-	} else if sz > int64(t.BinInfo().Arch.PtrSize()) {
+	} else {
+		_, funcType := xv.RealType.(*godwarf.FuncType) // don't watch functions for now
+		unsupported := funcType || sz > int64(t.BinInfo().Arch.PtrSize())
 		// Client uses this to eval variables for overlap => still set Watchsz
-		xv.Watchsz = sz
-		err := fmt.Errorf("can not watch variable of type %s, sz %v: type not supported", xv.DwarfType.String(), sz)
-		if ignoreUnsupported {
-			err = nil
+		if unsupported {
+			xv.Watchsz = sz
+			err := fmt.Errorf("can not watch variable of type %s, sz %v: type not supported", xv.DwarfType.String(), sz)
+			if ignoreUnsupported {
+				err = nil
+			}
+			return xv, err
 		}
-		return xv, err
 	}
 	// TODO support other types - for types with elements e.g. structs, need to do the ElemsAreReferences thing
 	// (but only for fields that are references - for structs, not all may be)

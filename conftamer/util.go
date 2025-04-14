@@ -193,7 +193,7 @@ func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 		if src_start <= len(line)-1 {
 			src_line = line[src_start:]
 		} else {
-			log.Panicf("Empty line at %v:%v\n", file, line)
+			return ""
 		}
 	}
 
@@ -269,17 +269,28 @@ func (tc *TaintCheck) printStacktrace() {
 	}
 }
 
-// Whether the stack contains a print-flavored function
+// Whether the stack contains a print-/log-flavored function
 func (tc *TaintCheck) hitInPrint() bool {
 	stack := tc.stacktrace()
 
 	for _, frame := range stack {
 		fn := frame.Function.Name()
-		if strings.Contains(strings.ToLower(fn), ("print")) {
+		if ignoreSourceLine(fn) {
 			return true
 		}
 	}
 	return false
+}
+
+// Whether to ignore this hit based on the source line
+func ignoreSourceLine(src_line string) bool {
+	line := strings.ToLower(src_line)
+	return strings.Contains(line, "print") ||
+		strings.Contains(line, "debugf") ||
+		strings.Contains(line, "infof") ||
+		strings.Contains(line, "warnf") ||
+		strings.Contains(line, "errorf") ||
+		strings.Contains(line, "fatalf")
 }
 
 // Given a callexpr node, return full args including non-pointer receiver name (or "" if pointer receiver)
@@ -312,7 +323,16 @@ func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
 			// Ambiguous name => qualify with package name
-			pkg := strings.Split(sourceLine(tc.client, hit.hit_instr.Loc.File, 1), " ")[1]
+			// Can't use lineWithStmt - !hasInstr counts comment, hasInstr skips package line
+			pkg := ""
+			found := false
+			for i := 0; i < 100; i++ { // Likely won't need to skip more than a few lines?
+				src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, i)
+				pkg, found = strings.CutPrefix(src_line, "package ")
+				if found {
+					break
+				}
+			}
 			qualified_fn := pkg + "." + call_expr
 			locs, _, err = tc.client.FindLocation(hit.scope, qualified_fn, true, nil)
 			if err != nil {
@@ -416,21 +436,12 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 
 func (tc *TaintCheck) isCast(call_expr_node ast.Expr) bool {
 	call_expr := exprToString(call_expr_node)
-	if casts.Contains(call_expr) {
-		// Primitive type (`types` doesn't list the aliased primitive types)
+	_, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1}, call_expr, true)
+	if err != nil && strings.Contains(err.Error(), "function calls not allowed") {
+		// Regular function call, not cast
+		return false
+	} else {
+		// Cast - if dlv supports evaluating the cast, no error - else, "symbol not found"
 		return true
 	}
-
-	types, err := tc.client.ListTypes(call_expr)
-	if err != nil {
-		log.Panicf("list types for %v: %v\n", call_expr, err)
-	}
-	for _, found_type := range types {
-		// If <>.<fn name> or <fn name> is a type, assume it's a cast
-		tokens := strings.Split(found_type, ".")
-		if tokens[len(tokens)-1] == call_expr {
-			return true
-		}
-	}
-	return false
 }

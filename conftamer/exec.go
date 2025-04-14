@@ -3,7 +3,6 @@ package conftamer
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/service/api"
@@ -100,7 +99,8 @@ func (tc *TaintCheck) Run() {
 
 				if tc.cmd_pending_wp.cmd_idx == len(tc.cmd_pending_wp.cmds)-1 {
 					// Finished command sequence => set watchpoints
-					fmt.Printf("ZZEM finished sequence - at line %v; pending wp %+v\n", thread.Line, tc.cmd_pending_wp)
+					fmt.Printf("ZZEM finished sequence - at line %v; pending wp:\n", thread.Line)
+					fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", tc.cmd_pending_wp.watchexprs, tc.cmd_pending_wp.watchargs, tc.cmd_pending_wp.cmds)
 					if tc.body_start != 0 {
 						// Finished next in branch body
 						if tc.body_start <= thread.Line && thread.Line <= tc.body_end {
@@ -121,7 +121,7 @@ func (tc *TaintCheck) Run() {
 
 							// Propagate taint (ignoring print)
 							src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
-							if !strings.Contains(strings.ToLower(src_line), ("print")) {
+							if !ignoreSourceLine(src_line) {
 								tainted_region := tc.propagateTaint(&hit) // after set previous watchpoint, since this will modify it
 								if tainted_region != nil {
 									tc.pendingWatchpoint(tainted_region, &hit)

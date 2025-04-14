@@ -44,10 +44,10 @@ config=$SCANNEE_DIR/dlv/target_config.txt XDG_CONFIG_HOME=$SCANNEE_DIR \
 # dlv attach --headless --api-version=2 --accept-multiclient --listen localhost:4041 $(pgrep dlv)
 
 # 4c. Launch parent client - will continue child dlv (needed because attach stops the process?)
-# ./conftamer_main --config=$DIR/parent_client_config.yaml
+# ./conftamer_main --config=$DIR/parent_client_config.yaml &> parent_client_out.md
 
 # 4d. Launch child client - will continue target => target reads its config, hitting watchpoint
-# ./conftamer_main --config=$DIR/child_client_config.yaml
+# ./conftamer_main --config=$DIR/child_client_config.yaml &> child_client_out.md
 
 # Parent client catches watchpoint hit in proc.(*Breakpoint).taintedSyscallEntry (takes ~40 sec)
 # Keep continuing in parent until child hits syscall entry bp =>

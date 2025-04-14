@@ -6,3 +6,4 @@ server_endpoint: localhost:4041
 initial_goroutine: 1
 initial_frame: 2
 initial_watchexpr: conf.TargetConfigFiles
+ignore_msg_recvs: true

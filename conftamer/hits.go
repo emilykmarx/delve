@@ -170,15 +170,16 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		}
 		event := Event{EventType: MessageRecv, Address: info.Bufaddr, Size: info.Bufsz, Behavior: &recvd_msg}
 		WriteEvent(hit.thread, tc.event_log, event)
-
-		recvd_msg.Offset = info.Bufsz // Used in setWatchpoint
-		tainting_msg := TaintingBehavior{
-			Behavior: recvd_msg,
-			Flow:     DataFlow,
+		if !tc.config.Ignore_msg_recvs {
+			recvd_msg.Offset = info.Bufsz // Used in setWatchpoint
+			tainting_msg := TaintingBehavior{
+				Behavior: recvd_msg,
+				Flow:     DataFlow,
+			}
+			// frame 3 = syscall.read
+			hit.scope.Frame = 3
+			tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true, hit)
 		}
-		// frame 3 = syscall.read
-		hit.scope.Frame = 3
-		tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true, hit)
 	} else if info.SyscallName == "syscall.read" {
 		// Read config file => set watchpoint on entire read buffer
 		// Each byte is tainted by param of corresponding offset in buffer (assuming params are separated by \n)
@@ -278,7 +279,7 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	tc.hittingInstr(non_runtime_frame, hit)
 
 	src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
-	if strings.Contains(strings.ToLower(src_line), ("print")) {
+	if ignoreSourceLine(src_line) {
 		fmt.Printf("IGNORING PRINT: %v\n", src_line)
 		return false
 	}
@@ -496,7 +497,8 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 		}
 		pending_watchpoint.watchexprs.Insert(*tainted_region.overlap_expr)
 	}
-	fmt.Printf("pendingWatchpoint about to record %+v\n", pending_watchpoint)
+	fmt.Printf("pendingWatchpoint about to record:")
+	fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", pending_watchpoint.watchexprs, pending_watchpoint.watchargs, pending_watchpoint.cmds)
 
 	// Record pending watchpoint (or set now, if possible)
 	if tainted_region.set_now && len(tainted_region.cmds) == 0 {
@@ -567,7 +569,7 @@ func (tc *TaintCheck) onPendingWpBpHit(hit *Hit) {
 	bp_addr := hit.hit_bp.Addrs[0]
 	info := tc.bp_pending_wps[bp_addr]
 	fmt.Printf("ZZEM file %v line %v: hit pending wp breakpoint\n", hit.hit_bp.File, hit.hit_bp.Line)
-	fmt.Printf("info: %+v\n", info)
+	fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", info.watchexprs, info.watchargs, info.cmds)
 	defer func() {
 		tc.onPendingWpBpHitDone(hit)
 	}()
