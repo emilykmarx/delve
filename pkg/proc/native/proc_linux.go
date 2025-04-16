@@ -62,27 +62,35 @@ func (os *osProcessDetails) Close() {
 // Get PCs of Syscall 6 entry, syscall instruction, and one after syscall instr
 func (dbp *nativeProcess) getSyscallPCs() [3]uint64 {
 	pcs := [3]uint64{}
-	syscall6 := "runtime/internal/syscall.Syscall6"
-	fns, err := dbp.BinInfo().FindFunction(syscall6)
-	if err != nil {
-		log.Panicf("Finding %v: %v\n", syscall6, err.Error())
-	}
+	syscall_fns := []string{"runtime/internal/syscall.Syscall6", "internal/runtime/syscall.Syscall6"}
+	for _, syscall6 := range syscall_fns {
+		fns, err := dbp.BinInfo().FindFunction(syscall6)
+		if err != nil {
+			// try the other fn
+			continue
+		}
+		if pcs[0] > 0 {
+			// TODO (minor): also imports other fn - set bp on both
+			log.Panicf("imports two versions of Syscall6")
+		}
 
-	instrs, err := proc.Disassemble(dbp.Memory(), nil, dbp.Breakpoints(), dbp.BinInfo(), fns[0].Entry, fns[0].End)
-	if err != nil {
-		log.Panicf("Disassembling %v: %v\n", syscall6, err.Error())
-	}
+		instrs, err := proc.Disassemble(dbp.Memory(), nil, dbp.Breakpoints(), dbp.BinInfo(), fns[0].Entry, fns[0].End)
+		if err != nil {
+			log.Panicf("Disassembling %v: %v\n", syscall6, err.Error())
+		}
 
-	pcs[0] = instrs[0].Loc.PC
-	for i, instr := range instrs {
-		instr_text := instr.Text(proc.IntelFlavour, dbp.BinInfo())
-		if instr_text == "syscall" {
-			pcs[1] = instr.Loc.PC
-			pcs[2] = instrs[i+1].Loc.PC
-			return pcs
+		pcs[0] = instrs[0].Loc.PC
+		for i, instr := range instrs {
+			instr_text := instr.Text(proc.IntelFlavour, dbp.BinInfo())
+			if instr_text == "syscall" {
+				pcs[1] = instr.Loc.PC
+				pcs[2] = instrs[i+1].Loc.PC
+			}
 		}
 	}
-	log.Panicf("Failed to find syscall PC\n")
+	if pcs[0] == 0 {
+		log.Panicf("Failed to find syscall PCs\n")
+	}
 	return pcs
 }
 
