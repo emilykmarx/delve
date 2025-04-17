@@ -19,7 +19,7 @@ Use in a real program (in progress): See [Xenon](https://github.com/emilykmarx/x
 Only supports linux/amd64 and Delve's native backend.
 
 ### Building the target
-* Include `syscall.Syscall6()`, e.g. via `import "_ syscall"`
+* Include `syscall.Syscall6()` - will be used to get a `syscall` instruction and to set breakpoints on syscall entry/exit.
 * Build with `-gcflags="all=-N -l"` - this will minimize optimizations
   * But, compiler may still circumvent taint tracking by using registers -
     `runtime.KeepAlive()` can help.
@@ -27,7 +27,7 @@ Only supports linux/amd64 and Delve's native backend.
 * Import `net/http/pprof` (with `_` if needed)
 * If target does not already run an HTTP server, start one.
   * If server does not use the DefaultServeMux, register the pprof handlers (see pprof docs).
-* Pointer arithmetic using `unsafe` is not supported (the allocator cannot update the resulting pointers).
+* Pointer arithmetic using `unsafe` is not fully supported (the allocator cannot update the resulting pointers).
 
 
 ## Supported Go constructs
@@ -37,13 +37,12 @@ Only supports linux/amd64 and Delve's native backend.
 * Range
 * Index (string, array, slice)
 * Select (struct)
+* `if()`
 
 TODO check what we do for implicit flows - see Conflux (e.g. index is tainted but not array)
 
 For all the above, counts any expression containing a tainted expr as tainted (TODO check),
 e.g. `x := tainted_expr + 1` propagates to x.
-
-Data-flow propagation only.
 
 See the [client tests](../client_test.go) for examples.
 
