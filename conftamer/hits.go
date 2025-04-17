@@ -161,8 +161,8 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 			event := Event{EventType: BehaviorMapUpdate, Size: 1, Behavior: &sent_msg, TaintingVals: &tainting_vals}
 			WriteEvent(hit.thread, tc.event_log, event)
 		}
-	} else if info.SyscallName == "syscall.read" && socket {
-		// Receive network message => set watchpoint on entire read buffer, tainted by message
+	} else if info.SyscallName == "syscall.read" && socket && info.Local_endpoint != tc.config.Config_API_endpoint {
+		// Receive network message (not for config API) => set watchpoint on entire read buffer, tainted by message
 		recvd_msg := BehaviorValue{
 			Offset:        0,
 			Send_endpoint: info.Remote_endpoint, Recv_endpoint: info.Local_endpoint, Transport: info.Transport,
@@ -178,11 +178,16 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 			}
 			// frame 3 = syscall.read
 			hit.scope.Frame = 3
+			// PERF consider delaying this wp set - server will immediately un-mprotect for duration of read)
 			tc.setWatchpoint(SyscallRecvBuf, []TaintingVals{MakeTaintingVals(nil, &tainting_msg)}, true, hit)
 		}
 	} else if info.SyscallName == "syscall.read" {
-		// Read config file => set watchpoint on entire read buffer
-		// Each byte is tainted by param of corresponding offset in buffer (assuming params are separated by \n)
+		// Load config from file or API => set watchpoint on entire read buffer, tainted by empty param
+		// (Will populate param with contents of buffer on first access)
+		if info.Local_endpoint == tc.config.Config_API_endpoint {
+			info.Filename = "config API"
+		}
+
 		tainting_param := TaintingParam{
 			Param: Param{
 				File:   info.Filename,
@@ -497,7 +502,7 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 		}
 		pending_watchpoint.watchexprs.Insert(*tainted_region.overlap_expr)
 	}
-	fmt.Printf("pendingWatchpoint about to record:")
+	fmt.Printf("pendingWatchpoint about to record: ")
 	fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", pending_watchpoint.watchexprs, pending_watchpoint.watchargs, pending_watchpoint.cmds)
 
 	// Record pending watchpoint (or set now, if possible)
@@ -514,11 +519,10 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 	} else {
 		if set_at_bp {
 			tc.setBp(tainted_region.set_location.PC)
-			fmt.Printf("set bp at %v\n", tainted_region.set_location.Line)
+			fmt.Printf("pendingWatchpoint set bp at %v:%v\n", tainted_region.set_location.File, tainted_region.set_location.Line)
 			tc.bp_pending_wps[tainted_region.set_location.PC] = pending_watchpoint
 		} else {
 			tc.cmd_pending_wp = &pending_watchpoint
-			fmt.Println("RECORDED CMD PENDING")
 		}
 	}
 }

@@ -34,8 +34,10 @@ type Config struct {
 	// Type of flow to propagate taint (default to both)
 	// Currently only support both or data flow only
 	Taint_flow TaintFlow `yaml:"taint_flow"`
-	// Whether to ignore received messages in taint tracking
+	// Whether to ignore received messages (other than config API writes) in taint tracking
 	Ignore_msg_recvs bool `yaml:"ignore_msg_recvs"`
+	// Target config API endpoint
+	Config_API_endpoint string `yaml:"config_api_endpoint"`
 }
 
 func LoadConfig(file string) (*Config, error) {

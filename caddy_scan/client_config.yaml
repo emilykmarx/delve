@@ -1,0 +1,8 @@
+module: caddy
+move_wps: false
+event_log_filename: caddy_event_log.csv
+behavior_map_filename: caddy_behavior_map.csv
+server_endpoint: localhost:4040
+config_api_endpoint: 127.0.0.1:2019
+ignore_msg_recvs: true
+taint_flow: Data Flow

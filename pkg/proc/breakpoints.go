@@ -408,10 +408,10 @@ func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) *SyscallBr
 		}
 	} else if socket {
 		// Network receive
+		fmt.Printf("RECV NETWORK MSG; local endpoint %v\n", info.Local_endpoint)
 		return &info
 	} else {
 		// Non-network read
-		fmt.Printf("READ FILE; fdinfo %v\n", fdinfo)
 		if slices.Contains(tgt.ConfigFiles, fdinfo) {
 			fmt.Println("READ CONFIG FILE")
 			info.Filename = fdinfo
