@@ -228,7 +228,7 @@ func finishEvalExpressionWithCalls(t *Target, g *G, stack *evalStack) error {
 
 func (scope *EvalScope) evalCallInjectionStart(op *evalop.CallInjectionStart, stack *evalStack) {
 	if scope.callCtx == nil {
-		stack.err = evalop.ErrFuncCallNotAllowed
+		stack.err = evalop.ErrFuncCallNotAllowed{Fn: exprToString(op.Node.Fun)}
 		return
 	}
 	thread := scope.g.Thread

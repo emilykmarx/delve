@@ -293,6 +293,13 @@ func ignoreSourceLine(src_line string) bool {
 		strings.Contains(line, "fatalf")
 }
 
+// Whether file is in go's runtime or internal packages, based on filename.
+// (Don't use parseFn, since some runtime functions get reflect.X linkname.)
+// TODO (minor) take path to go src as config item (for now assume any path containing /src/internal or /src/runtime is in go src)
+func runtimeOrInternal(file string) bool {
+	return strings.Contains(file, "/src/internal") || strings.Contains(file, "/src/runtime")
+}
+
 // Given a callexpr node, return full args including non-pointer receiver name (or "" if pointer receiver)
 func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 	full_args := node.Args
@@ -437,11 +444,22 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 func (tc *TaintCheck) isCast(call_expr_node ast.Expr) bool {
 	call_expr := exprToString(call_expr_node)
 	_, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1}, call_expr, true)
-	if err != nil && strings.Contains(err.Error(), "function calls not allowed") {
-		// Regular function call, not cast
-		return false
+	if err != nil {
+		if fn, ok := strings.CutPrefix(err.Error(), "function calls not allowed without using 'call': "); ok {
+			// Found regular function call
+			if fn != exprToString(call_expr_node.(*ast.CallExpr).Fun) {
+				// Node of form `cast(regular call())`` => treat as cast (will get to the regular call later in Inspect)
+				return true
+			} else {
+				// Node of form `regular call()`
+				return false
+			}
+		} else {
+			// Cast that dlv doesn't support evaluating (gives "symbol not found")
+			return true
+		}
 	} else {
-		// Cast - if dlv supports evaluating the cast, no error - else, "symbol not found"
+		// Cast that dlv supports evaluating
 		return true
 	}
 }

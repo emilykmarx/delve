@@ -17,9 +17,13 @@ import (
 	"github.com/go-delve/delve/pkg/dwarf/reader"
 )
 
-var (
-	ErrFuncCallNotAllowed = errors.New("function calls not allowed without using 'call'")
-)
+type ErrFuncCallNotAllowed struct {
+	Fn string
+}
+
+func (e ErrFuncCallNotAllowed) Error() string {
+	return "function calls not allowed without using 'call': " + e.Fn
+}
 
 type compileCtx struct {
 	evalLookup
@@ -512,7 +516,7 @@ func (ctx *compileCtx) compileFunctionCall(node *ast.CallExpr) error {
 		}
 	}
 	if !ctx.allowCalls {
-		return ErrFuncCallNotAllowed
+		return ErrFuncCallNotAllowed{exprToString(node.Fun)}
 	}
 
 	id := ctx.curCall
@@ -526,7 +530,7 @@ func (ctx *compileCtx) compileFunctionCall(node *ast.CallExpr) error {
 	hasFunc := false
 	if err != nil {
 		ctx.ops = oldOps
-		if err != ErrFuncCallNotAllowed {
+		if _, ok := err.(ErrFuncCallNotAllowed); !ok {
 			return err
 		}
 	} else {

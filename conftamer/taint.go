@@ -171,11 +171,11 @@ func (tc *TaintCheck) evalWatchExprRecursive(scope api.EvalScope, expr string, v
 // (e.g. don't have a test for return callexpr/cast)
 
 /* If expr involves memory that overlaps the watched region,
-* ignoring function args (except builtins),
-* return overlapping region (watchexpr will be the overlapping portion of expr, "" if full -
-* propagateTaint will prepend the relevant expr as needed).
-* Requires expr to be in scope.
-* If in branch body, always overlap. */
+ * ignoring function calls (except append and casts),
+ * return overlapping region (watchexpr will be the overlapping portion of expr, "" if full -
+ * propagateTaint will prepend the relevant expr as needed).
+ * Requires expr to be in scope.
+ * If in branch body, always overlap. */
 func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *TaintedRegion {
 	tainted_region := TaintedRegion{} // to be populated, if region is tainted
 	found_overlap := ""               //  the expression for the overlapping region, or "" if the entire region overlaps
@@ -304,17 +304,6 @@ var builtinFcts = set.From([]string{
 	"print", "println",
 })
 
-var casts = set.From([]string{
-	"bool",
-	"string",
-	"int", "int8", "int16", "int32", "int64",
-	"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-	"byte",
-	"rune",
-	"float32", "float64",
-	"complex64", "complex128",
-})
-
 // If return value is tainted by any arg, return start addr of last tainted arg
 func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) uint64 {
 	// Any elem tainted, or slice already tainted => ret tainted
@@ -433,6 +422,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
+			fmt.Printf("CallExpr %v\n", exprToString(typed_node))
 			if call_expr == "copy" {
 				tainted_region := tc.isTainted(typed_node.Args[1], hit, fset)
 				if tainted_region != nil {
@@ -463,17 +453,26 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 				pending_loc := tc.lineWithStmt(file, lineno, hit.scope.Frame)
 				for i, arg := range tc.fullArgs(typed_node, hit) {
 					tainted_region := tc.isTainted(arg, hit, fset)
-					if tainted_region != nil { // caller arg tainted => propagate to callee arg
-						// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
-						// First line of function body (params are "fake" at declaration line)
-						tainted_region.overlap_arg = &i
-						tainted_region.set_location = &pending_loc
-						ret = tainted_region
+					if tainted_region != nil { // caller arg tainted
+						if runtimeOrInternal(file) {
+							// Callee is in runtime/internal pkg => don't propagate to args
+							// (may additionally want to unconditionally treat as if retval is tainted -
+							// will need to handle fact that size of arg overlap != retval size)
+							tc.Logf(slog.LevelWarn, hit, "Function with tainted args is in runtime/internal - will not propagate into it")
+						} else {
+							// Propagate to callee's arg
+							// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
+							// First line of function body (params are "fake" at declaration line)
+							tainted_region.overlap_arg = &i
+							tainted_region.set_location = &pending_loc
+							ret = tainted_region
+						}
 					}
 				}
 			}
 
 		case *ast.ReturnStmt:
+			fmt.Println("ReturnStmt")
 			// Watched location is read in return value =>
 			// taint corresponding assign lhs/range value in caller, if any
 			for i, retval := range typed_node.Results {
@@ -486,6 +485,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 			}
 
 		case *ast.AssignStmt:
+			fmt.Println("AssignStmt")
 			for _, rhs := range typed_node.Rhs {
 				// TODO properly handle multiple rhs (unsure of semantics) - will need to allow this fct to return multiple tainted regions
 				tainted_region := tc.isTainted(rhs, hit, fset)

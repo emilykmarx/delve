@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"slices"
+	"strings"
 	_ "syscall"
 )
 
@@ -17,4 +18,10 @@ func main() {
 		fmt.Println(x)
 		fmt.Println(y)
 	}
+
+	// hit in internal (bytealg.IndexByteString) - within the function, not setting up to call it
+	// treat its retval as tainted instead of propagating to its args
+	i := strings.IndexByte(arr[0], 0)
+	strings.IndexByte("hi", 0) // Re-enter bytealg.IndexByteString, to confirm we didn't set a pending wp there
+	fmt.Println(i)
 }

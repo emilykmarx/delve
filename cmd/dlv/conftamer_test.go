@@ -357,16 +357,19 @@ func TestReferenceElems(t *testing.T) {
 /* Tests propagating from return in tainted branch body,
  * through another return in caller, to another branch body. */
 func TestPropagateReturn(t *testing.T) {
-	initial_line := 14
+	old_go := os.Getenv("CT_TARGET_GO")
+	os.Setenv("CT_TARGET_GO", "/usr/local/go") // for slices package
+	initial_line := 15
 	config := Config("propagate_return.go", "arr", initial_line)
 	// Array of strings => set on each string
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr+"[0]", uint64(1), initial_line, ct.DataFlow, nil, nil)
 	expected_events = append(expected_events,
-		watchpointSet(&config, "x", uint64(8), 16, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "x", uint64(8), 17, ct.ControlFlow, nil, nil)...)
 	expected_events = append(expected_events,
-		watchpointSet(&config, "y", uint64(8), 17, ct.ControlFlow, nil, nil)...)
+		watchpointSet(&config, "y", uint64(8), 18, ct.ControlFlow, nil, nil)...)
 	run(t, &config, expected_events)
+	os.Setenv("CT_TARGET_GO", old_go)
 }
 
 func TestMethods(t *testing.T) {
@@ -433,16 +436,19 @@ func TestRuntimeHits(t *testing.T) {
 }
 
 func TestCasts(t *testing.T) {
-	initial_line := 13
+	initial_line := 18
 	config := Config("casts.go", "x", initial_line)
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(8), initial_line, ct.DataFlow, nil, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "y", uint64(8), 15, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "y", uint64(8), 20, ct.DataFlow, nil, nil)...)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "z", uint64(8), 17, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "z", uint64(8), 22, ct.DataFlow, nil, nil)...)
+
+	expected_events = append(expected_events,
+		watchpointSet(&config, "x_callee", uint64(8), 12, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }

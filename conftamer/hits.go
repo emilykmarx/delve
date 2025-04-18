@@ -217,19 +217,16 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 
 	hit.stack_len = len(stack)
 
-	// Don't use parseFn, since some runtime functions get reflect.X linkname
-	// TODO (minor) take path to go src as config item (for now assume any path containing /src/internal or /src/runtime is in go src)
-	skip := strings.Contains(stack[0].File, "/src/internal") || strings.Contains(stack[0].File, "/src/runtime")
+	skip := runtimeOrInternal(stack[0].File)
 	if skip {
 		log.Printf("Watchpoint hit in runtime or internal, stack len %v - "+
-			"partial stack (including first non-runtime frame, whose PC is one after call instr)\n", len(stack))
+			"full stack (including first non-runtime frame, whose PC is one after call instr)\n", len(stack))
+		tc.printStacktrace()
+
 		for i, frame := range stack {
 			fn := frame.Function.Name()
 
-			skip = strings.Contains(frame.File, "/src/internal") || strings.Contains(frame.File, "/src/runtime")
-			loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
-				frame.File, frame.Line, fn, frame.PC)
-			log.Println(loc)
+			skip = runtimeOrInternal(frame.File)
 
 			// TODO can go runtime goroutines ever cause hits? (maybe sysmon in early sw wp commit, but may have been due to mprotecting dlv's pages instead)
 			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
