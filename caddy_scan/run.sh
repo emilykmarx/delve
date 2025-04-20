@@ -22,3 +22,4 @@ popd
 # curl localhost:2019/load \
  #       -H "Content-Type: application/json" \
  #       -d @caddy.json
+# 4. Ctrl-C the curl to avoid follow-on request to API endpoint (haven't invesitaged what it is)

@@ -122,9 +122,9 @@ func (tc *TaintCheck) Run() {
 							// Propagate taint (ignoring print)
 							src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 							if !ignoreSourceLine(src_line) {
-								tainted_region := tc.propagateTaint(&hit) // after set previous watchpoint, since this will modify it
-								if tainted_region != nil {
-									tc.pendingWatchpoint(tainted_region, &hit)
+								tainted_regions := tc.propagateTaint(&hit) // after set previous watchpoint, since this will modify it
+								for _, tainted_region := range tainted_regions {
+									tc.pendingWatchpoint(&tainted_region, &hit)
 								}
 							}
 						} else {

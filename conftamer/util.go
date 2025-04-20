@@ -10,6 +10,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -251,7 +252,7 @@ func getThread(ID int, state *api.DebuggerState) *api.Thread {
 }
 
 func (tc *TaintCheck) stacktrace() []api.Stackframe {
-	// TODO check for partially loaded (in any calls with LoadConfig), and hitting max depth
+	// TODO check for partially loaded (in any calls with LoadConfig- see client API doc), and hitting max depth
 	stack, err := tc.client.Stacktrace(-1, 100, api.StacktraceSimple, &api.LoadConfig{})
 	if err != nil {
 		log.Panicf("Error getting stacktrace: %v\n", err)
@@ -343,7 +344,16 @@ func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 			qualified_fn := pkg + "." + call_expr
 			locs, _, err = tc.client.FindLocation(hit.scope, qualified_fn, true, nil)
 			if err != nil {
-				log.Panicf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.scope.Frame, err)
+				if strings.Contains(err.Error(), "ambiguous") {
+					// Package name is ambiguous => qualify with directory
+					tokens := strings.Split(hit.hit_instr.Loc.File, "/")
+					dir := tokens[len(tokens)-3]
+					qualified_fn = filepath.Join(dir, qualified_fn)
+					locs, _, err = tc.client.FindLocation(hit.scope, qualified_fn, true, nil)
+					if err != nil {
+						log.Panicf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.scope.Frame, err)
+					}
+				}
 			}
 		} else {
 			log.Panicf("Error finding function %v in frame %v: %v\n", call_expr, hit.scope.Frame, err)

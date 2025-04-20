@@ -123,10 +123,14 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 			found_ret = true
 		} else if ifstmt, ok := (*caller_node).(*ast.IfStmt); ok {
 			// If stmt => set up to next through it as if the condition hit a watchpoint
-			locs := []int{}
-			fset := token.NewFileSet()
-			parser.ParseFile(fset, call_file, nil, parser.SkipObjectResolution)
-			tc.handleIfStmt(ifstmt, fset, &locs, tainted_region, caller_frame)
+			if tc.config.Taint_flow != DataFlow {
+				locs := []int{}
+				fset := token.NewFileSet()
+				parser.ParseFile(fset, call_file, nil, parser.SkipObjectResolution)
+				tc.handleIfStmt(ifstmt, fset, &locs, tainted_region, caller_frame)
+			} else {
+				return false // ignoring control-flow taint => don't propagate
+			}
 		} else {
 			log.Panicf("getLhs returned unhandled node %+v\n", *caller_node)
 		}
@@ -220,7 +224,6 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 			// Multiline composite lit => next can take us back to assign line, but setting immediately seems to work (only if multiline)
 			tainted_region.set_now = rbrace > lbrace
 		case ast.Expr:
-			// TODO check for incomplete loads (see client API doc)
 			// If type not supported, still check overlap (e.g. struct)
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set
 			xvs := []*api.Variable{}
@@ -228,6 +231,12 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 			err := tc.evalWatchExprRecursive(hit.scope, exprToString(node.(ast.Expr)), &xvs)
 			if err != nil {
 				fmt.Printf("eval err: %v\n", err.Error())
+				if strings.Contains(err.Error(), "can not convert") {
+					// May want to add support for some of these in delve
+					tc.Logf(slog.LevelWarn, hit, "eval %v: %v", exprToString(node.(ast.Expr)), err)
+					// Don't eval children
+					return false
+				}
 				// Try evaluating any AST children (for e.g. `x+1`)
 			} else {
 				for _, xv := range xvs {
@@ -367,12 +376,12 @@ func runtime_stepout_cmd_seq(hit *Hit) []Command {
 }
 
 /* Assuming this line hits a watchpoint (or we're in a branch body),
- * return the expression on the line that is newly tainted as a result (only support one).
+ * return the region(s) on the line that is newly tainted as a result.
  * Also populate ret with info on when new watchpoint can be set -
  * either at a breakpoint (e.g. function args), or
  * after a sequence of commands - e.g. lhs of :=, or a reference
  * (since we watch its target which is about to change), or runtime hit. */
-func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
+func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, hit.hit_instr.Loc.File, nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -381,7 +390,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 
 	// Will be used if location must be determined dynamically
 	// XXX any way to get rid of thread in Hit? Is confusing since shouldn't use it for location (bc of runtime hits). At least comment that somewhere...
-	var ret *TaintedRegion
+	ret := []TaintedRegion{}
 	defer func() {
 		if ret != nil {
 			fmt.Printf("propagateTaint return %+v\n", ret)
@@ -416,7 +425,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 					locs := []int{}
 					tc.handleIfStmt(typed_node, fset, &locs, tainted_region, hit.scope.Frame)
 					tainted_region.cmds = next_cmd_seq(hit)
-					ret = tainted_region
+					ret = append(ret, *tainted_region)
 				}
 			}
 
@@ -440,7 +449,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 					tainted_region.set_location = &pending_loc
 					watchexpr := exprToString(typed_node.Args[0])
 					tainted_region.overlap_expr = &watchexpr
-					ret = tainted_region
+					ret = append(ret, *tainted_region)
 				}
 			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node) || call_expr == "runtime.KeepAlive" {
 				// builtins will be handled in assign/range
@@ -465,7 +474,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 							// First line of function body (params are "fake" at declaration line)
 							tainted_region.overlap_arg = &i
 							tainted_region.set_location = &pending_loc
-							ret = tainted_region
+							ret = append(ret, *tainted_region)
 						}
 					}
 				}
@@ -479,7 +488,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 				tainted_region := tc.isTainted(retval, hit, fset)
 				if tainted_region != nil {
 					if tc.propagateReturn(i, hit, tainted_region) {
-						ret = tainted_region
+						ret = append(ret, *tainted_region)
 					}
 				}
 			}
@@ -487,20 +496,21 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 		case *ast.AssignStmt:
 			fmt.Println("AssignStmt")
 			for _, rhs := range typed_node.Rhs {
-				// TODO properly handle multiple rhs (unsure of semantics) - will need to allow this fct to return multiple tainted regions
-				tainted_region := tc.isTainted(rhs, hit, fset)
-				if tainted_region != nil {
+				// For now, taint each lhs (TODO which should be tainted - could do heuristic e.g. same size and type as rhs)
+				rhs_tainted_region := tc.isTainted(rhs, hit, fset)
+				if rhs_tainted_region != nil {
 					// Watched location is read on the rhs => taint lhs
 					for _, lhs := range typed_node.Lhs {
-						watchexpr := exprToString(lhs) + *tainted_region.overlap_expr
-						tainted_region.overlap_expr = &watchexpr
+						lhs_tainted_region := *rhs_tainted_region
+						watchexpr := exprToString(lhs) + *lhs_tainted_region.overlap_expr
+						lhs_tainted_region.overlap_expr = &watchexpr
+						if !lhs_tainted_region.set_now {
+							lhs_tainted_region.cmds = next_cmd_seq(hit)
+						} else {
+							lhs_tainted_region.cmds = runtime_stepout_cmd_seq(hit)
+						}
+						ret = append(ret, lhs_tainted_region)
 					}
-					if !tainted_region.set_now {
-						tainted_region.cmds = next_cmd_seq(hit)
-					} else {
-						tainted_region.cmds = runtime_stepout_cmd_seq(hit)
-					}
-					ret = tainted_region
 				}
 			}
 		case *ast.RangeStmt:
@@ -514,7 +524,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) *TaintedRegion {
 				tainted_region.set_location = &pending_loc
 				watchexpr := exprToString(typed_node.Value)
 				tainted_region.overlap_expr = &watchexpr
-				ret = tainted_region
+				ret = append(ret, *tainted_region)
 			}
 		} // end switch
 

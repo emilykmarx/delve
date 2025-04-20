@@ -533,9 +533,9 @@ func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
 	event := Event{EventType: WatchpointHit, Address: hit.hit_bp.Addr, Size: watchSize(hit.hit_bp), Expression: hit.hit_bp.WatchExpr}
 	WriteEvent(hit.thread, tc.event_log, event)
 	fmt.Printf("ZZEM hit watchpoint on %v at %v:%v\n", hit.hit_bp.WatchExpr, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
-	tainted_region := tc.propagateTaint(hit)
-	if tainted_region != nil {
-		tc.pendingWatchpoint(tainted_region, hit)
+	tainted_regions := tc.propagateTaint(hit)
+	for _, tainted_region := range tainted_regions {
+		tc.pendingWatchpoint(&tainted_region, hit)
 	}
 	fmt.Printf("ZZEM propagated taint for watchpoint hit on %v\n", hit.hit_bp.WatchExpr)
 }
