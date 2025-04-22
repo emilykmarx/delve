@@ -803,7 +803,7 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 			return bp, err
 		}
 	} else {
-		fmt.Printf("wp set for %#x - not on stack\n", watchaddr)
+		fmt.Printf("wp set for %#x (sz %#x) - not on stack\n", watchaddr, sz)
 	}
 	return bp, nil
 }
@@ -823,6 +823,7 @@ func (s ElemsAreReferences) Error() string {
 // Set xv.Addr and xv.Watchsz to the watched region.
 // If ignoreUnsupported, don't return error if type isn't supported
 // (for client - if err != nil, xv returned to client is nil even if it's not here)
+// This is used both by server to set watchpoints and by client to evaluate expressions.
 func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool) (*Variable, error) {
 	// To eval slice, must remove [x:y] syntax
 	if strings.Contains(expr, ":") {
@@ -862,7 +863,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		xv.Addr = xv.Base
 		sz = xv.Len
 	} else if array, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
-		sz = xv.Len
+		sz = xv.Len * array.Type.Size()
 		// If array elements are a reference type (string or slice),
 		// watch the elements' underlying data (chars or backing array)
 		if _, ok := array.Type.(*godwarf.StringType); ok {
@@ -878,7 +879,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 			return nil, errors.New("nil slice")
 		}
 		xv.Addr = xv.Base
-		sz = xv.Len
+		sz = xv.Len * slice.ElemType.Size()
 		// If slice elements are a reference type (string or slice),
 		// watch the elements' underlying data (chars or backing array)
 		if _, ok := slice.ElemType.(*godwarf.StringType); ok {
