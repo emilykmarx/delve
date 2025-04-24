@@ -64,9 +64,9 @@ func union(tv1 TaintingVals, tv2 TaintingVals) TaintingVals {
 
 // Add tainting_vals to any existing entry in m-p[watchaddr]
 // If new entry, insert it
+// No-op if tainting_vals is empty
 func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals TaintingVals, thread *api.Thread) {
 	if cmp.Equal(tainting_vals, newTaintingVals()) {
-		// Ignore if empty
 		return
 	}
 	existing_taint := tc.mem_param_map[watchaddr]
@@ -105,6 +105,13 @@ func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offs
 	} else {
 		pending_wp.tainting_vals = append(pending_wp.tainting_vals, new_taint)
 	}
+}
+
+func insert[T comparable](s *set.Set[T], val T) {
+	if s.Empty() {
+		*s = *set.New[T](1)
+	}
+	s.Insert(val)
 }
 
 // Parse params assuming \n-separated. Return offset => param

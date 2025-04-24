@@ -825,7 +825,7 @@ func (s ElemsAreReferences) Error() string {
 // (for client - if err != nil, xv returned to client is nil even if it's not here)
 // This is used both by server to set watchpoints and by client to evaluate expressions.
 func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool) (*Variable, error) {
-	// To eval slice, must remove [x:y] syntax
+	// To eval slice/string, must remove [x:y] syntax (evalAST gives Addr 0)
 	if strings.Contains(expr, ":") {
 		expr = strings.Split(expr, "[")[0]
 	}

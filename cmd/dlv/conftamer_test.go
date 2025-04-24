@@ -376,10 +376,10 @@ func TestMethods(t *testing.T) {
 	initial_line := 39
 	config := Config("methods.go", "nested.name.Data", initial_line)
 	expected_events :=
-		watchpointSet(&config, config.Initial_watchexpr, uint64(2), initial_line, ct.DataFlow, nil, nil)
+		watchpointSet(&config, config.Initial_watchexpr, uint64(16), initial_line, ct.DataFlow, nil, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "recvr_callee.Data", uint64(2), 27, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "recvr_callee.Data", uint64(16), 27, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events)
 }
