@@ -523,17 +523,20 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 				}
 			}
 		case *ast.RangeStmt:
-			// TODO handle Range properly (once support tainted composite types in delve):
-			// If only part of the rhs is tainted, value expr should only be tainted on corresp iters
-			tainted_region := tc.isTainted(typed_node.X, hit, fset)
-			if tainted_region != nil && typed_node.Value != nil {
-				// Watched location is read on the rhs =>
-				// taint value expr
-				pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
-				tainted_region.set_location = &pending_loc
-				watchexpr := exprToString(typed_node.Value)
-				tainted_region.new_expr = &watchexpr
-				ret = append(ret, *tainted_region)
+			// TODO need new test for this since watching underlying data (cur one doesn't hit in range)
+			if start.Line == hit.hit_instr.Loc.Line {
+				// TODO handle Range properly (once support tainted composite types in delve):
+				// If only part of the rhs is tainted, value expr should only be tainted on corresp iters
+				tainted_region := tc.isTainted(typed_node.X, hit, fset)
+				if tainted_region != nil && typed_node.Value != nil {
+					// Watched location is read on the rhs =>
+					// taint value expr
+					pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
+					tainted_region.set_location = &pending_loc
+					watchexpr := exprToString(typed_node.Value)
+					tainted_region.new_expr = &watchexpr
+					ret = append(ret, *tainted_region)
+				}
 			}
 		} // end switch
 
