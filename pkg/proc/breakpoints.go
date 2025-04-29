@@ -786,10 +786,12 @@ func StackAddr(scope *EvalScope, addr uint64) bool {
 
 // Set watchpoint whose addr and size is already known
 // EvalScope just used to determine stack location
+// Ignore duplicate error
 func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr string, watchaddr uint64, sz int64, wtype WatchType,
 	cond ast.Expr, wimpl WatchImpl) (*Breakpoint, error) {
 
 	bp, err := t.setBreakpointInternal(logicalID, watchaddr, UserBreakpoint, wtype.withSize(sz), wimpl, cond)
+	bp, err = allowDuplicateBreakpoint(bp, err)
 	if err != nil {
 		return bp, err
 	}
@@ -808,105 +810,221 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	return bp, nil
 }
 
-// A type whose elements are reference types
-// (e.g. slice of strings)
-type ElemsAreReferences struct {
-	// The variable containing the elements
-	Xv *Variable
+func convertFloatValue(v *Variable, sz int) string {
+	switch v.FloatSpecial {
+	case FloatIsPosInf:
+		return "+Inf"
+	case FloatIsNegInf:
+		return "-Inf"
+	case FloatIsNaN:
+		return "NaN"
+	}
+	f, _ := constant.Float64Val(v.Value)
+	return strconv.FormatFloat(f, 'f', -1, sz)
 }
 
-func (s ElemsAreReferences) Error() string {
-	return "elements are reference types"
+func VariableValueAsString(v *Variable) string {
+	if v.Value == nil {
+		return ""
+	}
+	switch v.Kind {
+	case reflect.Float32:
+		return convertFloatValue(v, 32)
+	case reflect.Float64:
+		return convertFloatValue(v, 64)
+	case reflect.String, reflect.Func, reflect.Struct:
+		return constant.StringVal(v.Value)
+	default:
+		if cd := v.ConstDescr(); cd != "" {
+			return fmt.Sprintf("%s (%s)", cd, v.Value.String())
+		} else {
+			return v.Value.String()
+		}
+	}
 }
 
-// Eval expr, check the result for watchability.
-// Set xv.Addr and xv.Watchsz to the watched region.
+// If expr has [x:y] syntax, return unsliced expr (slice/string name) and [x,y].
+// (evalAST gives Addr 0 for [x:y] syntax)
+func (t *Target) sliceIndices(scope *EvalScope, expr string) (string, []int, error) {
+	var slice_idxs [2]int
+	slice := strings.Contains(expr, ":")
+	if !slice {
+		return expr, nil, nil
+	}
+	slice_name, slice_idxs_str, _ := strings.Cut(expr, "[")
+	slice_idxs_str, _ = strings.CutSuffix(slice_idxs_str, "]")
+	tokens := strings.Split(slice_idxs_str, ":")
+	for i, idx := range tokens {
+		if idx != "" {
+			if constant, err := strconv.Atoi(idx); err != nil {
+				// Expression => evaluate
+				xvs := []*Variable{}
+				err := t.EvalWatchexpr(scope, idx, true, &xvs)
+				if err != nil || len(xvs) > 1 {
+					return "", nil, fmt.Errorf("eval slice index expression %v: return %v vars, %v", idx, len(xvs), err)
+				}
+				xv := xvs[0]
+				if evald, err := strconv.Atoi(VariableValueAsString(xv)); err != nil {
+					return "", nil, fmt.Errorf("atoi slice index variable %+v: %v", *xv, err)
+				} else {
+					slice_idxs[i] = evald
+				}
+			} else {
+				// Plain number
+				slice_idxs[i] = constant
+			}
+		}
+	}
+	fmt.Printf("proc sliceIndices ret: %+v\n", slice_idxs)
+	return slice_name, slice_idxs[:], nil
+}
+
+// slice_idxs holds [x:y] bounds, if any -
+// adjust xv.Addr and set xv.Watchsz to match, else set xv.Watchsz to total sz
+func adjustForSlice(xv *Variable, slice_idxs []int, elemsz int64) {
+	if slice_idxs != nil {
+		xv.Addr += uint64(slice_idxs[0]) * uint64(elemsz)
+		xv.Watchsz = int64(slice_idxs[1]-slice_idxs[0]) * elemsz
+		fmt.Printf("slice after adjust: %#x %v\n", xv.Addr, xv.Watchsz)
+	} else {
+		xv.Watchsz = xv.Len * elemsz
+	}
+}
+
+// Whether the type is a pointer
+func referenceType(typ godwarf.Type) bool {
+	if _, ok := typ.(*godwarf.StringType); ok {
+		return true
+	}
+	if _, ok := typ.(*godwarf.SliceType); ok {
+		return true
+	}
+	return false
+}
+
+// Eval expr's underlying data, check the result for watchability.
+// Return all resulting variable(s), with xv.Addr and xv.Watchsz adjusted for [x:y] syntax.
 // If ignoreUnsupported, don't return error if type isn't supported
-// (for client - if err != nil, xv returned to client is nil even if it's not here)
+// (for client - if err != nil, xv returned to client is nil even if it's not here).
 // This is used both by server to set watchpoints and by client to evaluate expressions.
-func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool) (*Variable, error) {
-	// To eval slice/string, must remove [x:y] syntax (evalAST gives Addr 0)
-	if strings.Contains(expr, ":") {
-		expr = strings.Split(expr, "[")[0]
+func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable) error {
+	orig_expr := expr
+	slice_name, slice_idxs, err := t.sliceIndices(scope, expr)
+	if err != nil {
+		return err
+	}
+	if slice_name != expr {
+		// Slice/array/string with [x:y] syntax
+		expr = slice_name
 	}
 
 	n, err := parser.ParseExpr(expr)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	xv, err := scope.evalAST(n, true) // need load for e.g. Children
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if xv.Addr == 0 || xv.DwarfType == nil {
-		return xv, fmt.Errorf("can not watch %q; Addr 0x%x, DwarfType nil %v", expr, xv.Addr, xv.DwarfType == nil)
+		return fmt.Errorf("can not watch %q; Addr 0x%x, DwarfType nil %v", expr, xv.Addr, xv.DwarfType == nil)
 	}
 	if xv.Flags&VariableFakeAddress != 0 || xv.Addr == FakeAddressBase {
 		// This happens sometimes at first line of function, despite asm saying it's allocated in memory - unsure why
-		return xv, fmt.Errorf("can not watch %q; has fake address", expr)
+		return fmt.Errorf("can not watch %q; has fake address", expr)
 	}
 	if xv.Unreadable != nil {
-		return xv, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
+		return fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
-		return xv, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
+		return fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
 	}
 
-	xv.Name = expr
+	xv.Name = orig_expr
 	// TODO (minor): Below assumes software impl (i.e. can watch sz > 8)
 	sz := xv.DwarfType.Size()
 
+	// elem_idxs will be used if elems are references
+	elem_idxs := make([]int, 2)
+	if slice_idxs != nil && slice_idxs[1] == 0 {
+		slice_idxs[1] = int(xv.Len)
+	}
+	elem_idxs[1] = int(xv.Len)
+	if slice_idxs != nil {
+		elem_idxs = slice_idxs
+	}
+	fmt.Printf("elem_idxs: %v\n", elem_idxs)
+
 	if sz <= 0 {
-		return xv, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
+		return fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
 	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
 		// watch chars
 		xv.Addr = xv.Base
-		sz = xv.Len
+		adjustForSlice(xv, slice_idxs, 1)
+		*vars = append(*vars, xv)
 	} else if array, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
-		sz = xv.Len * array.Type.Size()
-		// If array elements are a reference type (string or slice),
-		// watch the elements' underlying data (chars or backing array)
-		if _, ok := array.Type.(*godwarf.StringType); ok {
-			return xv, ElemsAreReferences{Xv: xv}
-		}
-		if _, ok := array.Type.(*godwarf.SliceType); ok {
-			return xv, ElemsAreReferences{Xv: xv}
+		adjustForSlice(xv, slice_idxs, array.Type.Size())
+
+		if referenceType(array.Type) {
+			// If elements are a reference type (string or slice),
+			// watch the elements' underlying data (chars or backing array)
+			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
+				elem := fmt.Sprintf("%v[%v]", expr, i)
+				if err := t.EvalWatchexpr(scope, elem, ignoreUnsupported, vars); err != nil {
+					return err
+				}
+			}
+		} else {
+			*vars = append(*vars, xv)
 		}
 	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		// watch backing array - but not past len, since only initialized data is tainted
 		if xv.Base == 0 {
 			// nil slice => no underlying data to watch (strings cannot be nil)
-			return nil, errors.New("nil slice")
+			return errors.New("nil slice")
 		}
 		xv.Addr = xv.Base
-		sz = xv.Len * slice.ElemType.Size()
-		// If slice elements are a reference type (string or slice),
-		// watch the elements' underlying data (chars or backing array)
-		if _, ok := slice.ElemType.(*godwarf.StringType); ok {
-			return xv, ElemsAreReferences{Xv: xv}
+		adjustForSlice(xv, slice_idxs, slice.ElemType.Size())
+
+		if referenceType(slice.ElemType) {
+			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
+				elem := fmt.Sprintf("%v[%v]", expr, i)
+				if err := t.EvalWatchexpr(scope, elem, ignoreUnsupported, vars); err != nil {
+					return err
+				}
+			}
+		} else {
+			*vars = append(*vars, xv)
 		}
-		if _, ok := slice.ElemType.(*godwarf.SliceType); ok {
-			return xv, ElemsAreReferences{Xv: xv}
+	} else if xv.Kind == reflect.Struct {
+		struct_, ok := resolveTypedef(xv.DwarfType).(*godwarf.StructType)
+		if !ok {
+			return fmt.Errorf("can not resolve %v to struct", *xv)
+		}
+		// Return variable for each field, since some may be reference types
+		for _, field := range struct_.Field {
+			elem := fmt.Sprintf("%v.%v", expr, field.Name)
+			if err := t.EvalWatchexpr(scope, elem, ignoreUnsupported, vars); err != nil {
+				return err
+			}
 		}
 	} else {
 		_, funcType := xv.RealType.(*godwarf.FuncType) // don't watch functions for now
 		unsupported := funcType || sz > int64(t.BinInfo().Arch.PtrSize())
-		// Client uses this to eval variables for overlap => still set Watchsz
-		if unsupported {
+		if unsupported && !ignoreUnsupported {
 			xv.Watchsz = sz
-			err := fmt.Errorf("can not watch variable of type %s, sz %v: type not supported", xv.DwarfType.String(), sz)
-			if ignoreUnsupported {
-				err = nil
-			}
-			return xv, err
+			return fmt.Errorf("can not watch variable of type %s (real type %s, kind %s), sz %v: type not supported",
+				xv.DwarfType.String(), xv.RealType.String(), xv.Kind, sz)
+		} else {
+			// Client uses this to eval variables for overlap => set Watchsz even if unsupported
+			xv.Watchsz = sz
+			*vars = append(*vars, xv)
 		}
 	}
-	// TODO support other types - for types with elements e.g. structs, need to do the ElemsAreReferences thing
-	// (but only for fields that are references - for structs, not all may be)
-	// and pass capacity (not watchsz) to MoveObject below.
+	// TODO support other types - for types with elements, need to handle any reference elems.
+	// For types with capacity, pass capacity (not watchsz) to MoveObject below.
 
-	xv.Watchsz = sz
-	return xv, nil
+	return nil
 }
 
 // Ask the target's runtime to move the object to a page only for tainted objects.
@@ -945,41 +1063,46 @@ func MoveObject(addr uint64) (uint64, error) {
 // process wide break point table.
 // If !write, don't write it yet - just check if it's watchable
 func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr,
-	wimpl WatchImpl, write *bool) (*Breakpoint, error) {
+	wimpl WatchImpl, write *bool) ([]*Breakpoint, error) {
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
 		return nil, errors.New("at least one of read and write must be set for watchpoint")
 	}
 
-	xv, err := t.EvalWatchexpr(scope, expr, false)
-	if _, ok := err.(ElemsAreReferences); ok {
-		// Debugger will call SetWatchpoint for each element
-		return nil, ElemsAreReferences{Xv: xv}
-	} else if err != nil {
+	bps := []*Breakpoint{}
+	xvs := []*Variable{}
+	err := t.EvalWatchexpr(scope, expr, false, &xvs)
+	if err != nil {
 		return nil, err
 	}
 
-	if StackAddr(scope, xv.Addr) {
-		*write = true // no need to move stack objects
-	}
-	if !*write {
-		// Return fields the client will use
-		fake_wp := Breakpoint{
-			Addr:      xv.Addr,
-			WatchExpr: expr,
-			WatchType: wtype.withSize(xv.Watchsz),
+	for _, xv := range xvs {
+		if StackAddr(scope, xv.Addr) {
+			*write = true // no need to move stack objects
 		}
-		return &fake_wp, nil
+		if !*write {
+			// Return fields the client will use
+			fake_wp := Breakpoint{
+				Addr:      xv.Addr,
+				WatchExpr: expr,
+				WatchType: wtype.withSize(xv.Watchsz),
+			}
+			bps = append(bps, &fake_wp)
+		}
+
+		// xv.Watchsz is int64, but needs to fit in 62 bits due to WatchType format
+		if uint64(xv.Watchsz) > uint64(1)<<62-1 {
+			return nil, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz)
+		}
+		bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Name, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
+		logicalID++
+
+		if err != nil {
+			return nil, err
+		}
+		bps = append(bps, bp)
 	}
 
-	// xv.Watchsz is int64, but needs to fit in 62 bits due to WatchType format
-	if uint64(xv.Watchsz) > uint64(1)<<62-1 {
-		return nil, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz)
-	}
-	bp, err := t.SetWatchpointNoEval(logicalID, scope, expr, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
-	if err != nil {
-		return bp, err
-	}
-	return bp, err
+	return bps, nil
 }
 
 // For breakpoints (addr = PC) and watchpoints (addr = addr to watch)

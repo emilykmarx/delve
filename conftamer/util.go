@@ -93,18 +93,11 @@ func (tc *TaintCheck) populateParam(watchaddr uint64, param string) {
 	tc.mem_param_map[watchaddr] = new_taint
 }
 
-// If offset is beyond pending_wp's len, append - else union with any existing at offset
-func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, offset uint64) {
-	existing_taint := newTaintingVals()
-	if uint64(len(pending_wp.tainting_vals)) > offset {
-		existing_taint = pending_wp.tainting_vals[offset]
-	}
+// Update tainting vals for ith variable, at given offset (expect i and offset are in bounds).
+func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, i int, offset uint64) {
+	existing_taint := pending_wp.tainting_vals[i][offset]
 	new_taint := union(tainting_vals, existing_taint)
-	if uint64(len(pending_wp.tainting_vals)) > offset {
-		pending_wp.tainting_vals[offset] = new_taint
-	} else {
-		pending_wp.tainting_vals = append(pending_wp.tainting_vals, new_taint)
-	}
+	pending_wp.tainting_vals[i][offset] = new_taint
 }
 
 func insert[T comparable](s *set.Set[T], val T) {
@@ -136,13 +129,13 @@ func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame
 	// 2. Map offsets to params
 	param_idx := 0
 	len_consumed := len(params[param_idx])
-	for offset := uint64(0); offset <= overlap_end-overlap_start; offset++ {
-		if offset == uint64(len_consumed) && param_idx < len(params)-1 {
+	for offset := 0; offset < len(buf_contents); offset++ {
+		if buf_contents[offset] == '\n' && param_idx < len(params)-1 {
 			// \n (not the last one)
 			param_idx++
 			len_consumed += len(params[param_idx])
 		} else {
-			param_taint[offset] = params[param_idx]
+			param_taint[uint64(offset)] = params[param_idx]
 		}
 	}
 

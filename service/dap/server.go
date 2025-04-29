@@ -2396,7 +2396,7 @@ func (s *Session) childrenToDAPVariables(v *fullyQualifiedVariable) []dap.Variab
 			case reflect.Bool, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
 				reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-				valexpr = fmt.Sprintf("%s[%s]", v.fullyQualifiedNameOrExpr, api.VariableValueAsString(keyv))
+				valexpr = fmt.Sprintf("%s[%s]", v.fullyQualifiedNameOrExpr, proc.VariableValueAsString(keyv))
 			case reflect.String:
 				if key := constant.StringVal(keyv.Value); keyv.Len == int64(len(key)) { // fully loaded
 					valexpr = fmt.Sprintf("%s[%q]", v.fullyQualifiedNameOrExpr, key)

@@ -21,8 +21,8 @@ func main() {
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
-	// let server start (for debugging - so can find its thread easily)
-	time.Sleep(100 * time.Millisecond) // w/ regular bp on server at l27: conn refused if 100ms, hangs if 1s
+	// let server start
+	time.Sleep(1 * time.Second)        // w/ regular bp on server at l27: conn refused if 100ms, hangs if 1s
 	ptr := f()                         // *ptr is on heap
 	fmt.Printf("old addr: %#x\n", ptr) // set wp on *ptr => will move *ptr and update ptr
 	time.Sleep(1 * time.Second)        // do the move (don't want to access in meantime)

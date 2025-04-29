@@ -523,19 +523,17 @@ type EvalIn struct {
 	IgnoreUnsupported bool
 }
 
+type EvalWatchexprOut struct {
+	Variables []*api.Variable
+}
 type EvalOut struct {
 	Variable *api.Variable
 }
 
-func (s *RPCServer) EvalWatchexpr(arg EvalIn, out *EvalOut) error {
-	v, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.IgnoreUnsupported)
-	if v != nil {
-		out.Variable = api.ConvertVar(v)
-	}
-	if _, ok := err.(proc.ElemsAreReferences); ok {
-		// Client will call recursively, using # of elements in v
-		out.Variable.ElemsAreReferences = true
-		err = nil
+func (s *RPCServer) EvalWatchexpr(arg EvalIn, out *EvalWatchexprOut) error {
+	xvs, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.IgnoreUnsupported)
+	for _, xv := range xvs {
+		out.Variables = append(out.Variables, api.ConvertVar(xv))
 	}
 	if err != nil {
 		return err

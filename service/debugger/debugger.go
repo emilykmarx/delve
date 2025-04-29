@@ -1099,7 +1099,7 @@ func (d *Debugger) findBreakpointByName(name string) *api.Breakpoint {
 	return nil
 }
 
-func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string, ignoreUnsupported bool) (*proc.Variable, error) {
+func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string, ignoreUnsupported bool) ([]*proc.Variable, error) {
 	d.targetMutex.Lock()
 	defer d.targetMutex.Unlock()
 	p := d.target.Selected
@@ -1108,7 +1108,9 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 	if err != nil {
 		return nil, err
 	}
-	return p.EvalWatchexpr(s, expr, ignoreUnsupported)
+	xvs := []*proc.Variable{}
+	err = p.EvalWatchexpr(s, expr, ignoreUnsupported, &xvs)
+	return xvs, err
 }
 
 // CreateWatchpoint creates watchpoint(s) for the specified expression.
@@ -1135,39 +1137,30 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 	}
 	d.breakpointIDCounter++
 	write := wimpl == api.WatchHardware || !move
-	bp, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), &write)
+	wps, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), &write)
+	for i := 0; i < len(wps)-1; i++ {
+		d.breakpointIDCounter++
+	}
 
-	if slice, ok := err.(proc.ElemsAreReferences); ok {
-		// Make recursive call for each element
-		for i := 0; i < int(slice.Xv.Len); i++ {
-			string_elem := fmt.Sprintf("%v[%v]", expr, i)
-			bps, err := d.CreateWatchpoint(goid, frame, deferredCall, string_elem, wtype, wimpl, move)
-			if _, ok := err.(proc.BreakpointExistsError); ok {
-				// If one already existed, add it to the list and continue to the others
-			} else if err != nil {
-				return nil, err
-			}
-			watchpoints = append(watchpoints, bps...)
-		}
-	} else if _, ok := err.(proc.BreakpointExistsError); ok {
-		watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))
-	} else if err != nil {
+	if err != nil {
 		return nil, err
-	} else {
+	}
+
+	for _, wp := range wps {
 		if !write {
 			pendingwp := proc.PendingWp{Scope: s, Expr: expr, LogicalID: d.breakpointIDCounter}
 			d.Target().Process.AddPendingWatchpoint(pendingwp)
 			watchpoints = append(watchpoints, &api.Breakpoint{
-				Addr: bp.Addr, Addrs: []uint64{bp.Addr}, WatchExpr: bp.WatchExpr, WatchType: api.WatchType(bp.WatchType)})
+				Addr: wp.Addr, Addrs: []uint64{wp.Addr}, WatchExpr: wp.WatchExpr, WatchType: api.WatchType(wp.WatchType)})
 		} else {
 			if d.findBreakpointByName(expr) == nil {
-				bp.Logical.Name = expr
+				wp.Logical.Name = expr
 			}
-			watchpoints = append(watchpoints, d.convertBreakpoint(bp.Logical))
+			watchpoints = append(watchpoints, d.convertBreakpoint(wp.Logical))
 		}
 	}
 
-	return watchpoints, nil // ignore ExistsError, else will overwrite watchpoints to nil when returning to client
+	return watchpoints, nil
 }
 
 // Threads returns the threads of the target process.

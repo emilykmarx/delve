@@ -427,54 +427,58 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 		if valid, _ := dbp.Valid(); valid {
 			for _, wp := range dbp.pendingWatchpoints {
 				fmt.Printf("ZZEM setting pending wp: %v\n", wp)
-				xv, err := cctx.Target.EvalWatchexpr(wp.Scope, wp.Expr, false)
+
+				xvs := []*proc.Variable{}
+				err := cctx.Target.EvalWatchexpr(wp.Scope, wp.Expr, false, &xvs)
 				if err != nil {
-					log.Panicf("eval pending watchpoint %+v: %v", xv, err)
+					log.Panicf("eval pending watchpoint %+v: %v", xvs, err)
 				}
 
-				// 1. Resume all threads to reach HTTP server (may also be needed for pointer updates to avoid hang in GC)
-				if err := procgrp.resume(); err != nil {
-					if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
-						// thread was stopped at a breakpoint, now stopped at a software watchpoint
-						// XXX think abt if this can happen/what to do
-						fmt.Printf("SoftwareWatchpointAtBreakpoint in setPendingWatchpoints, thread %v\n", th.trapthread.ID)
-					} else {
-						log.Panicf("resume in setPendingWatchpoints: %v", err)
+				for _, xv := range xvs {
+					// 1. Resume all threads to reach HTTP server (may also be needed for pointer updates to avoid hang in GC)
+					if err := procgrp.resume(); err != nil {
+						if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
+							// thread was stopped at a breakpoint, now stopped at a software watchpoint
+							// XXX think abt if this can happen/what to do
+							fmt.Printf("SoftwareWatchpointAtBreakpoint in setPendingWatchpoints, thread %v\n", th.trapthread.ID)
+						} else {
+							log.Panicf("resume in setPendingWatchpoints: %v", err)
+						}
 					}
-				}
 
-				// 2. Make HTTP request to move object
-				watchaddrch := make(chan uint64, 1) // non-blocking sends, since we'll be stuck in trapWait here
-				donech := make(chan error, 1)
-				go MoveObjectWithRetries(xv, dbp, watchaddrch, donech)
+					// 2. Make HTTP request to move object
+					watchaddrch := make(chan uint64, 1) // non-blocking sends, since we'll be stuck in trapWait here
+					donech := make(chan error, 1)
+					go MoveObjectWithRetries(xv, dbp, watchaddrch, donech)
 
-				// 3. Monitor threads until move is done, check result
-				if err := procgrp.monitorMoveObject(cctx, dbp, donech); err != nil {
-					log.Panicf("MoveObject failed for %+v: %v\n", xv, err)
-				}
-				watchaddr := <-watchaddrch
+					// 3. Monitor threads until move is done, check result
+					if err := procgrp.monitorMoveObject(cctx, dbp, donech); err != nil {
+						log.Panicf("MoveObject failed for %+v: %v\n", xv, err)
+					}
+					watchaddr := <-watchaddrch
 
-				// 4. Stop all threads to set watchpoint (so they can't access the old location in the meantime)
-				fmt.Println("about to stop()")
-				if _, err := procgrp.stop(cctx, dbp.memthread); err != nil {
-					log.Panicf("stop in setPendingWatchpoints: %v", err)
-				}
+					// 4. Stop all threads to set watchpoint (so they can't access the old location in the meantime)
+					fmt.Println("about to stop()")
+					if _, err := procgrp.stop(cctx, dbp.memthread); err != nil {
+						log.Panicf("stop in setPendingWatchpoints: %v", err)
+					}
 
-				fmt.Println("about to set wp after successful MoveObject")
+					fmt.Println("about to set wp after successful MoveObject")
 
-				// 4. Set watchpoint on new location
-				// XXX set on old location in CreateWatchpoint, un-set here
-				wp, err := cctx.Target.SetWatchpointNoEval(wp.LogicalID, wp.Scope, wp.Expr, watchaddr, xv.Watchsz,
-					proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
-				if err != nil {
-					log.Panicf("SetWatchpointNoEval in setPendingWatchpoints: %v\n", err)
+					// 4. Set watchpoint on new location
+					// XXX set on old location in CreateWatchpoint, un-set here
+					wp, err := cctx.Target.SetWatchpointNoEval(wp.LogicalID, wp.Scope, wp.Expr, watchaddr, xv.Watchsz,
+						proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware)
+					if err != nil {
+						log.Panicf("SetWatchpointNoEval in setPendingWatchpoints: %v\n", err)
+					}
+					// Record old addr for client
+					var old_addrs []uint64
+					for addr := xv.Addr; addr < xv.Addr+uint64(xv.Watchsz); addr++ {
+						old_addrs = append(old_addrs, addr)
+					}
+					wp.PreviousAddrs = append(wp.PreviousAddrs, old_addrs)
 				}
-				// Record old addr for client
-				var old_addrs []uint64
-				for addr := xv.Addr; addr < xv.Addr+uint64(xv.Watchsz); addr++ {
-					old_addrs = append(old_addrs, addr)
-				}
-				wp.PreviousAddrs = append(wp.PreviousAddrs, old_addrs)
 			}
 			dbp.pendingWatchpoints = nil
 		}

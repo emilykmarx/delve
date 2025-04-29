@@ -352,6 +352,15 @@ func TestReferenceElems(t *testing.T) {
 	expected_events = append(expected_events,
 		watchpointSet(&config, config.Initial_watchexpr+"[1][1]", uint64(4), initial_line, ct.DataFlow, nil, nil)...)
 	run(t, &config, expected_events)
+
+	// Struct with one non-reference elem and one slice => set on non-reference elem and slice's elements
+	initial_line = 15
+	config = Config(dir+"struct_slice.go", "struct_slice", initial_line)
+	expected_events =
+		watchpointSet(&config, config.Initial_watchexpr+".NonReference", uint64(8), initial_line, ct.DataFlow, nil, nil)
+	expected_events = append(expected_events,
+		watchpointSet(&config, config.Initial_watchexpr+".Reference", uint64(16), initial_line, ct.DataFlow, nil, nil)...)
+	run(t, &config, expected_events)
 }
 
 /* Tests propagating from return in tainted branch body,
@@ -380,6 +389,11 @@ func TestMethods(t *testing.T) {
 
 	expected_events = append(expected_events,
 		watchpointSet(&config, "recvr_callee.Data", uint64(16), 27, ct.DataFlow, nil, nil)...)
+
+	// Set watchpoint on untainted struct field (since entire struct is passed as recvr), but don't insert it to m-c
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "recvr_callee.fake", Line: 27,
+	})
 
 	run(t, &config, expected_events)
 }
@@ -418,7 +432,6 @@ func TestMultiRound(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
-// Currently broken because of partial taint
 func TestRuntimeHits(t *testing.T) {
 	initial_line := 21
 	config := Config("runtime_hits.go", "name", initial_line)
@@ -427,10 +440,19 @@ func TestRuntimeHits(t *testing.T) {
 	// uses same backing array for name and name_callee, but n.Data and n_caller.Data each have their own
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "n.Data[:]", uint64(255), 16, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "n.Data[:]", uint64(2), 16, ct.DataFlow, nil, nil)...)
+	// Set wp on entire n.Data, but only insert to m-c for the tainted part
+	expected_events[len(expected_events)-3].Size = uint64(255)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "n_caller.Data", uint64(255), 22, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "n_caller.Data", uint64(2), 22, ct.DataFlow, nil, nil)...)
+	// Set wp on entire n_caller.Data, but only insert to m-c for the tainted part
+	expected_events[len(expected_events)-3].Size = uint64(255)
+
+	// Set watchpoint on untainted struct field (since entire struct is assigned to), but don't insert it to m-c
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(1), Expression: "n_caller.Length", Line: 22,
+	})
 
 	run(t, &config, expected_events)
 }
@@ -588,7 +610,9 @@ func TestLoadConfigParam(t *testing.T) {
 
 	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
 
-	readbufsz := uint64(512) // ReadFile uses buf of this size for smaller files
+	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
+	// First read
+	readbufsz := uint64(512) // ReadFile uses buf of this size (0x200) for smaller files
 	config_load := ct.Event{
 		EventType:    ct.ConfigLoad,
 		Size:         readbufsz,
@@ -596,10 +620,10 @@ func TestLoadConfigParam(t *testing.T) {
 		Line:         syscall_entry_line,
 	}
 	expected_events := []ct.Event{config_load}
-	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
 	expected_events = append(expected_events,
 		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
 
+	// Second read
 	readbufsz -= uint64(len(config_params))
 	config_load.Size = readbufsz
 	expected_events = append(expected_events, config_load)
@@ -717,28 +741,53 @@ func TestStructs(t *testing.T) {
 	initial_line := 26
 	config := Config("structs.go", "arr", initial_line)
 	expected_events :=
-		watchpointSet(&config, config.Initial_watchexpr, uint64(2), initial_line, ct.DataFlow, nil, nil)
+		watchpointSet(&config, config.Initial_watchexpr, uint64(16), initial_line, ct.DataFlow, nil, nil)
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "struct_lit.Data", uint64(2), 27, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "struct_lit.Data", uint64(16), 27, ct.DataFlow, nil, nil)...)
+	// Set watchpoint on untainted struct field (since entire struct appears on line), but don't insert it to m-c
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "struct_lit.fake", Line: 27,
+	})
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "s.Data", uint64(2), 29, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "s.Data", uint64(16), 29, ct.DataFlow, nil, nil)...)
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "s.fake", Line: 29,
+	})
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "s_callee.Data", uint64(2), 20, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "s_callee.Data", uint64(16), 20, ct.DataFlow, nil, nil)...)
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "s_callee.fake", Line: 20,
+	})
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "s_caller.Data", uint64(2), 31, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "s_caller.Data", uint64(16), 31, ct.DataFlow, nil, nil)...)
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "s_caller.fake", Line: 31,
+	})
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "multiline_lit.Data", uint64(2), 33, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "multiline_lit.Data", uint64(16), 33, ct.DataFlow, nil, nil)...)
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "multiline_lit.fake", Line: 33,
+	})
+
+	// Two hits for multiline_lit.Data on L39
+	for i := 0; i < 2; i++ {
+		expected_events = append(expected_events,
+			watchpointSet(&config, "nested.name.Data", uint64(16), 39, ct.DataFlow, nil, nil)...)
+		expected_events = append(expected_events, ct.Event{
+			EventType: ct.WatchpointSet, Size: uint64(8), Expression: "nested.name.fake", Line: 39,
+		})
+	}
 
 	expected_events = append(expected_events,
-		watchpointSet(&config, "nested.name.Data", uint64(2), 39, ct.DataFlow, nil, nil)...)
-
-	expected_events = append(expected_events,
-		watchpointSet(&config, "nested2.name.Data", uint64(2), 44, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "nested2.name.Data", uint64(16), 44, ct.DataFlow, nil, nil)...)
+	expected_events = append(expected_events, ct.Event{
+		EventType: ct.WatchpointSet, Size: uint64(8), Expression: "nested2.name.fake", Line: 44,
+	})
 
 	run(t, &config, expected_events)
 }
@@ -755,16 +804,6 @@ func TestAllocatorHTTP(t *testing.T) {
 
 	run(t, &config, expected_events)
 }
-
-/* TODO need to investigate this - per asm, doesn't seem like should be fake...
-func TestFakeArg(t *testing.T) {
-	expected_events := []ct.Event{
-		{kind: CreateWatchpoint, lineno: 6, watchexpr: "addrs"},
-	}
-
-	run(t, "fake_xv.go", expected_events)
-}
-*/
 
 func waitForServer(t *testing.T, stdout *saveOutput, stderr *saveOutput) {
 	// Wait for server to start
@@ -868,6 +907,7 @@ func run(t *testing.T, config *ct.Config, expected_events []ct.Event) {
 	checkEvents(t, expected_events, config.Event_log_filename)
 }
 
+// TODO check for warn/error/fatal log msgs
 func checkStderr(t *testing.T, client_err []byte, server_err []byte) {
 	// XXX fix this for logging in my fork of go
 	// Check for errors during replay
@@ -908,7 +948,12 @@ func checkEvents(t *testing.T, expected []ct.Event, event_log string) {
 			offset := 0
 			// Assumes newly watched region is tainted from the beginning, possibly ending before the end
 			for addr := actual.Address; addr < actual.Address+actual.Size; addr++ {
-				e := &expected[expected_i+offset+1]
+				memparam_idx := expected_i + offset + 1
+				if memparam_idx > len(expected)-1 {
+					// went past last event
+					break
+				}
+				e := &expected[memparam_idx]
 				if e.EventType != ct.MemParamMapUpdate {
 					// Rest of newly watched region isn't tainted (strings test)
 					break

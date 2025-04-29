@@ -7,7 +7,6 @@ import (
 	"go/token"
 	"log"
 	"log/slog"
-	"strconv"
 	"strings"
 
 	"github.com/go-delve/delve/service/api"
@@ -23,13 +22,17 @@ const (
 	ControlFlow TaintFlow = "Control Flow"
 )
 
-// A tainted memory region to be watched
-// (not all bytes in region may be tainted)
+// A tainted (perhaps partially) memory region to be watched
+// Old region hits a watchpoint, meaning it may be tainted
+// New region is copy of old, i.e. is same type (for data flow)
 type TaintedRegion struct {
-	new_expr  *string // newly tainted expression (empty if not recorded on watchpoint hit)
-	new_argno *int    // index of newly tainted arg
-	old_start uint64  // start addr of existing tainted expression
-	old_end   uint64
+	// Old/new regions, as they appear on the line:
+	// e.g. if only s.f is tainted but line is s2 = s, old/new are s/s2
+	// We'll use m-c map to determine only s2.f is tainted
+	// The new region should evaluate to the same type/sizes
+	new_expr   *string         // newly tainted expression (empty if not recorded on watchpoint hit)
+	new_argno  *int            // index of newly tainted arg
+	old_region []*api.Variable // list of vars that old region evaluates to (order matters)
 
 	// Where watchpoint can be set
 	// Immediately, once found (unless runtime hit)
@@ -149,83 +152,15 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 	return true
 }
 
-// Return variable(s) for all underlying data, adjusting addrs for [x:y] syntax
-func (tc *TaintCheck) evalWatchExprRecursive(scope api.EvalScope, expr string, vars *[]*api.Variable) error {
-	var elem_idxs, slice_idxs [2]int
-	slice := strings.Contains(expr, ":")
-	// 1. Handle [low:high] syntax, if any (delve cannot eval)
-	slice_name, slice_idxs_str, _ := strings.Cut(expr, "[")
-	if slice {
-		slice_idxs_str, _ = strings.CutSuffix(slice_idxs_str, "]")
-		tokens := strings.Split(slice_idxs_str, ":")
-		for i, idx := range tokens {
-			if idx != "" {
-				if constant, err := strconv.Atoi(idx); err != nil {
-					// Expression => evaluate
-					xv, err := tc.client.EvalWatchexpr(scope, idx, true)
-					if err != nil {
-						log.Panicf("Eval slice index expression %v: %v", idx, err)
-					}
-					if evald, err := strconv.Atoi(xv.Value); err != nil {
-						log.Panicf("Atoi slice index variable %+v: %v", *xv, err)
-					} else {
-						slice_idxs[i] = evald
-					}
-				} else {
-					// Plain number
-					slice_idxs[i] = constant
-				}
-			}
-		}
-	}
-
-	// 2. Regular eval (if has [low:high], will strip)
-	xv, err := tc.client.EvalWatchexpr(scope, expr, true)
-	if err != nil {
-		return err
-	}
-	if slice_idxs[1] == 0 {
-		slice_idxs[1] = int(xv.Len)
-	}
-	elem_idxs[1] = int(xv.Len)
-	if slice {
-		elem_idxs = slice_idxs
-	}
-
-	// 3. If elems are references, make recursive call for each element
-	if xv.ElemsAreReferences {
-		for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
-			elem := fmt.Sprintf("%v[%v]", expr, i)
-			if err := tc.evalWatchExprRecursive(scope, elem, vars); err != nil {
-				return err
-			}
-		}
-	} else if slice {
-		// Adjust addr and size to match [x:y]
-		// Don't use Children - watchsz isn't populated
-		xv, err := tc.client.EvalWatchexpr(scope, slice_name+"[0]", true)
-		if err != nil {
-			log.Panicf("Eval slice element %+v: %v", slice_name+"[0]", err)
-		}
-		elemsz := xv.Watchsz
-		xv.Addr += uint64(slice_idxs[0]) * uint64(elemsz)
-		xv.Watchsz = int64(slice_idxs[1]-slice_idxs[0]) * int64(elemsz)
-		*vars = append(*vars, xv)
-	} else {
-		*vars = append(*vars, xv)
-	}
-
-	return nil
-}
-
 // TODO (future) consider making tests more organized - e.g. split into "isTainted" and "propagateTaint",
 // so don't need to e.g. write an assign and range test for every new construct
 // (e.g. don't have a test for return callexpr/cast)
 
-/* If expr involves memory that overlaps the watched region,
- * ignoring function calls (except append and casts),
- * return overlapping region (watchexpr will be the overlapping portion of expr, "" if full -
- * propagateTaint will prepend the relevant expr as needed).
+/* If expr overlaps the watchpoint, populate ret with the addrs corresponding to expr,
+ * regardless of which portion overlaps - e.g.:
+ * If expr is struct => return struct, even if only one field overlaps.
+ * If expr is struct.field => return struct.field.
+ * Ignore function calls (except append and casts).
  * Requires expr to be in scope.
  * If in branch body, always overlap. */
 func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *TaintedRegion {
@@ -237,7 +172,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 	}
 
 	ast.Inspect(expr, func(node ast.Node) bool {
-		if tainted_region.old_start != 0 {
+		if len(tainted_region.old_region) > 0 {
 			return false // we're done
 		}
 		if node == nil {
@@ -245,13 +180,15 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 		}
 		switch typed_node := node.(type) {
 		case *ast.CallExpr:
-			if arg_addr := tc.handleAppend(typed_node, hit, fset); arg_addr != 0 {
+			if arg := tc.handleAppend(typed_node, hit, fset); len(arg) != 0 {
 				// For now, just apply taint from start addr of last tainted arg to whole array
-				tainted_region.old_start = arg_addr
+				tainted_region.old_region = arg
 				// Preserve taint of old slice, append taint of new elems
 			} else if !tc.isCast(typed_node) {
-				// casted expr is tainted if its arg is
+				// regular function call => ignore (another call to isTainted checks its args)
 				return false
+			} else {
+				// cast => continue to inspect its arg
 			}
 		case *ast.CompositeLit:
 			rbrace := fset.Position(typed_node.Rbrace).Line
@@ -261,9 +198,8 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 		case ast.Expr:
 			// If type not supported, still check overlap (e.g. struct)
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set correctly
-			xvs := []*api.Variable{}
 			fmt.Printf("ZZEM eval %v\n", exprToString(node.(ast.Expr)))
-			err := tc.evalWatchExprRecursive(hit.scope, exprToString(node.(ast.Expr)), &xvs)
+			xvs, err := tc.client.EvalWatchexpr(hit.scope, exprToString(node.(ast.Expr)), true)
 			if err != nil {
 				fmt.Printf("eval err: %v\n", err.Error())
 				if strings.Contains(err.Error(), "can not convert") {
@@ -275,21 +211,25 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 					// Try evaluating any AST children (for e.g. `x+1`)
 				}
 			} else {
+				// 1. Filter out region that doesn't overlap watchpoint at all
+				// (may overlap but not be tainted - will check m-c map when record pending watchpoint)
+				overlaps_wp := false
 				for _, xv := range xvs {
-					// 1. Filter out region that doesn't overlap watchpoint at all
-					// (may overlap but not be tainted - will check m-c map when record pending watchpoint)
 					watch_addr := hit.hit_bp.Addr
 					watch_size := watchSize(hit.hit_bp)
 					xv_size := uint64(xv.Watchsz)
 					fmt.Printf("watch region %#x:%v, xv %#x:%v\n", watch_addr, watch_size, xv.Addr, xv_size)
 
-					// 2. Record region
-					old_start, old_end, overlap := memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
+					_, _, overlap := memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
 					if overlap {
-						tainted_region.old_start = old_start
-						tainted_region.old_end = old_end
-						break // assume only one can overlap - TODO (minor)
+						overlaps_wp = true
+						break
 					}
+				}
+
+				// 2. Record region
+				if overlaps_wp {
+					tainted_region.old_region = xvs
 				}
 
 				// Don't evaluate children
@@ -300,7 +240,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 		return true
 	})
 
-	if tainted_region.old_start != 0 {
+	if len(tainted_region.old_region) != 0 {
 		fmt.Printf("isTainted return %+v\n", tainted_region)
 		return &tainted_region
 	} else {
@@ -324,18 +264,18 @@ var builtinFcts = set.From([]string{
 })
 
 // If return value is tainted by any arg, return start addr of last tainted arg
-func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) uint64 {
+func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) []*api.Variable {
 	// Any elem tainted, or slice already tainted => ret tainted
 	// (handles possible realloc)
 	if exprToString(call_node.Fun) != "append" {
-		return 0
+		return nil
 	}
 	for _, arg := range call_node.Args {
 		if tainted_region := tc.isTainted(arg, hit, fset); tainted_region != nil {
-			return tainted_region.old_start
+			return tainted_region.old_region
 		}
 	}
-	return 0
+	return nil
 }
 
 // Update start and end of branch body in tainted_region and in tc
@@ -410,7 +350,6 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 
 	// DFS of file's AST
 	ast.Inspect(root, func(node ast.Node) bool {
-		// PERF: How to properly only inspect one line?
 		var start token.Position
 		var end token.Position
 		if node != nil {
@@ -418,6 +357,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			end = fset.Position(node.End())
 		}
 		if !(start.Line <= hit.hit_instr.Loc.Line && hit.hit_instr.Loc.Line <= end.Line) {
+			// PERF: How to properly only inspect these lines?
 			return true
 		}
 		// hit line is part of node
@@ -444,16 +384,10 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			if call_expr == "copy" {
 				tainted_region := tc.isTainted(typed_node.Args[1], hit, fset)
 				if tainted_region != nil {
-					// Copies min(len(new), len(old)). So if new is shorter, shorten overlap.
-					xv, err := tc.client.EvalWatchexpr(hit.scope, exprToString(typed_node.Args[0]), true)
-					if err != nil {
-						// I think new should always be evaluatable?
-						log.Panicf("eval %v for copy builtin: %v", exprToString(typed_node.Args[0]), err)
-					}
-					tainted_region.old_end = min(tainted_region.old_start+uint64(xv.Watchsz), tainted_region.old_end)
-
-					// Expr will be allocated, but if on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
+					// Copies min(len(new), len(old)) - SetWatchpoint() will handle
+					// If on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
 					// are set correctly (TODO add test for this)
+					// TODO switch to nexting instead of assuming linear
 					pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
 					tainted_region.set_location = &pending_loc
 					watchexpr := exprToString(typed_node.Args[0])
@@ -461,7 +395,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					ret = append(ret, *tainted_region)
 				}
 			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node) || call_expr == "runtime.KeepAlive" {
-				// builtins will be handled in assign/range
+				// builtins and casts will be handled in assign/range
 			} else {
 				// If method: check receiver for taint if non-pointer, and
 				// count it in args to match what we'll do when creating wp
@@ -503,9 +437,9 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			}
 
 		case *ast.AssignStmt:
-			fmt.Println("AssignStmt")
+			fmt.Printf("start propagateTaint - AssignStmt lhs %v\n", exprToString(typed_node.Lhs[0]))
 			for _, rhs := range typed_node.Rhs {
-				// For now, taint each lhs (TODO which should be tainted - could do heuristic e.g. same size and type as rhs)
+				// For now, taint each lhs (TODO which should be tainted - could do heuristic e.g. same type as rhs)
 				rhs_tainted_region := tc.isTainted(rhs, hit, fset)
 				if rhs_tainted_region != nil {
 					// Watched location is read on the rhs => taint lhs
@@ -522,6 +456,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					}
 				}
 			}
+			fmt.Printf("finish propagateTaint - AssignStmt lhs %v\n", exprToString(typed_node.Lhs[0]))
 		case *ast.RangeStmt:
 			// TODO need new test for this since watching underlying data (cur one doesn't hit in range)
 			if start.Line == hit.hit_instr.Loc.Line {

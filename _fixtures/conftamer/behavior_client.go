@@ -13,7 +13,7 @@ func main() {
 	server_endpoint := "localhost:6060"
 
 	// wait for server to start (so Dial will succeed)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 	client_endpoint, err := net.ResolveTCPAddr("tcp", "localhost:5050")
 	if err != nil {
 		log.Panicf("Client resolve client endpoint: %v", err.Error())

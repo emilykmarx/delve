@@ -65,22 +65,15 @@ func TestMain(m *testing.M) {
 	logflags.Setup(logConf != "", logConf, "")
 
 	// Set go version used to build target (after building server and client)
-	if err := protest.SetGoVersion(); err != nil {
+	path, target_go, err := protest.SetGoVersion()
+	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	goroot := os.Getenv("GOROOT")
-	path := os.Getenv("PATH")
-	target_go := os.Getenv("CT_TARGET_GO")
-	if target_go == "" {
-		fmt.Printf("CT_TARGET_GO unset - should be path to go fork used to build target (must support moving objects)")
-	}
 	defer func() {
-		os.Setenv("GOROOT", goroot)
-		os.Setenv("PATH", path)
+		protest.UnSetGoVersion(path, target_go)
 	}()
-	os.Setenv("GOROOT", target_go)
-	os.Setenv("PATH", target_go+"/bin:"+path)
+
 	os.Exit(protest.RunTestsWithFixtures(m))
 }
 
@@ -221,6 +214,13 @@ func assertFunctionName(p *proc.Target, t *testing.T, fnname string, descr strin
 	}
 	if fn.Name != fnname {
 		t.Fatalf("%s expected function %s got %s %s:%d", descr, fnname, fn.Name, f, l)
+	}
+}
+
+func assertEqual[T comparable, T2 any](t *testing.T, expected T, actual T, msg T2) {
+	if expected != actual {
+		_, file, line, _ := runtime.Caller(1)
+		t.Fatalf("failed assertion at %s:%d: expected %v != actual %v (%v)\n", file, line, expected, actual, msg)
 	}
 }
 
@@ -5484,6 +5484,15 @@ func assertWpOOS(t *testing.T, p *proc.Target, grp *proc.TargetGroup, wp_oos_pc 
 	assertExited(p, t, err)
 }
 
+// Set watchpoint, assert only one returned
+func setWatchpoint(p *proc.Target, t *testing.T, logicalID int, scope *proc.EvalScope, expr string, wtype proc.WatchType, cond ast.Expr,
+	wimpl proc.WatchImpl, write *bool) *proc.Breakpoint {
+	wps, err := p.SetWatchpoint(logicalID, scope, expr, wtype, cond, wimpl, write)
+	assertEqual(t, 1, len(wps), "Wrong number of wps")
+	assertNoError(err, t, "SetWatchpoint")
+	return wps[0]
+}
+
 // Note: each test builds its target to /tmp and auto-deletes it.
 // Pass build flags via withTestProcessArgs().
 
@@ -5499,9 +5508,9 @@ func TestWatchpointsSoftwareSpuriousSwWpAtBp(t *testing.T) {
 			// Set wp
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
+			bp := setWatchpoint(p, t, 0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
+
 			wp_oos_pc := getWpOOSPC(p)
-			assertNoError(err, t, "SetWatchpoint")
 			// Continue => first instr in line 11 hits bp and spuriously faults => step over it, don't return to client
 			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
@@ -5529,9 +5538,8 @@ func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
 			// Set wp, and bp on exact instr that accesses x - movups,lea,mov,mov one before call runtime.convT64
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			watchpoint, err := p.SetWatchpoint(100, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
+			watchpoint := setWatchpoint(p, t, 100, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			wp_oos_pc := getWpOOSPC(p)
-			assertNoError(err, t, "SetWatchpoint")
 			access_instr := 0x49d3b1
 			breakpoint, err := p.SetBreakpoint(101, uint64(access_instr), proc.UserBreakpoint, nil)
 			assertNoError(err, t, "Set bp at access instr")
@@ -5566,9 +5574,8 @@ func TestWatchpointsSoftwareNoPrints(t *testing.T) {
 			// Set wp
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			bp, err := p.SetWatchpoint(0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
+			bp := setWatchpoint(p, t, 0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			wp_oos_pc := getWpOOSPC(p)
-			assertNoError(err, t, "SetWatchpoint")
 			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
 			// First wp hit
@@ -5623,8 +5630,7 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set globalvar1, write
-			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
-			assertNoError(err, t, "SetDataBreakpoint(write-only)")
+			bp := setWatchpoint(p, t, 0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
 
 			// Hit globalvar1 at position1
 			assertNoError(grp.Continue(), t, "Continue 1")
@@ -5695,8 +5701,7 @@ func WatchpointsCounts(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set globalvar1, write (only hits once for line 14)
-			bp, err := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
-			assertNoError(err, t, "SetWatchpoint(write-only)")
+			bp := setWatchpoint(p, t, 0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
 
 			// Continue until exited
 			for {
@@ -7607,8 +7612,7 @@ func TestStackwatchClearBug(t *testing.T) {
 		for _, s := range []string{"vars[0]", "vars[3]", "vars[2]", "vars[1]"} {
 			// bug is wimpl-agnostic
 			write := true
-			_, err := p.SetWatchpoint(0, scope, s, proc.WatchWrite, nil, proc.WatchHardware, &write)
-			assertNoError(err, t, "SetWatchpoint(write-only)")
+			setWatchpoint(p, t, 0, scope, s, proc.WatchWrite, nil, proc.WatchHardware, &write)
 		}
 
 		t.Logf("After setting watchpoints:")

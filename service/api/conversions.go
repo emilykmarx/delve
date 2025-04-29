@@ -152,19 +152,6 @@ func PrettyTypeName(typ godwarf.Type) string {
 	return r
 }
 
-func convertFloatValue(v *proc.Variable, sz int) string {
-	switch v.FloatSpecial {
-	case proc.FloatIsPosInf:
-		return "+Inf"
-	case proc.FloatIsNegInf:
-		return "-Inf"
-	case proc.FloatIsNaN:
-		return "NaN"
-	}
-	f, _ := constant.Float64Val(v.Value)
-	return strconv.FormatFloat(f, 'f', -1, sz)
-}
-
 // ConvertVar converts from proc.Variable to api.Variable.
 func ConvertVar(v *proc.Variable) *Variable {
 	r := Variable{
@@ -189,7 +176,7 @@ func ConvertVar(v *proc.Variable) *Variable {
 		r.Unreadable = v.Unreadable.Error()
 	}
 
-	r.Value = VariableValueAsString(v)
+	r.Value = proc.VariableValueAsString(v)
 
 	switch v.Kind {
 	case reflect.Complex64:
@@ -243,26 +230,6 @@ func ConvertVar(v *proc.Variable) *Variable {
 	}
 
 	return &r
-}
-
-func VariableValueAsString(v *proc.Variable) string {
-	if v.Value == nil {
-		return ""
-	}
-	switch v.Kind {
-	case reflect.Float32:
-		return convertFloatValue(v, 32)
-	case reflect.Float64:
-		return convertFloatValue(v, 64)
-	case reflect.String, reflect.Func, reflect.Struct:
-		return constant.StringVal(v.Value)
-	default:
-		if cd := v.ConstDescr(); cd != "" {
-			return fmt.Sprintf("%s (%s)", cd, v.Value.String())
-		} else {
-			return v.Value.String()
-		}
-	}
 }
 
 // ConvertVars converts from []*proc.Variable to []api.Variable.
