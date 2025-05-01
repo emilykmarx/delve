@@ -18,6 +18,42 @@ Use in a real program (in progress): See [Xenon](https://github.com/emilykmarx/x
 
 Only supports linux/amd64 and Delve's native backend.
 
+### Setup to run the tests
+If running on a clean machine, install basic packages: 
+```
+sudo apt-get update
+sudo apt-get install build-essential git
+```
+
+If haven't already, install Go; we are assuming version 1.21:
+```
+wget https://go.dev/dl/go1.21.13.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+```
+
+Prepare the project-specific dependencies. When building Go, some of the tests in `all.bash` will fail since the implementation is modified in the fork.
+```
+git clone https://github.com/emilykmarx/go-set.git
+git clone https://github.com/emilykmarx/graph.git
+git clone https://github.com/emilykmarx/go.git
+
+cd go/src
+./all.bash
+```
+
+Set `CT_TARGET_GO` to the path of the previously cloned fork of Go:
+```
+export CT_TARGET_GO=<path to the Go fork>
+```
+
+Run the tests for watchpoint and client:
+```
+cd delve
+python3 conftamer/pre-commit-hook.py client
+python3 conftamer/pre-commit-hook.py watchpoint
+```
+
 ### Building the target
 * Include `syscall.Syscall6()` - will be used to get a `syscall` instruction and to set breakpoints on syscall entry/exit.
 * Build with `-gcflags="all=-N -l"` - this will minimize optimizations
