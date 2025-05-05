@@ -198,9 +198,9 @@ func Launch(cmd []string, wd string, flags proc.LaunchFlags,
 		// TODO for metrics: Investigate where Launch() is called - ah, from (d *Debugger) Launch()
 		// (Currently recorded runtime looks to capture some launch/detach logic).
 		// Also assert if any spurious traps, or remove spurious trap counting.
-		fmt.Printf("RUNTIME_SEC %v\n", runtime_s)
-		fmt.Printf("SEGV_TOTAL %v\t SEGV_TRAPTHREAD %v\n", Sigsegv_total, Sigsegv_trapthread)
-		fmt.Printf("SPURIOUS_TRAP_TOTAL %v\t SPURIOUS_TRAP_TRAPTHREAD %v\n", Spurious_sigtrap_total, Spurious_sigtrap_trapthread)
+		logflags.DebuggerLogger().Infof("RUNTIME_SEC %v", runtime_s)
+		logflags.DebuggerLogger().Infof("SEGV_TOTAL %v\t SEGV_TRAPTHREAD %v", Sigsegv_total, Sigsegv_trapthread)
+		logflags.DebuggerLogger().Infof("SPURIOUS_TRAP_TOTAL %v\t SPURIOUS_TRAP_TRAPTHREAD %v", Spurious_sigtrap_total, Spurious_sigtrap_trapthread)
 	}
 	return tgt, nil
 }
@@ -773,7 +773,7 @@ func (procgrp *processGroup) stepOverBreakpoint(thread *nativeThread) error {
 			return err
 		}
 		if thread.CurrentBreakpoint.Breakpoint != prev_bp {
-			fmt.Printf("SoftwareWatchpointAtBreakpoint during resume(); thread %v\n", thread.ThreadID())
+			logflags.DebuggerLogger().Debugf("SoftwareWatchpointAtBreakpoint during resume(); thread %v", thread.ThreadID())
 			// Non-spurious segfault during step over sw bp
 			// (stepInstruction segfaulted and set bp to sw wp)
 			// TODO PC is one after the hitting instr, since we just stepped over it - ok to fix by setting thread.PC? Or could fix on client side
@@ -812,7 +812,7 @@ func handleSyscallEntry(th *nativeThread) {
 		fake_wp := proc.Breakpoint{Addr: arg}
 		if th.dbp.buddySoftwareWatchpoint(&fake_wp) {
 			// Arg is on same page as a software watchpoint => syscall would fail with "bad address"
-			fmt.Printf("ENTER FAULTING SYSCALL %v - arg: %#x\n", syscall, arg)
+			logflags.DebuggerLogger().Debugf("ENTER FAULTING SYSCALL %v - arg: %#x", syscall, arg)
 			threadStacktrace(th, true, false)
 			arg_copy := uint64(arg) // was needed at one point - may not be anymore
 			th.faultingSyscallArg = &arg_copy
@@ -824,7 +824,7 @@ func handleSyscallEntry(th *nativeThread) {
 // If this syscall exit corresponds to an entry that would have faulted,
 // clear saved arg and name.
 func handleSyscallExit(th *nativeThread) {
-	fmt.Printf("handleSyscallExit\n")
+	logflags.DebuggerLogger().Debug("handleSyscallExit")
 	syscall, err := threadStacktrace(th, true, true)
 
 	if err != nil {
@@ -839,15 +839,15 @@ func handleSyscallExit(th *nativeThread) {
 		// "enter faulting syscallX, exit non-faulting syscallX, exit faulting syscallX").
 		// Maybe get local vars on exit and see if any would fault.
 		if th.faultingSyscall == nil {
-			fmt.Printf("th.faultingSyscall nil - won't handle exit\n")
+			logflags.DebuggerLogger().Debug("th.faultingSyscall nil - won't handle exit")
 		} else if *th.faultingSyscall != syscall {
-			fmt.Printf("*th.faultingSyscall %v != syscall %v - won't handle exit\n", *th.faultingSyscall, syscall)
+			logflags.DebuggerLogger().Debugf("*th.faultingSyscall %v != syscall %v - won't handle exit", *th.faultingSyscall, syscall)
 		}
 
 		return
 	}
 
-	fmt.Printf("EXIT FAULTING SYSCALL %v - arg: %#x\n", *th.faultingSyscall, *th.faultingSyscallArg)
+	logflags.DebuggerLogger().Debugf("EXIT FAULTING SYSCALL %v - arg: %#x", *th.faultingSyscall, *th.faultingSyscallArg)
 
 	th.faultingSyscallArg = nil
 	th.faultingSyscall = nil
@@ -898,7 +898,7 @@ func (procgrp *processGroup) handleSyscallBreakpoints() {
 
 		// 2a. If any thread is in a faulting syscall, set exit breakpoint - else clear it
 		if buddy := dbp.buddyFaultingSyscall(nil); buddy != nil {
-			fmt.Printf("Thread %v in faulting syscall %v (arg %#x) - setting syscall exit bp (if not exists)\n",
+			logflags.DebuggerLogger().Debugf("Thread %v in faulting syscall %v (arg %#x) - setting syscall exit bp (if not exists)",
 				buddy.ID, *buddy.faultingSyscall, *buddy.faultingSyscallArg)
 
 			// cond always false => will never return bp to client
@@ -924,7 +924,7 @@ func (procgrp *processGroup) handleSyscallBreakpoints() {
 		for _, thread := range dbp.threads {
 			if thread.faultingSyscallArg != nil {
 				faultingAddr := *thread.faultingSyscallArg
-				fmt.Printf("Un-mprotecting page causing faulting syscall (if wasn't already): thread %v, syscall %v (arg %#x)\n",
+				logflags.DebuggerLogger().Debugf("Un-mprotecting page causing faulting syscall (if wasn't already): thread %v, syscall %v (arg %#x)",
 					thread.ID, *thread.faultingSyscall, faultingAddr)
 				if err := thread.toggleMprotect(faultingAddr, false); err != nil {
 					log.Panicf("un-mprotect in handleSyscallBreakpoints: %v\n", err.Error())
@@ -937,7 +937,7 @@ func (procgrp *processGroup) handleSyscallBreakpoints() {
 		for _, exited_syscall_arg := range exited_syscall_args {
 			if dbp.buddyFaultingSyscall(&exited_syscall_arg) == nil {
 				// No other thread still faulting on that page
-				fmt.Printf("Re-mprotecting page for arg %#x no longer causing faulting syscall\n", exited_syscall_arg)
+				logflags.DebuggerLogger().Debugf("Re-mprotecting page for arg %#x no longer causing faulting syscall", exited_syscall_arg)
 				if err := dbp.memthread.toggleMprotect(exited_syscall_arg, true); err != nil {
 					log.Panicf("re-mprotect in handleSyscallBreakpoints: %v\n", err.Error())
 				}
@@ -1086,7 +1086,7 @@ func printFaultingSyscall(th *nativeThread) {
 		goroutine = fmt.Sprintf("%v", g.ID)
 	}
 
-	fmt.Printf("thread %v (goroutine %v), syscall %v, arg %v\n", th.ThreadID(), goroutine, syscall, arg)
+	logflags.DebuggerLogger().Debugf("thread %v (goroutine %v), syscall %v, arg %v", th.ThreadID(), goroutine, syscall, arg)
 }
 
 // If err indicates ESRCH and th hasn't exited, panic.
@@ -1113,7 +1113,7 @@ func threadStacktrace(th *nativeThread, print bool, get_syscall bool) (string, e
 	t := proc.Target{Process: th.dbp}
 	stack, err := proc.ThreadStacktrace(&t, th, 50)
 	if err != nil {
-		fmt.Printf("Failed to get stacktrace: %v\n", err)
+		logflags.DebuggerLogger().Debugf("Failed to get stacktrace: %v\n", err)
 		return "", err
 	}
 	for _, frame := range stack {
@@ -1122,7 +1122,7 @@ func threadStacktrace(th *nativeThread, print bool, get_syscall bool) (string, e
 			fn = frame.Call.Fn.Name
 		}
 		if print {
-			fmt.Printf("%#x in %s\n at %s:%d\n", frame.Call.PC, fn, frame.Call.File, frame.Call.Line)
+			logflags.DebuggerLogger().Debugf("%#x in %s\n at %s:%d\n", frame.Call.PC, fn, frame.Call.File, frame.Call.Line)
 		}
 	}
 	if get_syscall {
@@ -1199,7 +1199,7 @@ func setThreadBreakpoint(cctx *proc.ContinueOnceContext, dbp *nativeProcess, th 
 					// hardcoded breakpoint.
 					// (Unsure if software watchpoints can have phantom hits, but doesn't hurt to
 					// switch trapthread, and don't want pkg/proc to check for hardcoded bp)
-					fmt.Printf("Phantom breakpoint hit: PC (advanced) %#x, thread %v\n", pc, th.ThreadID())
+					logflags.DebuggerLogger().Debugf("Phantom breakpoint hit: PC (advanced) %#x, thread %v\n", pc, th.ThreadID())
 					*switchTrapthread = true
 				}
 			}

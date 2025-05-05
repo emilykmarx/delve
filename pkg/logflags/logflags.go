@@ -61,12 +61,12 @@ func GdbWireLogger() Logger {
 	return makeLogger(gdbWire, Fields{"layer": "gdbconn"})
 }
 
-// Debugger returns true if the debugger package should log.
+// Debugger returns true if the debugger should log.
 func Debugger() bool {
 	return debugger
 }
 
-// DebuggerLogger returns a logger for the debugger package.
+// DebuggerLogger returns a logger for the debugger.
 func DebuggerLogger() Logger {
 	return makeLogger(debugger, Fields{"layer": "debugger"})
 }

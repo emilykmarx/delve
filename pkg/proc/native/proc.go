@@ -12,6 +12,7 @@ import (
 
 	"time"
 
+	"github.com/go-delve/delve/pkg/logflags"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/proc/linutil"
 	sys "golang.org/x/sys/unix"
@@ -294,15 +295,15 @@ func (procgrp *processGroup) add(p *nativeProcess, pid int, currentThread proc.T
 
 // Print some info on program threads
 func ProgramThreads(procgrp *processGroup, msg string) {
-	fmt.Printf("Program threads, from %v\n", msg)
+	logflags.DebuggerLogger().Debugf("Program threads, from %v", msg)
 	for _, thread := range procgrp.procs[0].ThreadList() {
 		loc, _ := thread.Location()
 		if loc != nil && loc.Fn != nil && loc.Fn.Name == "main.main" {
-			fmt.Printf("Thread %v at line: %v\n", thread.ThreadID(), loc.Line)
+			logflags.DebuggerLogger().Debugf("Thread %v at line: %v", thread.ThreadID(), loc.Line)
 			if thread.Breakpoint() != nil && thread.Breakpoint().Breakpoint != nil {
-				fmt.Printf("Breakpoint: %v\n", thread.Breakpoint())
+				logflags.DebuggerLogger().Debugf("Breakpoint: %v", thread.Breakpoint())
 			} else {
-				fmt.Printf("Nil breakpoint\n")
+				logflags.DebuggerLogger().Debug("Nil breakpoint")
 			}
 		}
 	}
@@ -310,7 +311,7 @@ func ProgramThreads(procgrp *processGroup, msg string) {
 
 // Handle any breakpoints/watchpoints hit while threads are running during MoveObject
 func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, dbp *nativeProcess, donech chan error) error {
-	fmt.Println("enter monitorMoveObject")
+	logflags.DebuggerLogger().Debug("enter monitorMoveObject")
 	for {
 		// XXX check if any of these functions will use a thread besides trapthread to do ptrace,
 		// and if they refresh g (which might be ok, or might cause same problem as it does when called from resume) -
@@ -324,7 +325,7 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 		// - Get return value from MoveObject (trapWait would return some thread at a bp/wp, but we should exit)
 		// XXX test both cases
 		case moveErr := <-donech:
-			fmt.Println("donech; exit monitorMoveObject")
+			logflags.DebuggerLogger().Debug("donech; exit monitorMoveObject")
 			return moveErr
 		default:
 			// 1. Wait for a thread to hit a bp/wp (or for moveObject to signal that it's done)
@@ -332,11 +333,11 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 			if err != nil {
 				log.Panicf("trapWait error: %v\n", err)
 			}
-			fmt.Printf("found trapthread %v, status %#x\n", trapthread.ThreadID(), *trapthread.Status)
+			logflags.DebuggerLogger().Debugf("found trapthread %v, status %#x", trapthread.ThreadID(), *trapthread.Status)
 
 			if trapthread.stopSignal() == sys.SIGSTOP {
 				// From stop() after MoveObject
-				fmt.Println("SIGSTOP; exit monitorMoveObject")
+				logflags.DebuggerLogger().Debug("SIGSTOP; exit monitorMoveObject")
 				return <-donech
 			}
 
@@ -346,7 +347,7 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 				log.Panicf("setThreadBreakpoint error for thread %v: %v\n", trapthread.ThreadID(), err)
 			}
 
-			fmt.Printf("set bp to %+v\n", trapthread.CurrentBreakpoint.Breakpoint)
+			logflags.DebuggerLogger().Debugf("set bp to %+v", trapthread.CurrentBreakpoint.Breakpoint)
 
 			// 3. Handle any faulting syscalls
 			procgrp.handleSyscallBreakpoints()
@@ -363,14 +364,14 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 				}
 			}
 
-			fmt.Printf("stepped over bp\n")
+			logflags.DebuggerLogger().Debug("stepped over bp")
 
 			// 5. Resume thread
 			if err := trapthread.resume(); err != nil && err != sys.ESRCH {
 				log.Panicf("resume error for thread %v: %v\n", trapthread.ThreadID(), err)
 			}
 
-			fmt.Printf("resumed thread\n")
+			logflags.DebuggerLogger().Debug("resumed thread")
 		}
 	}
 }
@@ -390,10 +391,10 @@ func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch ch
 		for _, th := range dbp.threads {
 			// loop in case some thread has exited
 			if err := th.stop(); err == nil {
-				fmt.Printf("sent stop() to thread %v\n", th.ThreadID())
+				logflags.DebuggerLogger().Debugf("sent stop() to thread %v", th.ThreadID())
 				break
 			} else {
-				fmt.Printf("failed to send stop() to thread %v: %v\n", th.ThreadID(), err)
+				logflags.DebuggerLogger().Infof("failed to send stop() to thread %v: %v", th.ThreadID(), err)
 			}
 		}
 	}()
@@ -406,7 +407,7 @@ func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch ch
 			return
 		} else if strings.Contains(err.Error(), "connection refused") {
 			// server thread is at a breakpoint - try again once monitor goroutine has stepped over it
-			fmt.Println("conn refused - trying again")
+			logflags.DebuggerLogger().Debug("conn refused - trying again")
 			time.Sleep(5 * time.Millisecond)
 		} else {
 			donech <- err
@@ -425,7 +426,7 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {
 			for _, wp := range dbp.pendingWatchpoints {
-				fmt.Printf("ZZEM setting pending wp: %v\n", wp)
+				logflags.DebuggerLogger().Debugf("About to move object and set watchpoint: %v", wp.Expr)
 
 				xvs := []*proc.Variable{}
 				err := cctx.Target.EvalWatchexpr(wp.Scope, wp.Expr, false, &xvs)
@@ -439,7 +440,7 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 						if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
 							// thread was stopped at a breakpoint, now stopped at a software watchpoint
 							// XXX think abt if this can happen/what to do
-							fmt.Printf("SoftwareWatchpointAtBreakpoint in setPendingWatchpoints, thread %v\n", th.trapthread.ID)
+							logflags.DebuggerLogger().Infof("SoftwareWatchpointAtBreakpoint in setPendingWatchpoints, thread %v", th.trapthread.ID)
 						} else {
 							log.Panicf("resume in setPendingWatchpoints: %v", err)
 						}
@@ -457,12 +458,12 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 					watchaddr := <-watchaddrch
 
 					// 4. Stop all threads to set watchpoint (so they can't access the old location in the meantime)
-					fmt.Println("about to stop()")
+					logflags.DebuggerLogger().Debug("about to stop()")
 					if _, err := procgrp.stop(cctx, dbp.memthread); err != nil {
 						log.Panicf("stop in setPendingWatchpoints: %v", err)
 					}
 
-					fmt.Println("about to set wp after successful MoveObject")
+					logflags.DebuggerLogger().Debug("about to set wp after successful MoveObject")
 
 					// 4. Set watchpoint on new location
 					// XXX set on old location in CreateWatchpoint, un-set here

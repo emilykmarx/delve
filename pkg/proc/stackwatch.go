@@ -2,7 +2,6 @@ package proc
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/go-delve/delve/pkg/astutil"
 	"github.com/go-delve/delve/pkg/logflags"
@@ -150,7 +149,7 @@ func adjustStackWatchpoint(t *Target, th Thread, watchpoint *Breakpoint) {
 	if g == nil {
 		return
 	}
-	fmt.Printf("adjustStackWatchpoint for wp; old addr 0x%x\n", watchpoint.Addr)
+	logflags.DebuggerLogger().Debugf("adjustStackWatchpoint for wp; old addr 0x%x", watchpoint.Addr)
 	err := t.Proc.EraseBreakpoint(watchpoint)
 	if err != nil {
 		log := logflags.DebuggerLogger()
@@ -164,7 +163,7 @@ func adjustStackWatchpoint(t *Target, th Thread, watchpoint *Breakpoint) {
 	}
 	watchpoint.PreviousAddrs = append(watchpoint.PreviousAddrs, old_addrs)
 	watchpoint.Addr = uint64(int64(g.stack.hi) + watchpoint.watchStackOff)
-	fmt.Printf("new addr 0x%x\n", watchpoint.Addr)
+	logflags.DebuggerLogger().Debugf("new addr 0x%x", watchpoint.Addr)
 	err = t.Proc.WriteBreakpoint(watchpoint)
 	if err != nil {
 		log := logflags.DebuggerLogger()

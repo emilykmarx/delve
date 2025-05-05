@@ -5,6 +5,7 @@ import (
 	"log"
 	"syscall"
 
+	"github.com/go-delve/delve/pkg/logflags"
 	"github.com/go-delve/delve/pkg/proc"
 )
 
@@ -78,7 +79,7 @@ func (procgrp *processGroup) stepInstruction(t *nativeThread) (err error) {
 			// Don't toggle/stepi if page is already un-mprotected due to a syscall
 			// (This can happen if one thread hits the syscall entry bp, and another segfaults
 			// in the same iteration of ContinueOnce).
-			fmt.Printf("Found buddy syscall (thread %v, syscall %v, arg %#x) for segv thread %v at %#x - won't stepInstruction\n",
+			logflags.DebuggerLogger().Debugf("Found buddy syscall (thread %v, syscall %v, arg %#x) for segv thread %v at %#x - won't stepInstruction",
 				buddy.ThreadID(), *buddy.faultingSyscall, *buddy.faultingSyscallArg,
 				t.ThreadID(), t.CurrentBreakpoint.Breakpoint.Addr)
 			return

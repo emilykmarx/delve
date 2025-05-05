@@ -23,6 +23,7 @@ import (
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/dwarf/reader"
 	"github.com/go-delve/delve/pkg/goversion"
+	"github.com/go-delve/delve/pkg/logflags"
 	"github.com/go-delve/delve/pkg/proc/internal/ebpf"
 )
 
@@ -401,19 +402,19 @@ func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) *SyscallBr
 		// Return to client if any part of send buffer overlaps any watchpoint
 		// (since we haven't actually faulted, we don't know which part overlaps)
 		if wp := thread.FindSoftwareWatchpoint(&buf_addr, bufsz); !wp.SpuriousPageFault {
-			fmt.Printf("Non-spuriously faulting send - will return to client\n")
+			logflags.DebuggerLogger().Debug("Non-spuriously faulting send - will return to client")
 			return &info
 		} else {
-			fmt.Printf("Non-faulting or spuriously faulting send - no return to client\n")
+			logflags.DebuggerLogger().Debug("Non-faulting or spuriously faulting send - no return to client")
 		}
 	} else if socket {
 		// Network receive
-		fmt.Printf("RECV NETWORK MSG; local endpoint %v\n", info.Local_endpoint)
+		logflags.DebuggerLogger().Debugf("RECV NETWORK MSG; local endpoint %v", info.Local_endpoint)
 		return &info
 	} else {
 		// Non-network read
 		if slices.Contains(tgt.ConfigFiles, fdinfo) {
-			fmt.Println("READ CONFIG FILE")
+			logflags.DebuggerLogger().Debug("READ CONFIG FILE")
 			info.Filename = fdinfo
 			return &info
 		}
@@ -798,12 +799,14 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	bp.WatchExpr = expr
 
 	if StackAddr(scope, watchaddr) {
+		logflags.DebuggerLogger().Debugf("wp set for %#x - on stack", watchaddr)
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
 		err := t.setStackWatchBreakpoints(scope, bp)
 		if err != nil {
 			return bp, err
 		}
 	} else {
+		logflags.DebuggerLogger().Debugf("wp set for %#x (sz %#x) - not on stack", watchaddr, sz)
 	}
 	return bp, nil
 }
@@ -882,7 +885,6 @@ func adjustForSlice(xv *Variable, slice_idxs []int, elemsz int64) {
 	if slice_idxs != nil {
 		xv.Addr += uint64(slice_idxs[0]) * uint64(elemsz)
 		xv.Watchsz = int64(slice_idxs[1]-slice_idxs[0]) * elemsz
-		fmt.Printf("slice after adjust: %#x %v\n", xv.Addr, xv.Watchsz)
 	} else {
 		xv.Watchsz = xv.Len * elemsz
 	}
@@ -1028,7 +1030,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 func MoveObject(addr uint64) (uint64, error) {
 	// TODO pass target's http endpoint into delve
 	url := fmt.Sprintf("http://localhost:6060/debug/pprof/moveObject?addr=%#x", addr)
-	fmt.Println("enter MoveObject")
+	logflags.DebuggerLogger().Debug("enter MoveObject")
 
 	client := http.Client{
 		Timeout: 5 * time.Second,
@@ -1045,13 +1047,13 @@ func MoveObject(addr uint64) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("reading response body from allocator: %v", err)
 	}
-	fmt.Printf("allocator response body: %v\n", string(body))
+	logflags.DebuggerLogger().Debugf("allocator response body: %v", string(body))
 	var new_addr uint64
 	if _, err := fmt.Sscanf(string(body), "New address: 0x%x", &new_addr); err != nil {
 		return 0, fmt.Errorf("getting new address from allocator response %v: %v", string(body), err)
 	}
 
-	fmt.Println("exit MoveObject")
+	logflags.DebuggerLogger().Debug("exit MoveObject")
 	return new_addr, nil
 }
 
@@ -1107,9 +1109,6 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 	if valid, err := t.Valid(); !valid {
 		recorded, _ := t.recman.Recorded()
 		if !recorded {
-			if wtype != 0 {
-				fmt.Printf("exit setBreakpointInternal for wp w/ err: from Valid() %v\n", err)
-			}
 			return nil, err
 		}
 	}
@@ -1196,9 +1195,6 @@ func (t *Target) setBreakpointInternal(logicalID int, addr uint64, kind Breakpoi
 
 	err := t.Proc.WriteBreakpoint(newBreakpoint)
 	if err != nil {
-		if wtype != 0 {
-			fmt.Printf("exit setBreakpointInternal for wp w/ err from WriteBreakpoint: %v\n", err)
-		}
 		return nil, err
 	}
 
