@@ -50,6 +50,7 @@ for test_name, test_group in test_groups.items():
   grep = subprocess.run(f"grep {test_group.grep_arg} | cut -d '(' -f1 | cut -d ' ' -f2", shell=True, check=True, text=True, capture_output=True)
   tests = grep.stdout.splitlines()
   print(f'{test_name} tests: {tests}')
+  failed = False
 
   for test in tests:
     test_cmd = f'go test -v -timeout 30s -run {test} github.com/go-delve/delve/{test_group.test_path} -count=1 -failfast'
@@ -59,9 +60,12 @@ for test_name, test_group in test_groups.items():
       print(p.stdout)
       print(p.stderr)
     except subprocess.CalledProcessError as e:
-      print(f'{test} FAILED, ABORTING COMMIT')
+      print(f'{test} FAILED, ABORTING COMMIT (but will run rest of tests)')
       print(e.stdout)
       print(e.stderr)
-      exit(1)
+      failed = True
+
+  if failed:
+    exit(1)
 
 # TODO should periodically run all dlv tests (my tests don't check things like nexting)

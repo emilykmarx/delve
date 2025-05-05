@@ -3,6 +3,7 @@ package conftamer
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/printer"
@@ -163,6 +164,24 @@ func (pendingwp PendingWp) String() string {
 	return fmt.Sprintf("{watchexprs %v watchargs %v tainting_vals %+v commands %+v}",
 		pendingwp.watchexprs, pendingwp.watchargs, pendingwp.tainting_vals, pendingwp.cmds)
 }
+func printJSON(i ...interface{}) string {
+	if b, err := json.Marshal(i); err == nil {
+		return string(b)
+	}
+	return "cannot marshal for logging"
+}
+func (t TaintedRegion) String() string {
+	old_region := ""
+	for i, xv := range t.old_region {
+		s := fmt.Sprintf("%#x (sz %#x)", xv.Addr, xv.Watchsz)
+		if i > 0 {
+			old_region += ", "
+		}
+		old_region += s
+	}
+	// handle nils
+	return fmt.Sprintf("{new_expr %v new_argno %v old_region %s}", printJSON(t.new_expr), printJSON(t.new_argno), old_region)
+}
 
 // Get line of source (as string)
 func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
@@ -219,28 +238,6 @@ func memOverlap(start1 uint64, sz1 uint64, start2 uint64, sz2 uint64) (uint64, u
 	return 0, 0, false
 }
 
-func (tc *TaintCheck) printBps() {
-	bps, list_err := tc.client.ListBreakpoints(true)
-	if list_err != nil {
-		log.Panicf("Error listing breakpoints: %v\n", list_err)
-	}
-	for _, bp := range bps {
-		if bp.WatchExpr != "" {
-			log.Printf("Watchpoint at %x\n", bp.Addr)
-		} else {
-			log.Printf("Breakpoint at %x\n", bp.Addr)
-		}
-	}
-
-}
-
-func printThreads(state *api.DebuggerState) {
-	log.Println("Threads:")
-	for _, th := range state.Threads {
-		log.Printf("%v at %v\n", th.ID, th.Function.Name_)
-	}
-}
-
 func getThread(ID int, state *api.DebuggerState) *api.Thread {
 	for _, thread := range state.Threads {
 		if ID == thread.ID {
@@ -266,7 +263,7 @@ func (tc *TaintCheck) printStacktrace() {
 		loc := fmt.Sprintf("%v \nLine %v:%v:0x%x",
 			frame.File, frame.Line, frame.Function.Name(),
 			frame.PC)
-		log.Println(loc)
+		tc.Logf(slog.LevelDebug, nil, loc)
 	}
 }
 
@@ -412,13 +409,13 @@ func (tc *TaintCheck) startTarget(cmd string, state *api.DebuggerState) {
 	var new_state *api.DebuggerState
 	var err error
 	if cmd == api.Next {
-		fmt.Println("Next")
+		tc.Logf(slog.LevelDebug, nil, "Next")
 		new_state, err = tc.client.Next()
 		if err != nil {
 			log.Panicf("Next: %v\n", err)
 		}
 	} else if cmd == api.StepOut {
-		fmt.Println("Stepout")
+		tc.Logf(slog.LevelDebug, nil, "StepOut")
 		new_state, err = tc.client.StepOut()
 		if err != nil {
 			log.Panicf("Stepout: %v\n", err)
@@ -426,7 +423,7 @@ func (tc *TaintCheck) startTarget(cmd string, state *api.DebuggerState) {
 	} else if cmd != api.Continue {
 		log.Panicf("unsupported cmd in sequence: %v\n", cmd)
 	} else {
-		fmt.Println("Continue")
+		tc.Logf(slog.LevelDebug, nil, "Continue")
 		new_state = <-tc.client.Continue()
 	}
 	*state = *new_state

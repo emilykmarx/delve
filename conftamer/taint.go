@@ -1,7 +1,6 @@
 package conftamer
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -96,8 +95,6 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 	tainted_region.cmds = runtime_stepout_cmd_seq(hit)
 
 	stack := tc.stacktrace()
-	fmt.Printf("propagateReturn - hit %+v\n", *hit)
-	tc.printStacktrace()
 	var caller_lhs *ast.Expr
 	var caller_node *ast.Node
 
@@ -111,7 +108,7 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 		if caller_lhs == nil && caller_node == nil {
 			tc.printStacktrace()
 			// Indicates caller catches tainted return value in a way we haven't handled
-			tc.Logf(slog.LevelWarn, hit, "Failed to find caller lhs; call file %v, call line %v (stacktrace above)\n", call_file, call_line)
+			tc.Logf(slog.LevelWarn, hit, "Failed to find caller lhs; call file %v, call line %v (stacktrace above)", call_file, call_line)
 			return false
 		}
 		stack_len := hit.stack_len - caller_frame
@@ -148,7 +145,6 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 		}
 	}
 
-	fmt.Printf("propagateReturn return %+v\n", *tainted_region)
 	return true
 }
 
@@ -198,13 +194,12 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 		case ast.Expr:
 			// If type not supported, still check overlap (e.g. struct)
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set correctly
-			fmt.Printf("ZZEM eval %v\n", exprToString(node.(ast.Expr)))
+			tc.Logf(slog.LevelDebug, hit, "isTainted eval %v", exprToString(node.(ast.Expr)))
 			xvs, err := tc.client.EvalWatchexpr(hit.scope, exprToString(node.(ast.Expr)), true)
 			if err != nil {
-				fmt.Printf("eval err: %v\n", err.Error())
 				if strings.Contains(err.Error(), "can not convert") {
 					// May want to add support for some of these in delve
-					tc.Logf(slog.LevelWarn, hit, "eval %v: %v", exprToString(node.(ast.Expr)), err)
+					tc.Logf(slog.LevelWarn, hit, "Eval %v: %v", exprToString(node.(ast.Expr)), err)
 					// Don't eval children
 					return false
 				} else {
@@ -218,7 +213,7 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 					watch_addr := hit.hit_bp.Addr
 					watch_size := watchSize(hit.hit_bp)
 					xv_size := uint64(xv.Watchsz)
-					fmt.Printf("watch region %#x:%v, xv %#x:%v\n", watch_addr, watch_size, xv.Addr, xv_size)
+					tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
 
 					_, _, overlap := memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
 					if overlap {
@@ -241,10 +236,10 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 	})
 
 	if len(tainted_region.old_region) != 0 {
-		fmt.Printf("isTainted return %+v\n", tainted_region)
+		tc.Logf(slog.LevelDebug, hit, "isTainted return %+v", tainted_region)
 		return &tainted_region
 	} else {
-		fmt.Printf("isTainted return nil\n")
+		tc.Logf(slog.LevelDebug, hit, "isTainted return nil")
 		return nil
 	}
 }
@@ -341,11 +336,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 	// XXX any way to get rid of thread in Hit? Is confusing since shouldn't use it for location (bc of runtime hits). At least comment that somewhere...
 	ret := []TaintedRegion{}
 	defer func() {
-		if ret != nil {
-			fmt.Printf("propagateTaint return %+v\n", ret)
-		} else {
-			fmt.Printf("propagateTaint return nil\n")
-		}
+		tc.Logf(slog.LevelDebug, hit, "propagateTaint return %+v", ret)
 	}()
 
 	// DFS of file's AST
@@ -364,6 +355,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 
 		switch typed_node := node.(type) {
 		case *ast.IfStmt:
+			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - IfStmt cond %v", exprToString(typed_node.Cond))
 			if start.Line == hit.hit_instr.Loc.Line && tc.config.Taint_flow != DataFlow {
 				// Enter if[elseif/else] => set up state so we'll next through the branch body
 				tainted_region := tc.isTainted(typed_node.Cond, hit, fset)
@@ -377,10 +369,11 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					ret = append(ret, *tainted_region)
 				}
 			}
+			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - IfStmt cond %v", exprToString(typed_node.Cond))
 
 		case *ast.CallExpr:
 			call_expr := exprToString(typed_node.Fun)
-			fmt.Printf("CallExpr %v\n", exprToString(typed_node))
+			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - CallExpr %v", exprToString(typed_node))
 			if call_expr == "copy" {
 				tainted_region := tc.isTainted(typed_node.Args[1], hit, fset)
 				if tainted_region != nil {
@@ -422,9 +415,10 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					}
 				}
 			}
+			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - CallExpr %v", exprToString(typed_node))
 
 		case *ast.ReturnStmt:
-			fmt.Println("ReturnStmt")
+			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - ReturnStmt lhs ret %v", exprToString(typed_node.Results[0]))
 			// Watched location is read in return value =>
 			// taint corresponding assign lhs/range value in caller, if any
 			for i, retval := range typed_node.Results {
@@ -435,9 +429,10 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					}
 				}
 			}
+			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - ReturnStmt lhs ret %v", exprToString(typed_node.Results[0]))
 
 		case *ast.AssignStmt:
-			fmt.Printf("start propagateTaint - AssignStmt lhs %v\n", exprToString(typed_node.Lhs[0]))
+			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - AssignStmt lhs %v", exprToString(typed_node.Lhs[0]))
 			for _, rhs := range typed_node.Rhs {
 				// For now, taint each lhs (TODO which should be tainted - could do heuristic e.g. same type as rhs)
 				rhs_tainted_region := tc.isTainted(rhs, hit, fset)
@@ -456,8 +451,10 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					}
 				}
 			}
-			fmt.Printf("finish propagateTaint - AssignStmt lhs %v\n", exprToString(typed_node.Lhs[0]))
+			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - AssignStmt lhs %v", exprToString(typed_node.Lhs[0]))
+
 		case *ast.RangeStmt:
+			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - RangeStmt lhs %v", exprToString(typed_node.Value))
 			// TODO need new test for this since watching underlying data (cur one doesn't hit in range)
 			if start.Line == hit.hit_instr.Loc.Line {
 				// TODO handle Range properly (once support tainted composite types in delve):
@@ -473,6 +470,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					ret = append(ret, *tainted_region)
 				}
 			}
+			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - RangeStmt lhs %v", exprToString(typed_node.Value))
 		} // end switch
 
 		return true

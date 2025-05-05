@@ -1,8 +1,8 @@
 package conftamer
 
 import (
-	"fmt"
 	"log"
+	"log/slog"
 
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/service/api"
@@ -36,7 +36,7 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 	// TODO also need to remove any PreviousAddrs?
 	for _, wp_oos := range state.WatchOutOfScope {
 		loc := state.SelectedGoroutine.CurrentLoc
-		fmt.Printf("Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x) \n",
+		tc.Logf(slog.LevelInfo, nil, "Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x)",
 			wp_oos.WatchExpr, loc.File, loc.Line, loc.PC)
 		forEachWatchaddr(wp_oos, func(watchaddr uint64) bool {
 			delete(tc.mem_param_map, watchaddr)
@@ -48,20 +48,24 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 // If command not done (i.e. was interrupted by some other hit), return what command to execute next.
 func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread *api.Thread) string {
 	stack := tc.stacktrace()
-	fmt.Printf("cmd was %+v; thread line now %v, stacklen now %v\n", cmd, thread.Line, len(stack))
 	if state.NextInProgress {
 		// Hit on another goroutine => continue (next is not allowed - continue will act as next)
+		tc.Logf(slog.LevelDebug, nil, "Cmd %+v interrupted at line %v (stack len %v) by hit on another goroutine => continue",
+			cmd, thread.Line, len(stack))
 		return api.Continue
 	} else if len(stack) > cmd.stack_len {
-		fmt.Printf("ZZEM interrupted at line %v, not at right frame yet => stepout\n", thread.Line)
+		tc.Logf(slog.LevelDebug, nil, "Cmd %+v interrupted at line %v (stack len %v), not at right frame yet => stepout",
+			cmd, thread.Line, len(stack))
 		return api.StepOut
 	} else if cmd.cmd == api.Next && thread.Line == cmd.lineno {
-		fmt.Printf("ZZEM interrupted at line %v, not at right line yet => next again\n", thread.Line)
+		tc.Logf(slog.LevelDebug, nil, "Cmd %+v interrupted at line %v (stack len %v), not at right line yet => next",
+			cmd, thread.Line, len(stack))
 		return api.Next
 	}
 
 	// Command done
-	fmt.Printf("cmd %+v done - at line %v\n", cmd, thread.Line)
+	tc.Logf(slog.LevelDebug, nil, "Cmd %+v done - now at line %v (stack len %v)",
+		cmd, thread.Line, len(stack))
 	return ""
 }
 
@@ -69,7 +73,7 @@ func (tc *TaintCheck) commandDone(cmd Command, state *api.DebuggerState, thread 
 // TODOs for command requests: handle multiple outstanding command requests and goroutine switching (see notebook),
 // switch copy builtin away from assuming linear flow
 func (tc *TaintCheck) Run() {
-	log.Printf("Starting CT-Scan\n\n")
+	tc.Logf(slog.LevelInfo, nil, "Starting CT-Scan")
 	defer WriteBehaviorMap(tc.config.Behavior_map_filename, tc.behavior_map)
 
 	state := &api.DebuggerState{}
@@ -99,8 +103,9 @@ func (tc *TaintCheck) Run() {
 
 				if tc.cmd_pending_wp.cmd_idx == len(tc.cmd_pending_wp.cmds)-1 {
 					// Finished command sequence => set watchpoints
-					fmt.Printf("ZZEM finished sequence - at line %v; pending wp:\n", thread.Line)
-					fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", tc.cmd_pending_wp.watchexprs, tc.cmd_pending_wp.watchargs, tc.cmd_pending_wp.cmds)
+					tc.Logf(slog.LevelDebug, nil, "Finished sequence - watchexprs: %+v, watchargs: %+v, cmds: %+v, body %v:%v",
+						tc.cmd_pending_wp.watchexprs, tc.cmd_pending_wp.watchargs, tc.cmd_pending_wp.cmds, tc.body_start, tc.body_end)
+
 					if tc.body_start != 0 {
 						// Finished next in branch body
 						if tc.body_start <= thread.Line && thread.Line <= tc.body_end {
@@ -111,11 +116,9 @@ func (tc *TaintCheck) Run() {
 							if tc.cmd_pending_wp.watchexprs.Empty() {
 								// First line of a branch body => no watchpoint to set yet - or,
 								// propagateTaint from previous line found no exprs that required nexting to set wp
-								fmt.Printf("ZZEM first line\n")
 							} else {
 								// Keep rest of cmd_pending_wp, including its tainting values and command =>
 								// will keep nexting and setting watchpoints tainted by condition until exit body
-								fmt.Printf("ZZEM non-first line\n")
 								tc.setPendingWatchpoints(tc.cmd_pending_wp, &hit)
 							}
 
@@ -130,7 +133,6 @@ func (tc *TaintCheck) Run() {
 						} else {
 							// Exited branch body by nexting past last line =>
 							// Set the watchpoints from last line (if any), then stop nexting
-							fmt.Printf("exited branch body\n")
 							if !tc.cmd_pending_wp.watchexprs.Empty() {
 								tc.setPendingWatchpoints(tc.cmd_pending_wp, &hit)
 							}
@@ -139,14 +141,13 @@ func (tc *TaintCheck) Run() {
 							tc.body_end = 0
 						}
 					} else {
-						fmt.Printf("ZZEM not in branch body - set cmd pending wp\n")
 						// Not in branch body
 						tc.setPendingWatchpoints(tc.cmd_pending_wp, &hit)
 						tc.cmd_pending_wp = nil
 					}
 				} else {
 					// Finished command, but not the whole sequence => do next command in sequence
-					fmt.Printf("ZZEM finished command but not whole sequence\n")
+					tc.Logf(slog.LevelDebug, &hit, "Finished command but not whole sequence")
 					tc.cmd_pending_wp.cmd_idx++
 				}
 			}
@@ -169,7 +170,6 @@ func (tc *TaintCheck) Run() {
 		}
 	}
 
-	fmt.Printf("Target exited with status %v\n", state.ExitStatus)
-	log.Println("Finished CT-Scan")
+	tc.Logf(slog.LevelInfo, nil, "Finished CT-Scan - target exited with status %v", state.ExitStatus)
 	tc.client.Detach(false) // Also kills server, despite function doc (even on unmodified dlv)
 }

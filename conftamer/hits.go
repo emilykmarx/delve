@@ -7,6 +7,7 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -205,7 +206,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		hit.scope.Frame = 3
 		tc.setWatchpoint(SyscallRecvBuf, [][]TaintingVals{{tv}}, true, false, hit)
 	} else {
-		log.Printf("Syscall entry breakpoint hit for unexpected syscall %v\n", info.SyscallName)
+		log.Panicf("Syscall entry breakpoint hit for unexpected syscall %v\n", info.SyscallName)
 	}
 }
 
@@ -223,7 +224,7 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 
 	skip := runtimeOrInternal(stack[0].File)
 	if skip {
-		log.Printf("Watchpoint hit in runtime or internal, stack len %v - "+
+		tc.Logf(slog.LevelDebug, hit, "Watchpoint hit in runtime or internal, stack len %v - "+
 			"full stack (including first non-runtime frame, whose PC is one after call instr)\n", len(stack))
 		tc.printStacktrace()
 
@@ -279,6 +280,7 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	non_runtime_frame, handle := tc.handleRuntimeHit(hit)
 	// Ignore prints (may be within print, or when setting up to call print) for convenience
 	if tc.hitInPrint() || !handle {
+		tc.Logf(slog.LevelDebug, hit, "Ignoring hit")
 		return false
 	}
 
@@ -286,7 +288,7 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 
 	src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 	if ignoreSourceLine(src_line) {
-		fmt.Printf("IGNORING PRINT: %v\n", src_line)
+		tc.Logf(slog.LevelDebug, hit, "Ignoring hit at: %v", src_line)
 		return false
 	}
 
@@ -295,24 +297,6 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	}
 
 	return true
-}
-
-// Pick any control-flow taint out of taintingVals
-func controlFlowTaint(tainting_vals TaintingVals) TaintingVals {
-	ifstmt_taint := newTaintingVals()
-	tainting_vals.Params.ForEach(func(tp TaintingParam) bool {
-		if tp.Flow == ControlFlow {
-			ifstmt_taint.Params.Insert(tp)
-		}
-		return true
-	})
-	tainting_vals.Behaviors.ForEach(func(tb TaintingBehavior) bool {
-		if tb.Flow == ControlFlow {
-			ifstmt_taint.Behaviors.Insert(tb)
-		}
-		return true
-	})
-	return ifstmt_taint
 }
 
 /* Populate existing_info with tainting vals from region's m-c entries
@@ -396,7 +380,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 	// We really want a read-only wp, but not supported
 	watchpoints, err := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
 	if err != nil {
-		errstr := fmt.Sprintf("Failed to set watchpoint for %v: %v\n", watchexpr, err)
+		errstr := fmt.Sprintf("Failed to set watchpoint for %v: %v", watchexpr, err)
 		if strings.Contains(err.Error(), "type not supported") || strings.Contains(err.Error(), "nil slice") ||
 			strings.Contains(err.Error(), "fake address") {
 			// TODO fake address is likely fixable by setting bp at 2nd instr in function body instead of 1st
@@ -439,7 +423,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 			xv_tainting_vals = tainting_vals[i]
 		}
 		if i < len(watchpoints) {
-			fmt.Printf("ZZEM Set watchpoint on %v\n", watchpoints[i].WatchExpr)
+			tc.Logf(slog.LevelDebug, hit, "Set watchpoint on %v", watchpoints[i].WatchExpr)
 			if watchSize(watchpoints[i]) == 0 {
 				log.Panicf("Debugger returned sz 0 watchpoint %+v for %v\n", *watchpoints[i], watchexpr)
 			}
@@ -487,7 +471,7 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 		// Currently only supporting single cmd_pending_wp
 		if pending_watchpoint.cmds != nil && !reflect.DeepEqual(tainted_region.cmds, pending_watchpoint.cmds) {
 			// When advancing through branch body, this is ok (we keep updating the same one throughout branch body)
-			fmt.Printf("existing cmd_pending_wp %+v has different command sequence than current %+v\n",
+			tc.Logf(slog.LevelDebug, hit, "Existing cmd_pending_wp %+v has different command sequence than current %+v",
 				pending_watchpoint.cmds, tainted_region.cmds)
 		}
 	}
@@ -518,13 +502,13 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 	} else if tainted_region.new_expr != nil {
 		insert(&pending_watchpoint.watchexprs, *tainted_region.new_expr)
 	}
-	fmt.Printf("pendingWatchpoint about to record: ")
-	fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", pending_watchpoint.watchexprs, pending_watchpoint.watchargs, pending_watchpoint.cmds)
+	tc.Logf(slog.LevelDebug, hit, "pendingWatchpoint about to record - watchexprs: %+v, watchargs: %+v, cmds: %+v",
+		pending_watchpoint.watchexprs, pending_watchpoint.watchargs, pending_watchpoint.cmds)
 
 	// Record pending watchpoint (or set now, if possible)
 	if tainted_region.set_now && len(tainted_region.cmds) == 0 {
 		// non-runtime hit, can set now
-		fmt.Printf("set pendingwp now\n")
+		tc.Logf(slog.LevelDebug, hit, "Set pending watchpoint now")
 		tc.setPendingWatchpoints(&pending_watchpoint, hit)
 		// Cleanup if there was already a pending watchpoint at this location
 		if set_at_bp {
@@ -535,7 +519,8 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 	} else {
 		if set_at_bp {
 			tc.setBp(tainted_region.set_location.PC)
-			fmt.Printf("pendingWatchpoint set bp at %v:%v\n", tainted_region.set_location.File, tainted_region.set_location.Line)
+			tc.Logf(slog.LevelDebug, hit, "pendingWatchpoint set bp at %v:%v",
+				tainted_region.set_location.File, tainted_region.set_location.Line)
 			tc.bp_pending_wps[tainted_region.set_location.PC] = pending_watchpoint
 		} else {
 			tc.cmd_pending_wp = &pending_watchpoint
@@ -546,17 +531,17 @@ func (tc *TaintCheck) pendingWatchpoint(tainted_region *TaintedRegion, hit *Hit)
 // Watchpoint hit => record any new pending watchpoints.
 func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
 	if !tc.hittingLine(hit) {
-		log.Printf("Not propagating taint for watchpoint hit at %#x\n", hit.thread.PC)
+		tc.Logf(slog.LevelDebug, hit, "Not propagating taint for watchpoint hit at %#x", hit.thread.PC)
 		return
 	}
 	event := Event{EventType: WatchpointHit, Address: hit.hit_bp.Addr, Size: watchSize(hit.hit_bp), Expression: hit.hit_bp.WatchExpr}
 	WriteEvent(hit.thread, tc.event_log, event)
-	fmt.Printf("ZZEM hit watchpoint on %v at %v:%v\n", hit.hit_bp.WatchExpr, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
+	tc.Logf(slog.LevelDebug, hit, "Hit watchpoint on %v at %v:%v", hit.hit_bp.WatchExpr, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 	tainted_regions := tc.propagateTaint(hit)
 	for _, tainted_region := range tainted_regions {
 		tc.pendingWatchpoint(&tainted_region, hit)
 	}
-	fmt.Printf("ZZEM propagated taint for watchpoint hit on %v\n", hit.hit_bp.WatchExpr)
+	tc.Logf(slog.LevelDebug, hit, "Propagated taint for watchpoint hit on %v", hit.hit_bp.WatchExpr)
 }
 
 // Set all watchpoints corresponding to pendingWp, remove them from pendingWp
@@ -589,8 +574,8 @@ func (tc *TaintCheck) onPendingWpBpHit(hit *Hit) {
 
 	bp_addr := hit.hit_bp.Addrs[0]
 	info := tc.bp_pending_wps[bp_addr]
-	fmt.Printf("ZZEM file %v line %v: hit pending wp breakpoint\n", hit.hit_bp.File, hit.hit_bp.Line)
-	fmt.Printf("watchexprs: %+v, watchargs: %+v, cmds: %+v\n", info.watchexprs, info.watchargs, info.cmds)
+	tc.Logf(slog.LevelDebug, hit, "Hit pending wp breakpoint - watchexprs: %+v, watchargs: %+v, cmds: %+v",
+		info.watchexprs, info.watchargs, info.cmds)
 	defer func() {
 		tc.onPendingWpBpHitDone(hit)
 	}()
@@ -640,8 +625,17 @@ func New(config *Config) (*TaintCheck, error) {
 		event_log:      csv.NewWriter(event_log_file),
 	}
 
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)                    // for log.Printf
-	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true})) // default min level is info
+	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelInfo,
+		// Shorten paths for client filenames
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.SourceKey {
+				source, _ := a.Value.Any().(*slog.Source)
+				if source != nil {
+					source.File = filepath.Base(source.File)
+				}
+			}
+			return a
+		}}))
 
 	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
 		"Timestamp", "Breakpoint/Watchpoint Hit Location (File Line PC)", "Thread"})
