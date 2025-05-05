@@ -419,9 +419,8 @@ func MoveObjectWithRetries(xv *proc.Variable, dbp *nativeProcess, watchaddrch ch
 
 // Set any watchpoints the client requested during the last stop
 // (moving the objects to a tainted page first).
-// XXX add allocator_http.go to automated suite, and update rest of tests to either pass -nomove
-// (although should keep one test of stack wp without -nomove),
-// or run http server (may also want sleep after set wp so can check it also hits after move)
+// XXX update most of client and watchpoint tests to move
+// (once switch over to setting on old loc before move, test hit both before and after move)
 func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContext) {
 	for _, dbp := range procgrp.procs {
 		if valid, _ := dbp.Valid(); valid {

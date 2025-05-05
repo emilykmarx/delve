@@ -798,14 +798,12 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	bp.WatchExpr = expr
 
 	if StackAddr(scope, watchaddr) {
-		fmt.Printf("wp set for %#x - on stack\n", watchaddr)
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
 		err := t.setStackWatchBreakpoints(scope, bp)
 		if err != nil {
 			return bp, err
 		}
 	} else {
-		fmt.Printf("wp set for %#x (sz %#x) - not on stack\n", watchaddr, sz)
 	}
 	return bp, nil
 }
@@ -875,7 +873,6 @@ func (t *Target) sliceIndices(scope *EvalScope, expr string) (string, []int, err
 			}
 		}
 	}
-	fmt.Printf("proc sliceIndices ret: %+v\n", slice_idxs)
 	return slice_name, slice_idxs[:], nil
 }
 
@@ -953,7 +950,6 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 	if slice_idxs != nil {
 		elem_idxs = slice_idxs
 	}
-	fmt.Printf("elem_idxs: %v\n", elem_idxs)
 
 	if sz <= 0 {
 		return fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
@@ -1087,19 +1083,19 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 				WatchType: wtype.withSize(xv.Watchsz),
 			}
 			bps = append(bps, &fake_wp)
-		}
+		} else {
+			// xv.Watchsz is int64, but needs to fit in 62 bits due to WatchType format
+			if uint64(xv.Watchsz) > uint64(1)<<62-1 {
+				return nil, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz)
+			}
+			bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Name, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
+			logicalID++
 
-		// xv.Watchsz is int64, but needs to fit in 62 bits due to WatchType format
-		if uint64(xv.Watchsz) > uint64(1)<<62-1 {
-			return nil, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz)
+			if err != nil {
+				return nil, err
+			}
+			bps = append(bps, bp)
 		}
-		bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Name, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
-		logicalID++
-
-		if err != nil {
-			return nil, err
-		}
-		bps = append(bps, bp)
 	}
 
 	return bps, nil
