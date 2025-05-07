@@ -11,5 +11,6 @@ type Aah struct {
 
 func main() {
 	struct_slice := Aah{1, []int{1, 2}}
-	_ = struct_slice
+	slice_struct_slice := []Aah{struct_slice}
+	_ = slice_struct_slice
 }

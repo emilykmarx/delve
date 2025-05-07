@@ -38,7 +38,7 @@ func main() {
 	nested := Nested{
 		name: multiline_lit,
 	}
-	fmt.Printf("%v\n", nested)
+	_ = nested
 	// assign to nested struct (via copy) => propagate to inner struct's copy of member
 	nested2 := nested
 	fmt.Printf("%v\n", nested2)

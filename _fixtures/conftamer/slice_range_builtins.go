@@ -15,7 +15,7 @@ func struct_slice_append() []string {
 	// Suffix reuses conf.search's backing arrays
 	for i, suffix := range conf.search {
 		fmt.Printf("iter %v\n", i)
-		// runtime hits (of suffix backing array) => propagate to names
+		// runtime hits (of suffix backing array) => propagate to names[0] and names[1], only taint first len(suffix) B of each
 		names = append(names, "localhost"+suffix) // slice w/ a new backing array
 	}
 

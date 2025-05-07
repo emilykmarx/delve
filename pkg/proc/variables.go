@@ -132,7 +132,8 @@ type Variable struct {
 	// Children lists the variables sub-variables. What constitutes a child
 	// depends on the variable's type. For pointers, there's one child
 	// representing the pointed-to variable.
-	Children []Variable
+	Children      []Variable
+	ReferenceElem bool
 
 	loaded     bool
 	Unreadable error

@@ -890,12 +890,15 @@ func adjustForSlice(xv *Variable, slice_idxs []int, elemsz int64) {
 	}
 }
 
-// Whether the type is a pointer
+// Whether the type is a pointer, or could contain pointers
 func referenceType(typ godwarf.Type) bool {
 	if _, ok := typ.(*godwarf.StringType); ok {
 		return true
 	}
 	if _, ok := typ.(*godwarf.SliceType); ok {
+		return true
+	}
+	if _, ok := resolveTypedef(typ).(*godwarf.StructType); ok {
 		return true
 	}
 	return false
@@ -907,6 +910,11 @@ func referenceType(typ godwarf.Type) bool {
 // (for client - if err != nil, xv returned to client is nil even if it's not here).
 // This is used both by server to set watchpoints and by client to evaluate expressions.
 func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable) error {
+	return t.evalWatchexprInternal(scope, expr, ignoreUnsupported, vars, false)
+}
+
+// ref_elem: Whether this is a recursive call
+func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable, recursing bool) error {
 	orig_expr := expr
 	slice_name, slice_idxs, err := t.sliceIndices(scope, expr)
 	if err != nil {
@@ -940,6 +948,9 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 	}
 
 	xv.Name = orig_expr
+	if recursing {
+		xv.ReferenceElem = true
+	}
 	// TODO (minor): Below assumes software impl (i.e. can watch sz > 8)
 	sz := xv.DwarfType.Size()
 
@@ -968,7 +979,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 			// watch the elements' underlying data (chars or backing array)
 			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
 				elem := fmt.Sprintf("%v[%v]", expr, i)
-				if err := t.EvalWatchexpr(scope, elem, ignoreUnsupported, vars); err != nil {
+				if err := t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, true); err != nil {
 					return err
 				}
 			}
@@ -987,7 +998,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		if referenceType(slice.ElemType) {
 			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
 				elem := fmt.Sprintf("%v[%v]", expr, i)
-				if err := t.EvalWatchexpr(scope, elem, ignoreUnsupported, vars); err != nil {
+				if err := t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, true); err != nil {
 					return err
 				}
 			}
@@ -1002,7 +1013,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 		// Return variable for each field, since some may be reference types
 		for _, field := range struct_.Field {
 			elem := fmt.Sprintf("%v.%v", expr, field.Name)
-			if err := t.EvalWatchexpr(scope, elem, ignoreUnsupported, vars); err != nil {
+			if err := t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, true); err != nil {
 				return err
 			}
 		}

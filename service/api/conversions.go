@@ -155,15 +155,16 @@ func PrettyTypeName(typ godwarf.Type) string {
 // ConvertVar converts from proc.Variable to api.Variable.
 func ConvertVar(v *proc.Variable) *Variable {
 	r := Variable{
-		Addr:     v.Addr,
-		OnlyAddr: v.OnlyAddr,
-		Name:     v.Name,
-		Kind:     v.Kind,
-		Watchsz:  v.Watchsz,
-		Len:      v.Len,
-		Cap:      v.Cap,
-		Flags:    VariableFlags(v.Flags),
-		Base:     v.Base,
+		Addr:          v.Addr,
+		OnlyAddr:      v.OnlyAddr,
+		Name:          v.Name,
+		Kind:          v.Kind,
+		Watchsz:       v.Watchsz,
+		Len:           v.Len,
+		Cap:           v.Cap,
+		Flags:         VariableFlags(v.Flags),
+		Base:          v.Base,
+		ReferenceElem: v.ReferenceElem,
 
 		LocationExpr: v.LocationExpr.String(),
 		DeclLine:     v.DeclLine,

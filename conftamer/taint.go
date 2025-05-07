@@ -32,6 +32,8 @@ type TaintedRegion struct {
 	new_expr   *string         // newly tainted expression (empty if not recorded on watchpoint hit)
 	new_argno  *int            // index of newly tainted arg
 	old_region []*api.Variable // list of vars that old region evaluates to (order matters)
+	// Whether to concatenate tainting vals across xvs
+	concat_xvs bool
 
 	// Where watchpoint can be set
 	// Immediately, once found (unless runtime hit)
@@ -90,7 +92,7 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr, caller_node *ast.Nod
 // or used as condition in if statement.
 // Includes skipping any lines of the form `return f()`.
 // Return true if we support this form of propagation -
-// TODO handle function composition (for builtins too - will need diff handling). Any others?
+// TODO handle function composition (for builtins too - will need diff handling). Any others? e.g. x = f() + "str"
 func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *TaintedRegion) bool {
 	tainted_region.cmds = runtime_stepout_cmd_seq(hit)
 
@@ -152,36 +154,40 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 // so don't need to e.g. write an assign and range test for every new construct
 // (e.g. don't have a test for return callexpr/cast)
 
-/* If expr overlaps the watchpoint, populate ret with the addrs corresponding to expr,
- * regardless of which portion overlaps - e.g.:
- * If expr is struct => return struct, even if only one field overlaps.
- * If expr is struct.field => return struct.field.
- * Ignore function calls (except append and casts).
- * Requires expr to be in scope.
- * If in branch body, always overlap. */
-func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *TaintedRegion {
-	tainted_region := TaintedRegion{} // to be populated, if region is tainted
+func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (TaintedRegion, bool) {
+	return tc.evalWatchexpr(expr, hit, fset, true)
+}
+
+/* Eval expr and record its xv(s), ignoring function calls (except casts and append)
+ * and any children of evaluatable expressions.
+ * If tainted_only, stop when find an expr that overlaps the watchpoint, e.g.:
+ * 	- If expr is struct => record struct, even if only one field overlaps.
+ * 	- If expr is struct.field => record struct.field.
+ * Panic if would record multiple exprs.
+ * Return true if expr overlaps the watchpoint.
+ * If in branch body, always overlap.
+ * Also populate set_now. */
+func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet, tainted_only bool) (TaintedRegion, bool) {
+	tainted_region := TaintedRegion{} // to be populated
+	is_tainted := false
 
 	if hit.hit_bp == nil {
 		// Finished next in branch body
-		return &tainted_region
+		return tainted_region, true
 	}
 
 	ast.Inspect(expr, func(node ast.Node) bool {
-		if len(tainted_region.old_region) > 0 {
-			return false // we're done
-		}
 		if node == nil {
 			return true
 		}
 		switch typed_node := node.(type) {
 		case *ast.CallExpr:
-			if arg := tc.handleAppend(typed_node, hit, fset); len(arg) != 0 {
-				// For now, just apply taint from start addr of last tainted arg to whole array
-				tainted_region.old_region = arg
-				// Preserve taint of old slice, append taint of new elems
-			} else if !tc.isCast(typed_node) {
+			if !tc.isCast(typed_node) {
 				// regular function call => ignore (another call to isTainted checks its args)
+				return false
+			} else if exprToString(typed_node.Fun) == "append" {
+				// append => return args appended together
+				tainted_region.old_region, is_tainted, tainted_region.concat_xvs = tc.handleAppend(typed_node, hit, fset)
 				return false
 			} else {
 				// cast => continue to inspect its arg
@@ -192,56 +198,54 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) *T
 			// Multiline composite lit => next can take us back to assign line, but setting immediately seems to work (only if multiline)
 			tainted_region.set_now = rbrace > lbrace
 		case ast.Expr:
-			// If type not supported, still check overlap (e.g. struct)
+			// If type not supported, still check overlap
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set correctly
-			tc.Logf(slog.LevelDebug, hit, "isTainted eval %v", exprToString(node.(ast.Expr)))
-			xvs, err := tc.client.EvalWatchexpr(hit.scope, exprToString(node.(ast.Expr)), true)
+			tc.Logf(slog.LevelDebug, hit, "isTainted eval %v", exprToString(typed_node))
+			xvs, err := tc.client.EvalWatchexpr(hit.scope, exprToString(typed_node), true)
 			if err != nil {
 				if strings.Contains(err.Error(), "can not convert") {
 					// May want to add support for some of these in delve
-					tc.Logf(slog.LevelWarn, hit, "Eval %v: %v", exprToString(node.(ast.Expr)), err)
+					tc.Logf(slog.LevelWarn, hit, "Eval %v: %v", exprToString(typed_node), err)
 					// Don't eval children
 					return false
 				} else {
-					// Try evaluating any AST children (for e.g. `x+1`)
+					// Try evaluating any AST children (for e.g. binary ops)
 				}
 			} else {
 				// 1. Filter out region that doesn't overlap watchpoint at all
 				// (may overlap but not be tainted - will check m-c map when record pending watchpoint)
-				overlaps_wp := false
 				for _, xv := range xvs {
 					watch_addr := hit.hit_bp.Addr
 					watch_size := watchSize(hit.hit_bp)
 					xv_size := uint64(xv.Watchsz)
 					tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
 
-					_, _, overlap := memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
-					if overlap {
-						overlaps_wp = true
+					_, _, is_tainted = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
+					if is_tainted {
 						break
 					}
 				}
 
 				// 2. Record region
-				if overlaps_wp {
+				if !tainted_only || is_tainted {
+					if len(tainted_region.old_region) > 0 {
+						// Need to think through how to handle this
+						log.Panicf("Multiple tainted regions in %v", exprToString(expr))
+					}
 					tainted_region.old_region = xvs
 				}
 
 				// Don't evaluate children
-				// (at least for Index and Selector - haven't thought through others)
+				// (at least for Index and Selector - haven't thought through others),
+				// but still consider other exprs in tree
 				return false
 			}
 		}
 		return true
 	})
 
-	if len(tainted_region.old_region) != 0 {
-		tc.Logf(slog.LevelDebug, hit, "isTainted return %+v", tainted_region)
-		return &tainted_region
-	} else {
-		tc.Logf(slog.LevelDebug, hit, "isTainted return nil")
-		return nil
-	}
+	tc.Logf(slog.LevelDebug, hit, "isTainted return %v: %+v", is_tainted, tainted_region)
+	return tainted_region, is_tainted
 }
 
 // TODO handle the rest that do propagate
@@ -258,19 +262,23 @@ var builtinFcts = set.From([]string{
 	"print", "println",
 })
 
-// If return value is tainted by any arg, return start addr of last tainted arg
-func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) []*api.Variable {
-	// Any elem tainted, or slice already tainted => ret tainted
-	// (handles possible realloc)
-	if exprToString(call_node.Fun) != "append" {
-		return nil
-	}
+// Append xvs for each arg to get new slice's []xv
+// Return true if any arg tainted
+// TODO handle strcat similarly
+func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) ([]*api.Variable, bool, bool) {
+	slice_tainted := false
+	slice_xvs := []*api.Variable{}
 	for _, arg := range call_node.Args {
-		if tainted_region := tc.isTainted(arg, hit, fset); tainted_region != nil {
-			return tainted_region.old_region
+		tainted_region, is_tainted := tc.evalWatchexpr(arg, hit, fset, false)
+		if is_tainted {
+			slice_tainted = true
 		}
+		slice_xvs = append(slice_xvs, tainted_region.old_region...)
 	}
-	return nil
+
+	// slice of non-reference elems => flatten xvs' tainting vals into a single array (to match returned slice)
+	concat_xvs := !slice_xvs[0].ReferenceElem
+	return slice_xvs, slice_tainted, concat_xvs
 }
 
 // Update start and end of branch body in tainted_region and in tc
@@ -358,15 +366,15 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - IfStmt cond %v", exprToString(typed_node.Cond))
 			if start.Line == hit.hit_instr.Loc.Line && tc.config.Taint_flow != DataFlow {
 				// Enter if[elseif/else] => set up state so we'll next through the branch body
-				tainted_region := tc.isTainted(typed_node.Cond, hit, fset)
-				if tainted_region == nil {
+				tainted_region, is_tainted := tc.isTainted(typed_node.Cond, hit, fset)
+				if !is_tainted {
 					// Can happen when watchpoint hits for a case we don't consider tainted - e.g. index into array
 					tc.Logf(slog.LevelWarn, hit, "Hit wp for ifStmt %+v, but isTainted didn't find taint", exprToString(typed_node.Cond))
 				} else {
 					locs := []int{}
-					tc.handleIfStmt(typed_node, fset, &locs, tainted_region, hit.scope.Frame)
+					tc.handleIfStmt(typed_node, fset, &locs, &tainted_region, hit.scope.Frame)
 					tainted_region.cmds = next_cmd_seq(hit)
-					ret = append(ret, *tainted_region)
+					ret = append(ret, tainted_region)
 				}
 			}
 			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - IfStmt cond %v", exprToString(typed_node.Cond))
@@ -375,17 +383,16 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			call_expr := exprToString(typed_node.Fun)
 			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - CallExpr %v", exprToString(typed_node))
 			if call_expr == "copy" {
-				tainted_region := tc.isTainted(typed_node.Args[1], hit, fset)
-				if tainted_region != nil {
+				// If src is tainted, taint dst
+				tainted_region, is_tainted := tc.isTainted(typed_node.Args[1], hit, fset)
+				if is_tainted {
 					// Copies min(len(new), len(old)) - SetWatchpoint() will handle
-					// If on stack and runtime hit, need to set wp in correct scope, so stack OOS watchpoints
-					// are set correctly (TODO add test for this)
-					// TODO switch to nexting instead of assuming linear
+					// TODO switch to set_now instead of assuming linear
 					pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
 					tainted_region.set_location = &pending_loc
 					watchexpr := exprToString(typed_node.Args[0])
 					tainted_region.new_expr = &watchexpr
-					ret = append(ret, *tainted_region)
+					ret = append(ret, tainted_region)
 				}
 			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node) || call_expr == "runtime.KeepAlive" {
 				// builtins and casts will be handled in assign/range
@@ -397,8 +404,8 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 				lineno := decl_loc.Line + 1
 				pending_loc := tc.lineWithStmt(file, lineno, hit.scope.Frame)
 				for i, arg := range tc.fullArgs(typed_node, hit) {
-					tainted_region := tc.isTainted(arg, hit, fset)
-					if tainted_region != nil { // caller arg tainted
+					tainted_region, is_tainted := tc.isTainted(arg, hit, fset)
+					if is_tainted { // caller arg tainted
 						if runtimeOrInternal(file) {
 							// Callee is in runtime/internal pkg => don't propagate to args
 							// (may additionally want to unconditionally treat as if retval is tainted -
@@ -410,7 +417,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 							// First line of function body (params are "fake" at declaration line)
 							tainted_region.new_argno = &i
 							tainted_region.set_location = &pending_loc
-							ret = append(ret, *tainted_region)
+							ret = append(ret, tainted_region)
 						}
 					}
 				}
@@ -422,10 +429,10 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			// Watched location is read in return value =>
 			// taint corresponding assign lhs/range value in caller, if any
 			for i, retval := range typed_node.Results {
-				tainted_region := tc.isTainted(retval, hit, fset)
-				if tainted_region != nil {
-					if tc.propagateReturn(i, hit, tainted_region) {
-						ret = append(ret, *tainted_region)
+				tainted_region, is_tainted := tc.isTainted(retval, hit, fset)
+				if is_tainted {
+					if tc.propagateReturn(i, hit, &tainted_region) {
+						ret = append(ret, tainted_region)
 					}
 				}
 			}
@@ -435,19 +442,18 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - AssignStmt lhs %v", exprToString(typed_node.Lhs[0]))
 			for _, rhs := range typed_node.Rhs {
 				// For now, taint each lhs (TODO which should be tainted - could do heuristic e.g. same type as rhs)
-				rhs_tainted_region := tc.isTainted(rhs, hit, fset)
-				if rhs_tainted_region != nil {
+				rhs_tainted_region, is_tainted := tc.isTainted(rhs, hit, fset)
+				if is_tainted {
 					// Watched location is read on the rhs => taint lhs
 					for _, lhs := range typed_node.Lhs {
-						lhs_tainted_region := *rhs_tainted_region
 						watchexpr := exprToString(lhs)
-						lhs_tainted_region.new_expr = &watchexpr
-						if !lhs_tainted_region.set_now {
-							lhs_tainted_region.cmds = next_cmd_seq(hit)
+						rhs_tainted_region.new_expr = &watchexpr
+						if !rhs_tainted_region.set_now {
+							rhs_tainted_region.cmds = next_cmd_seq(hit)
 						} else {
-							lhs_tainted_region.cmds = runtime_stepout_cmd_seq(hit)
+							rhs_tainted_region.cmds = runtime_stepout_cmd_seq(hit)
 						}
-						ret = append(ret, lhs_tainted_region)
+						ret = append(ret, rhs_tainted_region)
 					}
 				}
 			}
@@ -459,15 +465,15 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			if start.Line == hit.hit_instr.Loc.Line {
 				// TODO handle Range properly (once support tainted composite types in delve):
 				// If only part of the rhs is tainted, value expr should only be tainted on corresp iters
-				tainted_region := tc.isTainted(typed_node.X, hit, fset)
-				if tainted_region != nil && typed_node.Value != nil {
+				tainted_region, is_tainted := tc.isTainted(typed_node.X, hit, fset)
+				if is_tainted && typed_node.Value != nil {
 					// Watched location is read on the rhs =>
 					// taint value expr
 					pending_loc := tc.lineWithStmt(start.Filename, start.Line+1, hit.scope.Frame)
 					tainted_region.set_location = &pending_loc
 					watchexpr := exprToString(typed_node.Value)
 					tainted_region.new_expr = &watchexpr
-					ret = append(ret, *tainted_region)
+					ret = append(ret, tainted_region)
 				}
 			}
 			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - RangeStmt lhs %v", exprToString(typed_node.Value))

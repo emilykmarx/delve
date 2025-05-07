@@ -308,12 +308,26 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 	found_taint := false
 	new_params := map[uint64]string{}
 	if len(existing_info.tainting_vals) == 0 {
-		existing_info.tainting_vals = make([][]TaintingVals, len(tainted_region.old_region))
+		if tainted_region.concat_xvs {
+			existing_info.tainting_vals = make([][]TaintingVals, 1)
+		} else {
+			existing_info.tainting_vals = make([][]TaintingVals, len(tainted_region.old_region))
+		}
 	}
+	var total_len, cur_len int
+	for _, old_xv := range tainted_region.old_region {
+		total_len += int(old_xv.Watchsz)
+	}
+
 	for i, old_xv := range tainted_region.old_region {
-		if len(existing_info.tainting_vals[i]) == 0 {
+		if tainted_region.concat_xvs {
+			if i == 0 {
+				existing_info.tainting_vals[i] = make([]TaintingVals, total_len)
+			}
+		} else if len(existing_info.tainting_vals[i]) == 0 {
 			existing_info.tainting_vals[i] = make([]TaintingVals, old_xv.Watchsz)
 		}
+
 		old_start := old_xv.Addr
 		old_end := old_start + uint64(old_xv.Watchsz)
 		for watchaddr := old_start; watchaddr < old_end; watchaddr++ {
@@ -338,7 +352,12 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 			if tainted_region.body_start == 0 {
 				// Case 1a: Regular watchpoint => copy tainted_region vals at each offset
 				// (offset may already have existing ones, e.g. hit a watchpoint within a tainted branch body - union with those if so).
-				existing_info.updateTaintingVals(tainting_vals, i, watchaddr-old_start)
+				if tainted_region.concat_xvs {
+					existing_info.updateTaintingVals(tainting_vals, 0, uint64(cur_len))
+					cur_len++
+				} else {
+					existing_info.updateTaintingVals(tainting_vals, i, watchaddr-old_start)
+				}
 			} else {
 				// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
 				// to be copied into each byte of expressions in branch body (don't know their size),
@@ -423,11 +442,12 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 			xv_tainting_vals = tainting_vals[i]
 		}
 		if i < len(watchpoints) {
+			// For testing convenience, interleave watchpoint and m-c map logging
+			// TODO can there be fewer xvs than wps? If so, log any extra at end
 			tc.Logf(slog.LevelDebug, hit, "Set watchpoint on %v", watchpoints[i].WatchExpr)
 			if watchSize(watchpoints[i]) == 0 {
 				log.Panicf("Debugger returned sz 0 watchpoint %+v for %v\n", *watchpoints[i], watchexpr)
 			}
-			// For testing convenience, interleave watchpoint and m-c map logging
 			event := Event{EventType: WatchpointSet, Address: watchpoints[i].Addr, Size: watchSize(watchpoints[i]), Expression: watchpoints[i].WatchExpr}
 			WriteEvent(hit.thread, tc.event_log, event)
 		}

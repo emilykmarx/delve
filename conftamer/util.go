@@ -327,6 +327,7 @@ func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 	locs, _, err := tc.client.FindLocation(hit.scope, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
+			// TODO (minor) - ast has package name in File - fixes this case, maybe the below too?
 			// Ambiguous name => qualify with package name
 			// Can't use lineWithStmt - !hasInstr counts comment, hasInstr skips package line
 			pkg := ""
