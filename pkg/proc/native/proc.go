@@ -332,6 +332,7 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 			if err != nil {
 				log.Panicf("trapWait error: %v\n", err)
 			}
+			fmt.Printf("found trapthread %v, status %#x\n", trapthread.ThreadID(), *trapthread.Status)
 
 			if trapthread.stopSignal() == sys.SIGSTOP {
 				// From stop() after MoveObject
@@ -344,6 +345,8 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 			if err := setThreadBreakpoint(cctx, dbp, trapthread, trapthread, &unused); err != nil {
 				log.Panicf("setThreadBreakpoint error for thread %v: %v\n", trapthread.ThreadID(), err)
 			}
+
+			fmt.Printf("set bp to %+v\n", trapthread.CurrentBreakpoint.Breakpoint)
 
 			// 3. Handle any faulting syscalls
 			procgrp.handleSyscallBreakpoints()
@@ -360,11 +363,14 @@ func (procgrp *processGroup) monitorMoveObject(cctx *proc.ContinueOnceContext, d
 				}
 			}
 
+			fmt.Printf("stepped over bp\n")
+
 			// 5. Resume thread
 			if err := trapthread.resume(); err != nil && err != sys.ESRCH {
 				log.Panicf("resume error for thread %v: %v\n", trapthread.ThreadID(), err)
 			}
 
+			fmt.Printf("resumed thread\n")
 		}
 	}
 }

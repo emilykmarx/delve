@@ -953,6 +953,7 @@ func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported 
 	if slice_idxs != nil {
 		elem_idxs = slice_idxs
 	}
+	fmt.Printf("elem_idxs: %v\n", elem_idxs)
 
 	if sz <= 0 {
 		return fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
