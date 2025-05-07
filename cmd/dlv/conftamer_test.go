@@ -486,8 +486,20 @@ func TestRuntimeHits(t *testing.T) {
 }
 
 func TestCasts(t *testing.T) {
-	initial_line := 18
+	initial_line := 9
 	config := Config("casts.go", "x", initial_line)
+	expected_events :=
+		watchpointSet(&config, config.Initial_watchexpr, uint64(2), initial_line, ct.DataFlow, nil, nil)
+
+	expected_events = append(expected_events,
+		watchpointSet(&config, "y", uint64(2), 11, ct.DataFlow, nil, nil)...)
+
+	run(t, &config, expected_events)
+}
+
+func TestCasts2(t *testing.T) {
+	initial_line := 18
+	config := Config("casts2.go", "x", initial_line)
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(8), initial_line, ct.DataFlow, nil, nil)
 

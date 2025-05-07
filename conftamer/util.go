@@ -449,25 +449,28 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 	_ = tc.logger.Handler().Handle(context.Background(), r)
 }
 
-func (tc *TaintCheck) isCast(call_expr_node ast.Expr) bool {
-	call_expr := exprToString(call_expr_node)
-	_, err := tc.client.EvalWatchexpr(api.EvalScope{GoroutineID: -1}, call_expr, true)
-	if err != nil {
-		if fn, ok := strings.CutPrefix(err.Error(), "function calls not allowed without using 'call': "); ok {
-			// Found regular function call
-			if fn != exprToString(call_expr_node.(*ast.CallExpr).Fun) {
-				// Node of form `cast(regular call())`` => treat as cast (will get to the regular call later in Inspect)
-				return true
-			} else {
-				// Node of form `regular call()`
-				return false
-			}
-		} else {
-			// Cast that dlv doesn't support evaluating (gives "symbol not found")
-			return true
-		}
-	} else {
-		// Cast that dlv supports evaluating
-		return true
+func (tc *TaintCheck) isCast(fn_node ast.Expr) bool {
+	orig_call_expr := exprToString(fn_node)
+
+	// `types` doesn't list the aliased primitive types, or their derivatives e.g. []byte
+	aliases := map[string]string{"byte": "uint8", "rune": "int32"}
+	call_exprs := []string{orig_call_expr}
+	for alias, typ := range aliases {
+		call_exprs = append(call_exprs, strings.ReplaceAll(orig_call_expr, alias, typ))
 	}
+	for _, call_expr := range call_exprs {
+		types, err := tc.client.ListTypes(regexp.QuoteMeta(call_expr))
+		if err != nil {
+			log.Panicf("list types for %v: %v\n", call_expr, err)
+		}
+
+		for _, found_type := range types {
+			// If <>.<fn name> or <fn name> is a type, assume it's a cast
+			tokens := strings.Split(found_type, ".")
+			if tokens[len(tokens)-1] == call_expr {
+				return true
+			}
+		}
+	}
+	return false
 }

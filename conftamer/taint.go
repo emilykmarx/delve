@@ -182,12 +182,12 @@ func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet
 		}
 		switch typed_node := node.(type) {
 		case *ast.CallExpr:
-			if !tc.isCast(typed_node) {
-				// regular function call => ignore (another call to isTainted checks its args)
-				return false
-			} else if exprToString(typed_node.Fun) == "append" {
+			if exprToString(typed_node.Fun) == "append" {
 				// append => return args appended together
 				tainted_region.old_region, is_tainted, tainted_region.concat_xvs = tc.handleAppend(typed_node, hit, fset)
+				return false
+			} else if !tc.isCast(typed_node.Fun) {
+				// regular function call => ignore (another call to isTainted checks its args)
 				return false
 			} else {
 				// cast => continue to inspect its arg
@@ -394,7 +394,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					tainted_region.new_expr = &watchexpr
 					ret = append(ret, tainted_region)
 				}
-			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node) || call_expr == "runtime.KeepAlive" {
+			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node.Fun) || call_expr == "runtime.KeepAlive" {
 				// builtins and casts will be handled in assign/range
 			} else {
 				// If method: check receiver for taint if non-pointer, and
