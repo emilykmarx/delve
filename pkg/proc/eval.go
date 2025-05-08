@@ -1232,6 +1232,12 @@ func (stack *evalStack) pushIdent(scope *EvalScope, name string) (found bool) {
 // load: Whether to load value of Variable (to get e.g. Children)
 func (scope *EvalScope) evalAST(t ast.Expr, load bool) (*Variable, error) {
 	ops, err := evalop.CompileAST(scopeToEvalLookup{scope}, t)
+	if exprToString(t) == "*ptr" {
+		for _, op := range ops {
+			// PushIdent, PointerDeref
+			fmt.Printf("op: %+v\n", reflect.TypeOf(op))
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2070,7 +2076,15 @@ func (scope *EvalScope) evalPointerDeref(op *evalop.PointerDeref, stack *evalSta
 		stack.push(&(xev.Children[0]))
 		return
 	}
+	p_name := exprToString(op.Node.X)
+	fmt.Printf("deref, X: %v\n", p_name)
+	if p_name == "ptr" {
+		fmt.Printf("xev before load: %+v\n", *xev)
+	}
 	xev.loadPtr()
+	if p_name == "ptr" {
+		fmt.Printf("xev after load: %+v\n", *xev)
+	}
 	if xev.Unreadable != nil {
 		val, ok := constant.Uint64Val(xev.Value)
 		if ok && val == 0 {
