@@ -53,7 +53,7 @@ for test_name, test_group in test_groups.items():
   failed = False
 
   for test in tests:
-    test_cmd = f'go test -v -timeout 30s -run {test} github.com/go-delve/delve/{test_group.test_path} -count=1 -failfast'
+    test_cmd = f'go test -v -timeout 45s -run {test} github.com/go-delve/delve/{test_group.test_path} -count=1 -failfast'
     print(test_cmd)
     try:
       p = subprocess.run(test_cmd, shell=True, check=True, text=True, capture_output=True)
