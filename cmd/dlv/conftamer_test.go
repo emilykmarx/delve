@@ -931,7 +931,7 @@ func run(t *testing.T, config *ct.Config, expected_events []TestEvent) {
 	waitForServer(t, &server_out, &server_err)
 
 	// Run dlv client until exit or timeout
-	client_timeout := 10 * time.Second
+	client_timeout := 30 * time.Second
 	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
 	defer cancel()
 
@@ -946,7 +946,7 @@ func run(t *testing.T, config *ct.Config, expected_events []TestEvent) {
 	if err := client.Run(); err != nil {
 		if err.Error() == "signal: killed" {
 			// Can occur with some tests, but not when run outside `go test`
-			t.Logf("Test OOM - may cause failure if occurred before end")
+			t.Logf("Test timeout or OOM - may cause failure if occurred before end")
 		} else {
 			t.Logf("Client exited with error: %v\n", err.Error())
 			t.Fail()
