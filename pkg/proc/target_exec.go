@@ -49,6 +49,19 @@ func (grp *TargetGroup) Next() (err error) {
 	return grp.Continue()
 }
 
+func PrintStack(dbp *Target) {
+	//for frame := 0; frame < 2; frame++ {
+	if dbp.selectedGoroutine != nil {
+
+		fmt.Printf("goroutine at %v:%v, stack %#x:%#x\n", dbp.selectedGoroutine.CurrentLoc.File,
+			dbp.selectedGoroutine.CurrentLoc.Line, dbp.selectedGoroutine.stack.lo, dbp.selectedGoroutine.stack.hi)
+
+	}
+	//scope := EvalScope{Gor}
+	//return scope.g != nil && !scope.g.SystemStack && addr >= scope.g.stack.lo && addr < scope.g.stack.hi
+	//}
+}
+
 // Continue continues execution of the debugged
 // processes. It will continue until it hits a breakpoint
 // or is otherwise stopped.
@@ -61,6 +74,7 @@ func (grp *TargetGroup) Continue() error {
 		if isvalid, _ := dbp.Valid(); !isvalid {
 			continue
 		}
+		PrintStack(dbp)
 		for _, thread := range dbp.ThreadList() {
 			thread.Common().CallReturn = false
 			thread.Common().returnValues = nil

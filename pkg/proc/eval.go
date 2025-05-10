@@ -2077,14 +2077,10 @@ func (scope *EvalScope) evalPointerDeref(op *evalop.PointerDeref, stack *evalSta
 		return
 	}
 	p_name := exprToString(op.Node.X)
-	fmt.Printf("deref, X: %v\n", p_name)
 	if p_name == "ptr" {
-		fmt.Printf("xev before load: %+v\n", *xev)
+		fmt.Printf("xev Addr in evalPointerDeref: %#x\n", xev.Addr)
 	}
 	xev.loadPtr()
-	if p_name == "ptr" {
-		fmt.Printf("xev after load: %+v\n", *xev)
-	}
 	if xev.Unreadable != nil {
 		val, ok := constant.Uint64Val(xev.Value)
 		if ok && val == 0 {
@@ -2096,6 +2092,9 @@ func (scope *EvalScope) evalPointerDeref(op *evalop.PointerDeref, stack *evalSta
 	if rv.Addr == 0 {
 		stack.err = errors.New("nil pointer dereference")
 		return
+	}
+	if p_name == "ptr" {
+		fmt.Printf("rv Addr in evalPointerDeref: %#x\n", rv.Addr)
 	}
 	stack.push(rv)
 }
