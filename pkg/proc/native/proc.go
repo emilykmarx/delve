@@ -429,12 +429,13 @@ func (procgrp *processGroup) setPendingWatchpoints(cctx *proc.ContinueOnceContex
 				logflags.DebuggerLogger().Debugf("About to move object and set watchpoint: %v", wp.Expr)
 
 				xvs := []*proc.Variable{}
-				err := cctx.Target.EvalWatchexpr(wp.Scope, wp.Expr, false, &xvs)
-				if err != nil {
-					log.Panicf("eval pending watchpoint %+v: %v", xvs, err)
-				}
+				// XXX Share any error-ignoring logic with client, here and for SetWatchpointNoEval
+				errs := cctx.Target.EvalWatchexpr(wp.Scope, wp.Expr, false, &xvs)
 
-				for _, xv := range xvs {
+				for i, xv := range xvs {
+					if errs[i] != nil {
+						log.Panicf("eval pending watchpoint %+v: %v", xvs, errs[i])
+					}
 					// 1. Resume all threads to reach HTTP server (may also be needed for pointer updates to avoid hang in GC)
 					if err := procgrp.resume(); err != nil {
 						if th, ok := err.(SoftwareWatchpointAtBreakpoint); ok {
@@ -778,7 +779,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	mprotect_ret_regs := new_regs.(*linutil.AMD64Registers)
 	// Seems like want -1 only for some errnos?
 	if mprotect_ret := sys.Errno(-1 * int(mprotect_ret_regs.Regs.Rax)); mprotect_ret != 0 {
-		log.Panicf("mprotect for page addr %#x failed: errno %v", pageAddr(addr), mprotect_ret.Error())
+		return fmt.Errorf("mprotect for page addr %#x failed: errno %v", pageAddr(addr), mprotect_ret.Error())
 	}
 
 	// 3. Restore registers
@@ -787,7 +788,7 @@ func (thread *nativeThread) toggleMprotect(addr uint64, protect bool) error {
 	}
 	new_pc, _ := thread.PC()
 	if prev_pc != new_pc {
-		log.Panicf("toggleMprotect failed to restore PC - prev %#x, new %#x\n", prev_pc, new_pc)
+		return fmt.Errorf("toggleMprotect failed to restore PC - prev %#x, new %#x", prev_pc, new_pc)
 	}
 
 	return nil

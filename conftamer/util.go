@@ -94,8 +94,16 @@ func (tc *TaintCheck) populateParam(watchaddr uint64, param string) {
 	tc.mem_param_map[watchaddr] = new_taint
 }
 
-// Update tainting vals for ith variable, at given offset (expect i and offset are in bounds).
-func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, i int, offset uint64) {
+// Update tainting vals for ith variable, at given offset (resizing if needed).
+func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, i int, offset int) {
+	// resize if needed
+	for j := 0; j < i-len(pending_wp.tainting_vals)+1; j++ {
+		pending_wp.tainting_vals = append(pending_wp.tainting_vals, []TaintingVals{})
+	}
+	for j := 0; j < offset-len(pending_wp.tainting_vals[i])+1; j++ {
+		pending_wp.tainting_vals[i] = append(pending_wp.tainting_vals[i], TaintingVals{})
+	}
+
 	existing_taint := pending_wp.tainting_vals[i][offset]
 	new_taint := union(tainting_vals, existing_taint)
 	pending_wp.tainting_vals[i][offset] = new_taint

@@ -1099,18 +1099,18 @@ func (d *Debugger) findBreakpointByName(name string) *api.Breakpoint {
 	return nil
 }
 
-func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string, ignoreUnsupported bool) ([]*proc.Variable, error) {
+func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr string, ignoreUnsupported bool) ([]*proc.Variable, []error) {
 	d.targetMutex.Lock()
 	defer d.targetMutex.Unlock()
 	p := d.target.Selected
 
 	s, err := proc.ConvertEvalScope(p, goid, frame, deferredCall)
 	if err != nil {
-		return nil, err
+		return []*proc.Variable{nil}, []error{err}
 	}
 	xvs := []*proc.Variable{}
-	err = p.EvalWatchexpr(s, expr, ignoreUnsupported, &xvs)
-	return xvs, err
+	errs := p.EvalWatchexpr(s, expr, ignoreUnsupported, &xvs)
+	return xvs, errs
 }
 
 // CreateWatchpoint creates watchpoint(s) for the specified expression.
@@ -1123,30 +1123,30 @@ func (d *Debugger) EvalWatchexpr(goid int64, frame, deferredCall int, expr strin
 // (but still return info for client)
 // PERF: Can also set normally for globals
 func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
-	expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
+	expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, []error) {
 	if wimpl == api.WatchHardware && move {
-		return nil, errors.New("move argument does not apply to hardware watchpoints")
+		return []*api.Breakpoint{nil}, []error{errors.New("move argument does not apply to hardware watchpoints")}
 	}
 
 	p := d.target.Selected
 	watchpoints := []*api.Breakpoint{}
+	errors := []error{}
 
 	s, err := proc.ConvertEvalScope(p, goid, frame, deferredCall)
 	if err != nil {
-		return nil, err
+		return []*api.Breakpoint{nil}, []error{err}
 	}
 	d.breakpointIDCounter++
 	write := wimpl == api.WatchHardware || !move
-	wps, err := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), &write)
-	for i := 0; i < len(wps)-1; i++ {
+	wps, errs := p.SetWatchpoint(d.breakpointIDCounter, s, expr, proc.WatchType(wtype), nil, proc.WatchImpl(wimpl), &write)
+
+	for i, wp := range wps {
 		d.breakpointIDCounter++
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	for _, wp := range wps {
+		errors = append(errors, errs[i])
+		if errs[i] != nil {
+			watchpoints = append(watchpoints, nil)
+			continue
+		}
 		if !write {
 			pendingwp := proc.PendingWp{Scope: s, Expr: expr, LogicalID: d.breakpointIDCounter}
 			d.Target().Process.AddPendingWatchpoint(pendingwp)
@@ -1160,7 +1160,7 @@ func (d *Debugger) CreateWatchpoint(goid int64, frame, deferredCall int,
 		}
 	}
 
-	return watchpoints, nil
+	return watchpoints, errors
 }
 
 // Threads returns the threads of the target process.

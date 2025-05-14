@@ -860,9 +860,9 @@ func (t *Target) sliceIndices(scope *EvalScope, expr string) (string, []int, err
 			if constant, err := strconv.Atoi(idx); err != nil {
 				// Expression => evaluate
 				xvs := []*Variable{}
-				err := t.EvalWatchexpr(scope, idx, true, &xvs)
-				if err != nil || len(xvs) > 1 {
-					return "", nil, fmt.Errorf("eval slice index expression %v: return %v vars, %v", idx, len(xvs), err)
+				errs := t.EvalWatchexpr(scope, idx, true, &xvs)
+				if len(xvs) != 1 || errs[0] != nil {
+					return "", nil, fmt.Errorf("eval slice index expression %v: return %v vars, err %v", idx, len(xvs), errs[0])
 				}
 				xv := xvs[0]
 				if evald, err := strconv.Atoi(VariableValueAsString(xv)); err != nil {
@@ -905,20 +905,31 @@ func referenceType(typ godwarf.Type) bool {
 }
 
 // Eval expr's underlying data, check the result for watchability.
-// Return all resulting variable(s), with xv.Addr and xv.Watchsz adjusted for [x:y] syntax.
-// If ignoreUnsupported, don't return error if type isn't supported
-// (for client - if err != nil, xv returned to client is nil even if it's not here).
+// Return all resulting variable(s), with xv.Addr and xv.Watchsz adjusted for [x:y] syntax,
+// and corresponding errs
+// If ignoreUnsupported, don't return error if type isn't supported.
 // This is used both by server to set watchpoints and by client to evaluate expressions.
-func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable) error {
-	return t.evalWatchexprInternal(scope, expr, ignoreUnsupported, vars, false)
+func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable) []error {
+	errs := []error{}
+	t.evalWatchexprInternal(scope, expr, ignoreUnsupported, vars, &errs, false)
+	return errs
 }
 
-// ref_elem: Whether this is a recursive call
-func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable, recursing bool) error {
+func evalErr(vars *[]*Variable, errs *[]error, err error) {
+	*vars = append(*vars, nil)
+	*errs = append(*errs, err)
+}
+func evalSuccess(vars *[]*Variable, errs *[]error, xv *Variable) {
+	*vars = append(*vars, xv)
+	*errs = append(*errs, nil)
+}
+
+func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable, errs *[]error, recursing bool) {
 	orig_expr := expr
 	slice_name, slice_idxs, err := t.sliceIndices(scope, expr)
 	if err != nil {
-		return err
+		evalErr(vars, errs, err)
+		return
 	}
 	if slice_name != expr {
 		// Slice/array/string with [x:y] syntax
@@ -927,24 +938,30 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 
 	n, err := parser.ParseExpr(expr)
 	if err != nil {
-		return err
+		evalErr(vars, errs, err)
+		return
 	}
 	xv, err := scope.evalAST(n, true) // need load for e.g. Children
 	if err != nil {
-		return err
+		evalErr(vars, errs, err)
+		return
 	}
 	if xv.Addr == 0 || xv.DwarfType == nil {
-		return fmt.Errorf("can not watch %q; Addr 0x%x, DwarfType nil %v", expr, xv.Addr, xv.DwarfType == nil)
+		evalErr(vars, errs, fmt.Errorf("can not watch %q; Addr 0x%x, DwarfType nil %v", expr, xv.Addr, xv.DwarfType == nil))
+		return
 	}
 	if xv.Flags&VariableFakeAddress != 0 || xv.Addr == FakeAddressBase {
 		// This happens sometimes at first line of function, despite asm saying it's allocated in memory - unsure why
-		return fmt.Errorf("can not watch %q; has fake address", expr)
+		evalErr(vars, errs, fmt.Errorf("can not watch %q; has fake address", expr))
+		return
 	}
 	if xv.Unreadable != nil {
-		return fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable)
+		evalErr(vars, errs, fmt.Errorf("expression %q is unreadable: %v", expr, xv.Unreadable))
+		return
 	}
 	if xv.Kind == reflect.UnsafePointer || xv.Kind == reflect.Invalid {
-		return fmt.Errorf("can not watch variable of kind %v", xv.Kind.String())
+		evalErr(vars, errs, fmt.Errorf("can not watch variable of kind %v", xv.Kind.String()))
+		return
 	}
 
 	xv.Name = orig_expr
@@ -965,12 +982,13 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 	}
 
 	if sz <= 0 {
-		return fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz)
+		evalErr(vars, errs, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz))
+		return
 	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
 		// watch chars
 		xv.Addr = xv.Base
 		adjustForSlice(xv, slice_idxs, 1)
-		*vars = append(*vars, xv)
+		evalSuccess(vars, errs, xv)
 	} else if array, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
 		adjustForSlice(xv, slice_idxs, array.Type.Size())
 
@@ -979,18 +997,18 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 			// watch the elements' underlying data (chars or backing array)
 			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
 				elem := fmt.Sprintf("%v[%v]", expr, i)
-				if err := t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, true); err != nil {
-					return err
-				}
+				t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, errs, true)
 			}
 		} else {
-			*vars = append(*vars, xv)
+			evalSuccess(vars, errs, xv)
 		}
 	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
 		// watch backing array - but not past len, since only initialized data is tainted
-		if xv.Base == 0 {
+		if xv.Base == 0 || xv.Cap == 0 ||
+			(len(xv.Children) > 0 && xv.Children[0].Unreadable != nil && xv.Children[0].Unreadable.Error() == "input/output error") {
 			// nil slice => no underlying data to watch (strings cannot be nil)
-			return errors.New("nil slice")
+			evalErr(vars, errs, errors.New("nil slice"))
+			return
 		}
 		xv.Addr = xv.Base
 		adjustForSlice(xv, slice_idxs, slice.ElemType.Size())
@@ -998,42 +1016,38 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 		if referenceType(slice.ElemType) {
 			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
 				elem := fmt.Sprintf("%v[%v]", expr, i)
-				if err := t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, true); err != nil {
-					return err
-				}
+				t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, errs, true)
 			}
 		} else {
-			*vars = append(*vars, xv)
+			evalSuccess(vars, errs, xv)
 		}
 	} else if xv.Kind == reflect.Struct {
 		struct_, ok := resolveTypedef(xv.DwarfType).(*godwarf.StructType)
 		if !ok {
-			return fmt.Errorf("can not resolve %v to struct", *xv)
+			evalErr(vars, errs, fmt.Errorf("can not resolve %v to struct", *xv))
+			return
 		}
 		// Return variable for each field, since some may be reference types
 		for _, field := range struct_.Field {
 			elem := fmt.Sprintf("%v.%v", expr, field.Name)
-			if err := t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, true); err != nil {
-				return err
-			}
+			t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, errs, true)
 		}
 	} else {
 		_, funcType := xv.RealType.(*godwarf.FuncType) // don't watch functions for now
 		unsupported := funcType || sz > int64(t.BinInfo().Arch.PtrSize())
 		if unsupported && !ignoreUnsupported {
 			xv.Watchsz = sz
-			return fmt.Errorf("can not watch variable of type %s (real type %s, kind %s), sz %v: type not supported",
-				xv.DwarfType.String(), xv.RealType.String(), xv.Kind, sz)
+			evalErr(vars, errs, fmt.Errorf("can not watch variable of type %s (real type %s, kind %s), sz %v: type not supported",
+				xv.DwarfType.String(), xv.RealType.String(), xv.Kind, sz))
+			return
 		} else {
 			// Client uses this to eval variables for overlap => set Watchsz even if unsupported
 			xv.Watchsz = sz
-			*vars = append(*vars, xv)
+			evalSuccess(vars, errs, xv)
 		}
 	}
 	// TODO support other types - for types with elements, need to handle any reference elems.
 	// For types with capacity, pass capacity (not watchsz) to MoveObject below.
-
-	return nil
 }
 
 // Ask the target's runtime to move the object to a page only for tainted objects.
@@ -1071,20 +1085,26 @@ func MoveObject(addr uint64) (uint64, error) {
 // SetWatchpoint sets a data breakpoint at addr and stores it in the
 // process wide break point table.
 // If !write, don't write it yet - just check if it's watchable
+// Return array of resulting watchpoints (multiple if evals to multiple) and corresponding errors
+// TODO segfault here (and some other functions) seems to cause silent return - annoying
 func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wtype WatchType, cond ast.Expr,
-	wimpl WatchImpl, write *bool) ([]*Breakpoint, error) {
+	wimpl WatchImpl, write *bool) ([]*Breakpoint, []error) {
 	if (wtype&WatchWrite == 0) && (wtype&WatchRead == 0) {
-		return nil, errors.New("at least one of read and write must be set for watchpoint")
+		return []*Breakpoint{nil}, []error{errors.New("at least one of read and write must be set for watchpoint")}
 	}
 
 	bps := []*Breakpoint{}
 	xvs := []*Variable{}
-	err := t.EvalWatchexpr(scope, expr, false, &xvs)
-	if err != nil {
-		return nil, err
-	}
+	errors := []error{}
+	errs := t.EvalWatchexpr(scope, expr, false, &xvs)
 
-	for _, xv := range xvs {
+	// Try to set all, even if some error
+	for i, xv := range xvs {
+		if errs[i] != nil {
+			bps = append(bps, nil)
+			errors = append(errors, errs[i])
+			continue
+		}
 		if StackAddr(scope, xv.Addr) {
 			*write = true // no need to move stack objects
 		}
@@ -1096,22 +1116,22 @@ func (t *Target) SetWatchpoint(logicalID int, scope *EvalScope, expr string, wty
 				WatchType: wtype.withSize(xv.Watchsz),
 			}
 			bps = append(bps, &fake_wp)
+			errors = append(errors, nil)
 		} else {
 			// xv.Watchsz is int64, but needs to fit in 62 bits due to WatchType format
 			if uint64(xv.Watchsz) > uint64(1)<<62-1 {
-				return nil, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz)
+				errors = append(errors, fmt.Errorf("size %v too large to fit in WatchType", xv.Watchsz))
+				bps = append(bps, nil)
+				continue
 			}
 			bp, err := t.SetWatchpointNoEval(logicalID, scope, xv.Name, xv.Addr, xv.Watchsz, wtype, cond, wimpl)
 			logicalID++
 
-			if err != nil {
-				return nil, err
-			}
 			bps = append(bps, bp)
+			errors = append(errors, err)
 		}
 	}
-
-	return bps, nil
+	return bps, errors
 }
 
 // For breakpoints (addr = PC) and watchpoints (addr = addr to watch)

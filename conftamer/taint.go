@@ -201,45 +201,50 @@ func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet
 			// If type not supported, still check overlap
 			// Use EvalWatchexpr rather than EvalVariable so watch-related fields (e.g. Watchsz and Addr) are set correctly
 			tc.Logf(slog.LevelDebug, hit, "isTainted eval %v", exprToString(typed_node))
-			xvs, err := tc.client.EvalWatchexpr(hit.scope, exprToString(typed_node), true)
-			if err != nil {
-				if strings.Contains(err.Error(), "can not convert") {
-					// May want to add support for some of these in delve
-					tc.Logf(slog.LevelWarn, hit, "Eval %v: %v", exprToString(typed_node), err)
-					// Don't eval children
-					return false
-				} else {
-					// Try evaluating any AST children (for e.g. binary ops)
-				}
-			} else {
-				// 1. Filter out region that doesn't overlap watchpoint at all
-				// (may overlap but not be tainted - will check m-c map when record pending watchpoint)
-				for _, xv := range xvs {
-					watch_addr := hit.hit_bp.Addr
-					watch_size := watchSize(hit.hit_bp)
-					xv_size := uint64(xv.Watchsz)
-					tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
-
-					_, _, is_tainted = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
-					if is_tainted {
-						break
-					}
-				}
-
-				// 2. Record region
-				if !tainted_only || is_tainted {
-					if len(tainted_region.old_region) > 0 {
-						// Need to think through how to handle this
-						log.Panicf("Multiple tainted regions in %v", exprToString(expr))
-					}
-					tainted_region.old_region = xvs
-				}
-
-				// Don't evaluate children
-				// (at least for Index and Selector - haven't thought through others),
-				// but still consider other exprs in tree
-				return false
+			xvs, errs := tc.client.EvalWatchexpr(hit.scope, exprToString(typed_node), true)
+			if len(xvs) != len(errs) {
+				log.Panicf("Debugger returned vars and errs with mismatched lengths: %v vs %v", xvs, errs)
 			}
+			xv_overlap := false
+			// 1. Filter out region that doesn't overlap watchpoint at all
+			// (may overlap but not be tainted - will check m-c map when record pending watchpoint)
+			for i, xv := range xvs {
+				if errs[i] != nil {
+					if strings.Contains(errs[i].Error(), "can not convert") {
+						// May want to add support for some of these in delve
+						tc.Logf(slog.LevelWarn, hit, "Eval %v: %v", exprToString(typed_node), errs[i])
+						// Don't eval children
+						return false
+					} else {
+						// Try evaluating any AST children (for e.g. binary ops)
+						return true
+					}
+				}
+				watch_addr := hit.hit_bp.Addr
+				watch_size := watchSize(hit.hit_bp)
+				xv_size := uint64(xv.Watchsz)
+				tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
+
+				_, _, xv_overlap = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
+				if xv_overlap {
+					break
+				}
+			}
+
+			// 2. Record region
+			if !tainted_only || xv_overlap {
+				if len(tainted_region.old_region) > 0 {
+					// TODO handle this - for DF, union byte-by-byte?
+					tc.Logf(slog.LevelWarn, hit, "Multiple tainted regions in %v", exprToString(expr))
+				}
+				tainted_region.old_region = xvs
+				is_tainted = true
+			}
+
+			// Don't evaluate children
+			// (at least for Index and Selector - haven't thought through others),
+			// but still consider other exprs in tree
+			return false
 		}
 		return true
 	})

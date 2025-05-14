@@ -525,19 +525,22 @@ type EvalIn struct {
 
 type EvalWatchexprOut struct {
 	Variables []*api.Variable
+	Errors    []string
 }
 type EvalOut struct {
 	Variable *api.Variable
 }
 
 func (s *RPCServer) EvalWatchexpr(arg EvalIn, out *EvalWatchexprOut) error {
-	xvs, err := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.IgnoreUnsupported)
-	for _, xv := range xvs {
-		out.Variables = append(out.Variables, api.ConvertVar(xv))
+	xvs, errs := s.debugger.EvalWatchexpr(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall, arg.Expr, arg.IgnoreUnsupported)
+	for i, xv := range xvs {
+		if errs[i] == nil {
+			out.Variables = append(out.Variables, api.ConvertVar(xv))
+		} else {
+			out.Variables = append(out.Variables, nil)
+		}
 	}
-	if err != nil {
-		return err
-	}
+	out.Errors = api.ConvertErrors(errs)
 	return nil
 }
 
@@ -1081,13 +1084,18 @@ type CreateWatchpointIn struct {
 
 type CreateWatchpointOut struct {
 	Watchpoints []*api.Breakpoint
+	// call() must return exactly one error for rpc layer to find it,
+	// and any errors in this struct are overwritten to nil between server and client (at least if it returns nil)
+	// Use api.ConvertErr* to fix
+	Errors []string
 }
 
 func (s *RPCServer) CreateWatchpoint(arg CreateWatchpointIn, out *CreateWatchpointOut) error {
-	var err error
-	out.Watchpoints, err = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall,
+	var errs []error
+	out.Watchpoints, errs = s.debugger.CreateWatchpoint(arg.Scope.GoroutineID, arg.Scope.Frame, arg.Scope.DeferredCall,
 		arg.Expr, arg.Type, arg.Impl, arg.Move)
-	return err
+	out.Errors = api.ConvertErrors(errs)
+	return nil
 }
 
 type BuildIDIn struct {

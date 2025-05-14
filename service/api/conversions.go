@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/constant"
 	"go/printer"
@@ -15,6 +16,32 @@ import (
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/proc"
 )
+
+// Use on server side to prevent errors from being overwritten
+func ConvertErrors(errs []error) []string {
+	errstrs := []string{}
+	for _, err := range errs {
+		if err == nil {
+			errstrs = append(errstrs, "")
+		} else {
+			errstrs = append(errstrs, err.Error())
+		}
+	}
+	return errstrs
+}
+
+// Use on client side to recover errors from server
+func ConvertErrStrs(errstrs []string) []error {
+	errs := []error{}
+	for _, err := range errstrs {
+		if err == "" {
+			errs = append(errs, nil)
+		} else {
+			errs = append(errs, errors.New(err))
+		}
+	}
+	return errs
+}
 
 // ConvertLogicalBreakpoint converts a proc.LogicalBreakpoint into an API breakpoint.
 func ConvertLogicalBreakpoint(lbp *proc.LogicalBreakpoint) *Breakpoint {

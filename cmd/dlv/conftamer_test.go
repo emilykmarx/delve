@@ -515,6 +515,22 @@ func TestCasts2(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
+func TestUnmarshal(t *testing.T) {
+	initial_line := 17
+	config := Config("unmarshal.go", "data", initial_line)
+	config.Taint_flow = ct.DataFlow
+	expected_events :=
+		watchpointSet(&config, config.Initial_watchexpr, uint64(9), initial_line, ct.DataFlow, nil, nil)
+	expected_events = append(expected_events,
+		TestEvent{e: ct.Event{EventType: ct.Fake}, tail: 6}) // for each byte in output struct: hit, set, m-c update
+	expected_events = append(expected_events,
+		watchpointSet(&config, "tainted1", uint64(1), 24, ct.DataFlow, nil, nil)...)
+	expected_events = append(expected_events,
+		watchpointSet(&config, "tainted2", uint64(1), 27, ct.DataFlow, nil, nil)...)
+
+	run(t, &config, expected_events)
+}
+
 // Return TaintingParam corresponding to config.Initial_watchexpr
 func configTaintingParam(config *ct.Config, flow ct.TaintFlow) set.Set[ct.TaintingParam] {
 	tainting_params := set.New[ct.TaintingParam](0)
@@ -982,6 +998,8 @@ type TestEvent struct {
 	// The offset and sz of tainted region in watch region
 	taint_offset int
 	taint_sz     uint64
+	// If type is Fake, ignore all logged events after this, until the last `tail` events in the log
+	tail int
 }
 
 func checkEvents(t *testing.T, expected []TestEvent, event_log string) {
@@ -998,8 +1016,18 @@ func checkEvents(t *testing.T, expected []TestEvent, event_log string) {
 	// Hits are present in actual but not expected => indices are not 1:1
 	expected_i := 0
 	// All actual events are as expected
-	for _, actual := range events {
-		if actual.EventType == ct.WatchpointSet {
+	for actual_i, actual := range events {
+		if expected_i > len(expected)-1 {
+			break
+		}
+		if expected[expected_i].e.EventType == ct.Fake {
+			if actual_i == len(events)-expected[expected_i].tail-1 {
+				// Stop ignoring (i.e. treat next event as normal)
+			} else {
+				// Ignore
+				expected_i-- // won't advance in expected
+			}
+		} else if actual.EventType == ct.WatchpointSet {
 			// Check wp set (minus address, which is unpredictable) - use address to fill in expected m-c map updates
 			expected_wp := expected[expected_i]
 			assertEventsEqual(t, expected_wp.e, actual, fmt.Sprintf("expected event %v wrong", expected_i), true)

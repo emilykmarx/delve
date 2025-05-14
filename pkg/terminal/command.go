@@ -2061,12 +2061,14 @@ func watchpoint(t *Term, ctx callContext, args string) error {
 			move = false
 		}
 	}
-	bps, err := t.client.CreateWatchpoint(ctx.Scope, v[len(v)-1], wtype, wimpl, move)
-	if err != nil {
-		return err
-	}
-	for _, bp := range bps {
-		fmt.Fprintf(t.stdout, "%s set at %s\n", formatBreakpointName(bp, true), t.formatBreakpointLocation(bp))
+	expr := v[len(v)-1]
+	bps, errs := t.client.CreateWatchpoint(ctx.Scope, expr, wtype, wimpl, move)
+	for i, bp := range bps {
+		if errs[i] != nil {
+			fmt.Fprintf(t.stdout, "err setting watchpoint on %s: %s\n", expr, errs[i].Error())
+		} else {
+			fmt.Fprintf(t.stdout, "%s set at %s\n", formatBreakpointName(bp, true), t.formatBreakpointLocation(bp))
+		}
 	}
 	return nil
 }

@@ -307,27 +307,12 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 	ifstmt_taint := newTaintingVals()
 	found_taint := false
 	new_params := map[uint64]string{}
-	if len(existing_info.tainting_vals) == 0 {
-		if tainted_region.concat_xvs {
-			existing_info.tainting_vals = make([][]TaintingVals, 1)
-		} else {
-			existing_info.tainting_vals = make([][]TaintingVals, len(tainted_region.old_region))
-		}
-	}
 	var total_len, cur_len int
 	for _, old_xv := range tainted_region.old_region {
 		total_len += int(old_xv.Watchsz)
 	}
 
 	for i, old_xv := range tainted_region.old_region {
-		if tainted_region.concat_xvs {
-			if i == 0 {
-				existing_info.tainting_vals[i] = make([]TaintingVals, total_len)
-			}
-		} else if len(existing_info.tainting_vals[i]) == 0 {
-			existing_info.tainting_vals[i] = make([]TaintingVals, old_xv.Watchsz)
-		}
-
 		old_start := old_xv.Addr
 		old_end := old_start + uint64(old_xv.Watchsz)
 		for watchaddr := old_start; watchaddr < old_end; watchaddr++ {
@@ -353,10 +338,10 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 				// Case 1a: Regular watchpoint => copy tainted_region vals at each offset
 				// (offset may already have existing ones, e.g. hit a watchpoint within a tainted branch body - union with those if so).
 				if tainted_region.concat_xvs {
-					existing_info.updateTaintingVals(tainting_vals, 0, uint64(cur_len))
+					existing_info.updateTaintingVals(tainting_vals, 0, cur_len)
 					cur_len++
 				} else {
-					existing_info.updateTaintingVals(tainting_vals, i, watchaddr-old_start)
+					existing_info.updateTaintingVals(tainting_vals, i, int(watchaddr-old_start))
 				}
 			} else {
 				// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
@@ -392,34 +377,57 @@ func (tc *TaintCheck) onPendingWpBpHitDone(hit *Hit) {
 	delete(tc.bp_pending_wps, bp_addr)
 }
 
+// Warn or panic if needed
+func (tc *TaintCheck) logWatchErr(msg string, err error, hit *Hit) {
+	if err == nil {
+		return
+	}
+	errstr := fmt.Sprintf("%v: %v", msg, err.Error())
+	if strings.Contains(err.Error(), "type not supported") || strings.Contains(err.Error(), "nil slice") ||
+		strings.Contains(err.Error(), "fake address") {
+		// TODO fake address is likely fixable by setting bp at 2nd instr in function body instead of 1st
+		// (unsure if has potential to cause missed access of arg in 1st instr)
+		tc.Logf(slog.LevelWarn, hit, errstr)
+	} else {
+		log.Panicln(errstr)
+	}
+}
+
+func (tc *TaintCheck) logWatchpoint(watchexpr string, wp *api.Breakpoint, hit *Hit) {
+	if wp == nil {
+		return
+	}
+	tc.Logf(slog.LevelDebug, hit, "Set watchpoint on %v", wp.WatchExpr)
+	if watchSize(wp) == 0 {
+		log.Panicf("Debugger returned sz 0 watchpoint %+v for %v\n", *wp, watchexpr)
+	}
+	event := Event{EventType: WatchpointSet, Address: wp.Addr, Size: watchSize(wp), Expression: wp.WatchExpr}
+	WriteEvent(hit.thread, tc.event_log, event)
+}
+
 // Set any watchpoint(s) corresponding to watchexpr
 // Update m-c map
 func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]TaintingVals, taint_all_bytes bool, msg_recv bool, hit *Hit) {
 	// 1. Set watchpoint on full new expr
 	// We really want a read-only wp, but not supported
-	watchpoints, err := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
-	if err != nil {
-		errstr := fmt.Sprintf("Failed to set watchpoint for %v: %v", watchexpr, err)
-		if strings.Contains(err.Error(), "type not supported") || strings.Contains(err.Error(), "nil slice") ||
-			strings.Contains(err.Error(), "fake address") {
-			// TODO fake address is likely fixable by setting bp at 2nd instr in function body instead of 1st
-			// (unsure if has potential to cause missed access of arg in 1st instr)
-			tc.Logf(slog.LevelWarn, hit, errstr)
-			return // don't update m-c map
-		} else {
-			log.Panicln(errstr)
-		}
-	} else if len(watchpoints) == 0 {
+	watchpoints, errs := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
+	for _, err := range errs {
+		tc.logWatchErr(fmt.Sprintf("Failed to set watchpoint for %v", watchexpr), err, hit)
+	}
+	if len(watchpoints) == 0 {
 		log.Panicf("Debugger returned no watchpoints for %v\n", watchexpr)
+	}
+	if len(watchpoints) != len(errs) {
+		log.Panicf("Debugger returned watchpoints and errs with mismatched lengths: %v vs %v", watchpoints, errs)
 	}
 
 	// 2. Update m-c map only for tainted part of new expr
 	// Eval expr for new addrs rather than using returned watch region - new region may overlap existing watch region
 	// Add pre-move addresses to m-c - will update after next Continue()
 
-	new_xvs, err := tc.client.EvalWatchexpr(hit.scope, watchexpr, true)
-	if err != nil {
-		log.Panicf("eval newly watched expr %v: %v", watchexpr, err)
+	new_xvs, errs := tc.client.EvalWatchexpr(hit.scope, watchexpr, true)
+	if len(new_xvs) != len(errs) {
+		log.Panicf("Debugger returned vars and errs with mismatched lengths: %v vs %v", new_xvs, errs)
 	}
 
 	// TODO test for adding new taint to existing addr
@@ -437,19 +445,17 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 
 	// Update m-c map
 	for i, xv := range new_xvs {
+		if i < len(watchpoints) && watchpoints[i] != nil {
+			// For testing convenience, interleave watchpoint and m-c map logging
+			tc.logWatchpoint(watchexpr, watchpoints[i], hit)
+		}
+		if errs[i] != nil {
+			continue // variable failed to eval
+		}
+
 		xv_tainting_vals := []TaintingVals{}
 		if len(tainting_vals) > i {
 			xv_tainting_vals = tainting_vals[i]
-		}
-		if i < len(watchpoints) {
-			// For testing convenience, interleave watchpoint and m-c map logging
-			// TODO can there be fewer xvs than wps? If so, log any extra at end
-			tc.Logf(slog.LevelDebug, hit, "Set watchpoint on %v", watchpoints[i].WatchExpr)
-			if watchSize(watchpoints[i]) == 0 {
-				log.Panicf("Debugger returned sz 0 watchpoint %+v for %v\n", *watchpoints[i], watchexpr)
-			}
-			event := Event{EventType: WatchpointSet, Address: watchpoints[i].Addr, Size: watchSize(watchpoints[i]), Expression: watchpoints[i].WatchExpr}
-			WriteEvent(hit.thread, tc.event_log, event)
 		}
 		new_end := xv.Addr + uint64(xv.Watchsz)
 		for new_addr := xv.Addr; new_addr < new_end; new_addr++ {
@@ -472,6 +478,10 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 			}
 			tc.updateTaintingVals(new_addr, new_taint, hit.thread)
 		}
+	}
+	// Fewer xvs than wps (unsure if possible) - log any remaining wps
+	for i := len(new_xvs); i < len(watchpoints); i++ {
+		tc.logWatchpoint(watchexpr, watchpoints[i], hit)
 	}
 }
 
@@ -606,7 +616,7 @@ func (tc *TaintCheck) onPendingWpBpHit(hit *Hit) {
 // Update mem-param map for any watchpoints that moved since last Continue
 // (either due to stack adjust or allocator move)
 func (tc *TaintCheck) updateMovedWps() {
-	// TODO: add a test for stack adjust - happens in xenon, but not deterministically
+	// TODO: add a test for stack adjust (happens in xenon, but not deterministically) - and log these m-c updates
 	bps, list_err := tc.client.ListBreakpoints(true)
 	if list_err != nil {
 		log.Panicf("Error listing breakpoints: %v\n", list_err)

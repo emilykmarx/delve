@@ -24,6 +24,7 @@ const (
 	WatchpointSet     EventType = "Watchpoint set"
 	MemParamMapUpdate EventType = "Mem-param map update"
 	BehaviorMapUpdate EventType = "Behavior map update"
+	Fake              EventType = "Placeholder for testing"
 )
 
 // A row of the event log, for the columns that test will check

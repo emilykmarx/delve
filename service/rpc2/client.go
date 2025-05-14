@@ -271,10 +271,10 @@ func (c *RPCClient) CreateEBPFTracepoint(fnName string) error {
 	return c.call("CreateEBPFTracepoint", CreateEBPFTracepointIn{FunctionName: fnName}, &out)
 }
 
-func (c *RPCClient) CreateWatchpoint(scope api.EvalScope, expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, error) {
+func (c *RPCClient) CreateWatchpoint(scope api.EvalScope, expr string, wtype api.WatchType, wimpl api.WatchImpl, move bool) ([]*api.Breakpoint, []error) {
 	var out CreateWatchpointOut
-	err := c.call("CreateWatchpoint", CreateWatchpointIn{Scope: scope, Expr: expr, Type: wtype, Impl: wimpl, Move: move}, &out)
-	return out.Watchpoints, err
+	c.call("CreateWatchpoint", CreateWatchpointIn{Scope: scope, Expr: expr, Type: wtype, Impl: wimpl, Move: move}, &out)
+	return out.Watchpoints, api.ConvertErrStrs(out.Errors)
 }
 
 func (c *RPCClient) ListBreakpoints(all bool) ([]*api.Breakpoint, error) {
@@ -330,10 +330,10 @@ func (c *RPCClient) GetThread(id int) (*api.Thread, error) {
 	return out.Thread, err
 }
 
-func (c *RPCClient) EvalWatchexpr(scope api.EvalScope, expr string, ignoreUnsupported bool) ([]*api.Variable, error) {
+func (c *RPCClient) EvalWatchexpr(scope api.EvalScope, expr string, ignoreUnsupported bool) ([]*api.Variable, []error) {
 	var out EvalWatchexprOut
-	err := c.call("EvalWatchexpr", EvalIn{scope, expr, nil, ignoreUnsupported}, &out)
-	return out.Variables, err
+	c.call("EvalWatchexpr", EvalIn{scope, expr, nil, ignoreUnsupported}, &out)
+	return out.Variables, api.ConvertErrStrs(out.Errors)
 }
 
 func (c *RPCClient) EvalVariable(scope api.EvalScope, expr string, cfg api.LoadConfig) (*api.Variable, error) {
