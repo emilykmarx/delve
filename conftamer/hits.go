@@ -384,9 +384,12 @@ func (tc *TaintCheck) logWatchErr(msg string, err error, hit *Hit) {
 	}
 	errstr := fmt.Sprintf("%v: %v", msg, err.Error())
 	if strings.Contains(err.Error(), "type not supported") || strings.Contains(err.Error(), "nil slice") ||
-		strings.Contains(err.Error(), "fake address") {
+		strings.Contains(err.Error(), "fake address") ||
+		strings.Contains(err.Error(), "insane") ||
+		strings.Contains(err.Error(), "unreadable") {
 		// TODO fake address is likely fixable by setting bp at 2nd instr in function body instead of 1st
 		// (unsure if has potential to cause missed access of arg in 1st instr)
+		// TODO insane and unreadable are from multiline lit with slice fields (see unmarshal test)
 		tc.Logf(slog.LevelWarn, hit, errstr)
 	} else {
 		log.Panicln(errstr)

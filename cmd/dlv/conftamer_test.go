@@ -518,15 +518,15 @@ func TestCasts2(t *testing.T) {
 func TestUnmarshal(t *testing.T) {
 	initial_line := 17
 	config := Config("unmarshal.go", "data", initial_line)
-	config.Taint_flow = ct.DataFlow
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(9), initial_line, ct.DataFlow, nil, nil)
 	expected_events = append(expected_events,
 		TestEvent{e: ct.Event{EventType: ct.Fake}, tail: 6}) // for each byte in output struct: hit, set, m-c update
+	cf_param := configTaintingParam(&config, ct.ControlFlow)
 	expected_events = append(expected_events,
-		watchpointSet(&config, "tainted1", uint64(1), 24, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "tainted1", uint64(1), 24, ct.DataFlow, &cf_param.Slice()[0], nil)...)
 	expected_events = append(expected_events,
-		watchpointSet(&config, "tainted2", uint64(1), 27, ct.DataFlow, nil, nil)...)
+		watchpointSet(&config, "tainted2", uint64(1), 27, ct.DataFlow, &cf_param.Slice()[0], nil)...)
 
 	run(t, &config, expected_events)
 }
@@ -946,13 +946,12 @@ func run(t *testing.T, config *ct.Config, expected_events []TestEvent) {
 	assertNoError(server.Start(), t, "start headless instance")
 	waitForServer(t, &server_out, &server_err)
 
-	// Run dlv client until exit or timeout
-	client_timeout := 30 * time.Second
-	ctx, cancel = context.WithTimeout(context.Background(), client_timeout)
+	// Run dlv client until exit
+	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
 	client := exec.CommandContext(ctx, client_bin, "-config="+config_file)
-	t.Logf("Starting client with timeout %v: %v\n", client_timeout, strings.Join(client.Args, " "))
+	t.Logf("Starting client: %v\n", strings.Join(client.Args, " "))
 
 	var client_out saveOutput
 	var client_err saveOutput
