@@ -920,6 +920,15 @@ func evalErr(vars *[]*Variable, errs *[]error, err error) {
 	*errs = append(*errs, err)
 }
 func evalSuccess(vars *[]*Variable, errs *[]error, xv *Variable) {
+	// Sanity check for eval
+	if xv.Addr < uint64(os.Getpagesize()) {
+		evalErr(vars, errs, fmt.Errorf("xv %v (type %v) has insane address %#x", xv.Name, xv.DwarfType.String(), xv.Addr))
+		return
+	}
+	if uint64(xv.Watchsz) > uint64(os.Getpagesize()) {
+		evalErr(vars, errs, fmt.Errorf("xv %v (type %v) has likely insane size %v", xv.Name, xv.DwarfType.String(), xv.Watchsz))
+		return
+	}
 	*vars = append(*vars, xv)
 	*errs = append(*errs, nil)
 }
