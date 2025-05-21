@@ -97,10 +97,12 @@ func (tc *TaintCheck) populateParam(watchaddr uint64, param string) {
 // Update tainting vals for ith variable, at given offset (resizing if needed).
 func (pending_wp *PendingWp) updateTaintingVals(tainting_vals TaintingVals, i int, offset int) {
 	// resize if needed
-	for j := 0; j < i-len(pending_wp.tainting_vals)+1; j++ {
+	n := i - len(pending_wp.tainting_vals) + 1
+	for j := 0; j < n; j++ {
 		pending_wp.tainting_vals = append(pending_wp.tainting_vals, []TaintingVals{})
 	}
-	for j := 0; j < offset-len(pending_wp.tainting_vals[i])+1; j++ {
+	n = offset - len(pending_wp.tainting_vals[i]) + 1
+	for j := 0; j < n; j++ {
 		pending_wp.tainting_vals[i] = append(pending_wp.tainting_vals[i], TaintingVals{})
 	}
 
@@ -181,7 +183,10 @@ func printJSON(i ...interface{}) string {
 func (t TaintedRegion) String() string {
 	old_region := ""
 	for i, xv := range t.old_region {
-		s := fmt.Sprintf("%#x (sz %#x)", xv.Addr, xv.Watchsz)
+		s := "<nil xv>"
+		if xv != nil {
+			s = fmt.Sprintf("%#x (sz %#x)", xv.Addr, xv.Watchsz)
+		}
 		if i > 0 {
 			old_region += ", "
 		}

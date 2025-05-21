@@ -273,6 +273,7 @@ var builtinFcts = set.From([]string{
 func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) ([]*api.Variable, bool, bool) {
 	slice_tainted := false
 	slice_xvs := []*api.Variable{}
+	// Eval each arg and append its xvs to a single list
 	for _, arg := range call_node.Args {
 		tainted_region, is_tainted := tc.evalWatchexpr(arg, hit, fset, false)
 		if is_tainted {
@@ -282,7 +283,11 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *toke
 	}
 
 	// slice of non-reference elems => flatten xvs' tainting vals into a single array (to match returned slice)
-	concat_xvs := !slice_xvs[0].ReferenceElem
+	concat_xvs := false
+	if len(slice_xvs) > 0 {
+		// Can be 0 if both args eval to nothing (e.g. nil slice, fn call)
+		concat_xvs = !slice_xvs[0].ReferenceElem
+	}
 	return slice_xvs, slice_tainted, concat_xvs
 }
 

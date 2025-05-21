@@ -309,10 +309,16 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 	new_params := map[uint64]string{}
 	var total_len, cur_len int
 	for _, old_xv := range tainted_region.old_region {
+		if old_xv == nil {
+			continue // variable failed to eval
+		}
 		total_len += int(old_xv.Watchsz)
 	}
 
 	for i, old_xv := range tainted_region.old_region {
+		if old_xv == nil {
+			continue // variable failed to eval
+		}
 		old_start := old_xv.Addr
 		old_end := old_start + uint64(old_xv.Watchsz)
 		for watchaddr := old_start; watchaddr < old_end; watchaddr++ {
@@ -389,7 +395,8 @@ func (tc *TaintCheck) logWatchErr(msg string, err error, hit *Hit) {
 		strings.Contains(err.Error(), "unreadable") {
 		// TODO fake address is likely fixable by setting bp at 2nd instr in function body instead of 1st
 		// (unsure if has potential to cause missed access of arg in 1st instr)
-		// TODO insane and unreadable are from multiline lit with slice fields (see unmarshal test)
+		// TODO insane and unreadable are from setting wp on whole struct for multiline lit with slice fields (see unmarshal test) -
+		// could improve (see gdoc) by only setting on field (may help PERF too)
 		tc.Logf(slog.LevelWarn, hit, errstr)
 	} else {
 		log.Panicln(errstr)
@@ -416,9 +423,6 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 	watchpoints, errs := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
 	for _, err := range errs {
 		tc.logWatchErr(fmt.Sprintf("Failed to set watchpoint for %v", watchexpr), err, hit)
-	}
-	if len(watchpoints) == 0 {
-		log.Panicf("Debugger returned no watchpoints for %v\n", watchexpr)
 	}
 	if len(watchpoints) != len(errs) {
 		log.Panicf("Debugger returned watchpoints and errs with mismatched lengths: %v vs %v", watchpoints, errs)
@@ -658,6 +662,7 @@ func New(config *Config) (*TaintCheck, error) {
 		event_log:      csv.NewWriter(event_log_file),
 	}
 
+	// TODO (minor) make log level configurable
 	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelInfo,
 		// Shorten paths for client filenames
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {

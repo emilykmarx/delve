@@ -799,14 +799,14 @@ func (t *Target) SetWatchpointNoEval(logicalID int, scope *EvalScope, expr strin
 	bp.WatchExpr = expr
 
 	if StackAddr(scope, watchaddr) {
-		logflags.DebuggerLogger().Debugf("wp set for %#x - on stack", watchaddr)
+		logflags.DebuggerLogger().Debugf("set watchpoint on %v: %#x (sz %#x) - on stack", expr, watchaddr, sz)
 		bp.watchStackOff = int64(bp.Addr) - int64(scope.g.stack.hi)
 		err := t.setStackWatchBreakpoints(scope, bp)
 		if err != nil {
 			return bp, err
 		}
 	} else {
-		logflags.DebuggerLogger().Debugf("wp set for %#x (sz %#x) - not on stack", watchaddr, sz)
+		logflags.DebuggerLogger().Debugf("set watchpoint on %v: %#x (sz %#x) - not on stack", expr, watchaddr, sz)
 	}
 	return bp, nil
 }
@@ -891,14 +891,21 @@ func adjustForSlice(xv *Variable, slice_idxs []int, elemsz int64) {
 }
 
 // Whether the type is a pointer, or could contain pointers
-func referenceType(typ godwarf.Type) bool {
+func referenceType(typ_ godwarf.Type) bool {
+	typ := resolveTypedef(typ_)
 	if _, ok := typ.(*godwarf.StringType); ok {
 		return true
 	}
 	if _, ok := typ.(*godwarf.SliceType); ok {
 		return true
 	}
-	if _, ok := resolveTypedef(typ).(*godwarf.StructType); ok {
+	if _, ok := typ.(*godwarf.StructType); ok {
+		return true
+	}
+	if _, ok := typ.(*godwarf.MapType); ok {
+		return true
+	}
+	if _, ok := typ.(*godwarf.InterfaceType); ok {
 		return true
 	}
 	return false
@@ -906,7 +913,7 @@ func referenceType(typ godwarf.Type) bool {
 
 // Eval expr's underlying data, check the result for watchability.
 // Return all resulting variable(s), with xv.Addr and xv.Watchsz adjusted for [x:y] syntax,
-// and corresponding errs
+// and corresponding errs.
 // If ignoreUnsupported, don't return error if type isn't supported.
 // This is used both by server to set watchpoints and by client to evaluate expressions.
 func (t *Target) EvalWatchexpr(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable) []error {
@@ -933,6 +940,7 @@ func evalSuccess(vars *[]*Variable, errs *[]error, xv *Variable) {
 	*errs = append(*errs, nil)
 }
 
+// Parse and eval expr (including children, recursively), and get resulting variables
 func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsupported bool, vars *[]*Variable, errs *[]error, recursing bool) {
 	orig_expr := expr
 	slice_name, slice_idxs, err := t.sliceIndices(scope, expr)
@@ -955,12 +963,34 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 		evalErr(vars, errs, err)
 		return
 	}
+	if slice_idxs != nil && slice_idxs[1] == 0 {
+		slice_idxs[1] = int(xv.Len)
+	}
+	xv.Name = orig_expr
+	t.getWatchVars(*xv, expr, slice_idxs, ignoreUnsupported, vars, errs, recursing)
+}
+
+// For xv or the variables corresponding to its underlying data,
+// check watchability and set watch-related fields, e.g. addr/sz to watch.
+// Append result(s) to vars and errs.
+// The number of results depends on the type and len.
+// expr is just used to set the name.
+// elem_idxs is the range of xv's elements to return (may be a subset, if not recursing)
+func (t *Target) getWatchVars(xv Variable, expr string, elem_idxs []int, ignoreUnsupported bool, vars *[]*Variable, errs *[]error, recursing bool) {
+	if recursing {
+		xv.Name = expr // Keep slice indices in name
+		xv.ReferenceElem = true
+	}
+	if elem_idxs == nil {
+		elem_idxs = []int{0, int(xv.Len)} // all elements
+	}
+
+	// 1. Check watchability
 	if xv.Addr == 0 || xv.DwarfType == nil {
 		evalErr(vars, errs, fmt.Errorf("can not watch %q; Addr 0x%x, DwarfType nil %v", expr, xv.Addr, xv.DwarfType == nil))
 		return
 	}
 	if xv.Flags&VariableFakeAddress != 0 || xv.Addr == FakeAddressBase {
-		// This happens sometimes at first line of function, despite asm saying it's allocated in memory - unsure why
 		evalErr(vars, errs, fmt.Errorf("can not watch %q; has fake address", expr))
 		return
 	}
@@ -973,45 +1003,34 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 		return
 	}
 
-	xv.Name = orig_expr
-	if recursing {
-		xv.ReferenceElem = true
-	}
+	// 2. Set fields based on type
 	// TODO (minor): Below assumes software impl (i.e. can watch sz > 8)
 	sz := xv.DwarfType.Size()
-
-	// elem_idxs will be used if elems are references
-	elem_idxs := make([]int, 2)
-	if slice_idxs != nil && slice_idxs[1] == 0 {
-		slice_idxs[1] = int(xv.Len)
-	}
-	elem_idxs[1] = int(xv.Len)
-	if slice_idxs != nil {
-		elem_idxs = slice_idxs
-	}
+	typ := resolveTypedef(xv.DwarfType)
 
 	if sz <= 0 {
 		evalErr(vars, errs, fmt.Errorf("can not watch variable of type %v, sz %v: zero/negative sz", xv.DwarfType.String(), sz))
 		return
-	} else if _, ok := xv.DwarfType.(*godwarf.StringType); ok {
+	} else if _, ok := typ.(*godwarf.StringType); ok {
 		// watch chars
 		xv.Addr = xv.Base
-		adjustForSlice(xv, slice_idxs, 1)
-		evalSuccess(vars, errs, xv)
-	} else if array, ok := xv.DwarfType.(*godwarf.ArrayType); ok {
-		adjustForSlice(xv, slice_idxs, array.Type.Size())
+		adjustForSlice(&xv, elem_idxs, 1)
+		evalSuccess(vars, errs, &xv)
+	} else if array, ok := typ.(*godwarf.ArrayType); ok {
+		adjustForSlice(&xv, elem_idxs, array.Type.Size())
 
 		if referenceType(array.Type) {
 			// If elements are a reference type (string or slice),
 			// watch the elements' underlying data (chars or backing array)
 			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
-				elem := fmt.Sprintf("%v[%v]", expr, i)
-				t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, errs, true)
+				elem_name := fmt.Sprintf("%v[%v]", expr, i)
+				elem_xv := xv.Children[i]
+				t.getWatchVars(elem_xv, elem_name, nil, ignoreUnsupported, vars, errs, true)
 			}
 		} else {
-			evalSuccess(vars, errs, xv)
+			evalSuccess(vars, errs, &xv)
 		}
-	} else if slice, ok := xv.DwarfType.(*godwarf.SliceType); ok {
+	} else if slice, ok := typ.(*godwarf.SliceType); ok {
 		// watch backing array - but not past len, since only initialized data is tainted
 		if xv.Base == 0 || xv.Cap == 0 ||
 			(len(xv.Children) > 0 && xv.Children[0].Unreadable != nil && xv.Children[0].Unreadable.Error() == "input/output error") {
@@ -1020,26 +1039,45 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 			return
 		}
 		xv.Addr = xv.Base
-		adjustForSlice(xv, slice_idxs, slice.ElemType.Size())
+		adjustForSlice(&xv, elem_idxs, slice.ElemType.Size())
 
 		if referenceType(slice.ElemType) {
 			for i := elem_idxs[0]; i < elem_idxs[1]; i++ {
-				elem := fmt.Sprintf("%v[%v]", expr, i)
-				t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, errs, true)
+				elem_name := fmt.Sprintf("%v[%v]", expr, i)
+				elem_xv := xv.Children[i]
+				t.getWatchVars(elem_xv, elem_name, nil, ignoreUnsupported, vars, errs, true)
 			}
 		} else {
-			evalSuccess(vars, errs, xv)
+			evalSuccess(vars, errs, &xv)
 		}
-	} else if xv.Kind == reflect.Struct {
-		struct_, ok := resolveTypedef(xv.DwarfType).(*godwarf.StructType)
-		if !ok {
-			evalErr(vars, errs, fmt.Errorf("can not resolve %v to struct", *xv))
-			return
-		}
+	} else if struct_, ok := typ.(*godwarf.StructType); ok {
 		// Return variable for each field, since some may be reference types
-		for _, field := range struct_.Field {
-			elem := fmt.Sprintf("%v.%v", expr, field.Name)
-			t.evalWatchexprInternal(scope, elem, ignoreUnsupported, vars, errs, true)
+		for i, field := range struct_.Field {
+			elem_name := fmt.Sprintf("%v.%v", expr, field.Name)
+			elem_xv := xv.Children[i]
+			t.getWatchVars(elem_xv, elem_name, nil, ignoreUnsupported, vars, errs, true)
+		}
+	} else if _, ok := typ.(*godwarf.MapType); ok {
+		// Return variable for each key and value
+		for i, elem_xv := range xv.Children {
+			elem_name := ""
+			// name keys as map->key_value, values as map[key_value]
+			if i%2 == 0 {
+				elem_name = fmt.Sprintf("%v->%v", expr, elem_xv.Value)
+			} else {
+				key_xv := xv.Children[i-1]
+				elem_name = fmt.Sprintf("%v[%v]", expr, key_xv.Value)
+			}
+			t.getWatchVars(elem_xv, elem_name, nil, ignoreUnsupported, vars, errs, true)
+		}
+	} else if _, ok := typ.(*godwarf.InterfaceType); ok {
+		if len(xv.Children) != 1 {
+			evalErr(vars, errs, fmt.Errorf("interface has wrong number of children %v", len(xv.Children)))
+		} else {
+			// Child is the concrete value
+			val := &xv.Children[0]
+			val.loadValue(loadFullValue)
+			t.getWatchVars(*val, expr, nil, ignoreUnsupported, vars, errs, true)
 		}
 	} else {
 		_, funcType := xv.RealType.(*godwarf.FuncType) // don't watch functions for now
@@ -1048,15 +1086,15 @@ func (t *Target) evalWatchexprInternal(scope *EvalScope, expr string, ignoreUnsu
 			xv.Watchsz = sz
 			evalErr(vars, errs, fmt.Errorf("can not watch variable of type %s (real type %s, kind %s), sz %v: type not supported",
 				xv.DwarfType.String(), xv.RealType.String(), xv.Kind, sz))
-			return
 		} else {
 			// Client uses this to eval variables for overlap => set Watchsz even if unsupported
 			xv.Watchsz = sz
-			evalSuccess(vars, errs, xv)
+			evalSuccess(vars, errs, &xv)
 		}
 	}
 	// TODO support other types - for types with elements, need to handle any reference elems.
 	// For types with capacity, pass capacity (not watchsz) to MoveObject below.
+	// TODO dereference pointer elements (e.g. with maybeDereference() and/or allPointers())
 }
 
 // Ask the target's runtime to move the object to a page only for tainted objects.

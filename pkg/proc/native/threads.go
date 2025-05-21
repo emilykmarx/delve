@@ -160,6 +160,7 @@ func (t *nativeThread) SetCurrentBreakpoint(adjustPC bool) error {
 	}
 	if bp == nil && t.stopSignal() == syscall.SIGSEGV {
 		// Software watchpoint (spurious or not)
+		// TODO account for size of access (using instr semantics)
 		bp = t.FindSoftwareWatchpoint(nil, 1)
 	} else if bp == nil {
 		// Software breakpoint

@@ -531,6 +531,42 @@ func TestUnmarshal(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
+func TestMapsInterfaces(t *testing.T) {
+	// Client requests wp on interface after json.Unmarshal populates it =>
+	// Server watches its underlying data
+	iface := "unmarshaled"
+	keys := []string{"apps", "http", "servers", "hello", "listen", ":2015", "routes", "handle", "handler", "static_response", "body", "Hello, world!"}
+	lens := []uint64{}
+	for _, k := range keys {
+		lens = append(lens, uint64(len(k)))
+	}
+
+	exprs := []string{
+		"unmarshaled->\"apps\"",
+		"unmarshaled[\"apps\"]->\"http\"",
+		"unmarshaled[\"apps\"][\"http\"]->\"servers\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"]->\"hello\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"]->\"listen\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"][\"listen\"][0]",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"]->\"routes\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"][\"routes\"][0]->\"handle\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"][\"routes\"][0][\"handle\"][0]->\"handler\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"][\"routes\"][0][\"handle\"][0][\"handler\"]",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"][\"routes\"][0][\"handle\"][0]->\"body\"",
+		"unmarshaled[\"apps\"][\"http\"][\"servers\"][\"hello\"][\"routes\"][0][\"handle\"][0][\"body\"]",
+	}
+
+	initial_line := 21
+	config := Config("maps_interfaces.go", iface, initial_line)
+	expected_events := []TestEvent{}
+
+	for i, expr := range exprs {
+		expected_events = append(expected_events,
+			watchpointSet(&config, expr, lens[i], initial_line, ct.DataFlow, nil, nil)...)
+	}
+	run(t, &config, expected_events)
+}
+
 // Return TaintingParam corresponding to config.Initial_watchexpr
 func configTaintingParam(config *ct.Config, flow ct.TaintFlow) set.Set[ct.TaintingParam] {
 	tainting_params := set.New[ct.TaintingParam](0)
