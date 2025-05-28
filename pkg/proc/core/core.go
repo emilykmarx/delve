@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -273,6 +274,7 @@ func (p *process) Checkpoints() ([]proc.Checkpoint, error) { return nil, nil }
 // ClearCheckpoint clears a checkpoint, but will only return an error for core files.
 func (p *process) ClearCheckpoint(int) error                { return errors.New("checkpoint not found") }
 func (dbp *process) AddPendingWatchpoint(wp proc.PendingWp) {}
+func (dbp *process) EventLog() *csv.Writer                  { return nil }
 
 func (p *process) SupportsBPF() bool {
 	return false

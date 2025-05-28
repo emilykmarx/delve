@@ -1,6 +1,7 @@
 package native
 
 import (
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,8 @@ import (
 	"github.com/go-delve/delve/pkg/proc/linutil"
 	sys "golang.org/x/sys/unix"
 )
+
+const eventlog_enabled = false
 
 // Process represents all of the information the debugger
 // is holding onto regarding the process we are debugging.
@@ -53,6 +56,8 @@ type nativeProcess struct {
 	syscallPCs [3]uint64
 
 	pendingWatchpoints []proc.PendingWp
+
+	eventLog *csv.Writer
 }
 
 // newProcess returns an initialized Process struct. Before returning,
@@ -182,6 +187,10 @@ func (dbp *nativeProcess) Memory() proc.MemoryReadWriter {
 
 func (dbp *nativeProcess) AddPendingWatchpoint(wp proc.PendingWp) {
 	dbp.pendingWatchpoints = append(dbp.pendingWatchpoints, wp)
+}
+
+func (dbp *nativeProcess) EventLog() *csv.Writer {
+	return dbp.eventLog
 }
 
 // Breakpoints returns a list of breakpoints currently set.
@@ -598,6 +607,15 @@ func (t *nativeThread) FindSoftwareWatchpoint(faultingAddr_ *uint64, faultingSiz
 	} else {
 		faultingAddr = *faultingAddr_
 	}
+	event_type := proc.SpuriousWpHit
+	if faultingSize == 1 {
+		// assume max size access - client will eval exprs on line to check actual access
+		// (would be 64B for SIMD)
+		faultingSize = 16
+	} else {
+		event_type = proc.UntaintedSend // sz is send buf sz (assume >1 - this is just for logging)
+	}
+
 	for _, bp := range t.dbp.Breakpoints().M {
 		if bp.WatchType != 0 && bp.WatchImpl == proc.WatchSoftware {
 			if memOverlap(faultingAddr, faultingSize, bp.Addr, uint64(bp.WatchType.Size())) {
@@ -609,6 +627,20 @@ func (t *nativeThread) FindSoftwareWatchpoint(faultingAddr_ *uint64, faultingSiz
 	// Not active, so Continue() won't return it to client
 	ret := &proc.Breakpoint{WatchType: proc.WatchWrite, WatchImpl: proc.WatchSoftware,
 		Addr: faultingAddr, SpuriousPageFault: true}
+
+	if eventlog_enabled {
+		locstr := ""
+		loc, err := t.Location()
+		if err == nil {
+			locstr = fmt.Sprintf("%v %v %#x", loc.File, loc.Line, loc.PC)
+		}
+		// TODO (minor) also log first non-runtime frame (in client event log too),
+		// and make enable and filename config params
+		row := []string{string(event_type), fmt.Sprintf("%#x", faultingAddr), fmt.Sprintf("%#x", faultingSize), locstr}
+		if err := t.dbp.EventLog().WriteAll([][]string{row}); err != nil {
+			log.Panicf("writing event %v: %v\n", row, err.Error())
+		}
+	}
 	return ret
 }
 
@@ -684,6 +716,13 @@ func (dbp *nativeProcess) initialize(path string, debugInfoDirs []string, target
 		dbp.iscgo = tgt.IsCgo()
 	}
 	dbp.setupSyscallHandling()
+	if eventlog_enabled {
+		event_log_file, err := os.Create("dlv_event_log.csv")
+		if err != nil {
+			return nil, err
+		}
+		dbp.eventLog = csv.NewWriter(event_log_file)
+	}
 	return grp, nil
 }
 

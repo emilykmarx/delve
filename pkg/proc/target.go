@@ -83,6 +83,20 @@ type Target struct {
 	ConfigFiles []string
 }
 
+// Event to be logged
+type EventType string
+
+const (
+	SpuriousWpHit EventType = "Spurious watchpoint hit"
+	UntaintedSend EventType = "Untainted network send"
+)
+
+type Event struct {
+	EventType EventType
+	Address   uint64
+	Size      uint64
+}
+
 type KeepSteppingBreakpoints uint8
 
 const (

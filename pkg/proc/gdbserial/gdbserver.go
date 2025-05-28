@@ -65,6 +65,7 @@ import (
 	"bytes"
 	"debug/macho"
 	"encoding/binary"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"net"
@@ -839,6 +840,8 @@ const (
 )
 
 func (p *gdbProcess) AddPendingWatchpoint(wp proc.PendingWp) {}
+func (p *gdbProcess) EventLog() *csv.Writer                  { return nil }
+
 func (p *gdbProcess) ContinueOnce(cctx *proc.ContinueOnceContext) (proc.Thread, proc.StopReason, error) {
 	if p.exited {
 		return nil, proc.StopExited, proc.ErrProcessExited{Pid: p.conn.pid}

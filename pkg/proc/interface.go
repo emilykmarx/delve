@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"encoding/csv"
 	"sync"
 	"time"
 
@@ -44,6 +45,8 @@ type Process interface {
 	// Watchpoints requested while threads were stopped -
 	// will be set upon resuming
 	AddPendingWatchpoint(PendingWp)
+
+	EventLog() *csv.Writer
 }
 
 // ProcessInternal holds a set of methods that need to be implemented by a

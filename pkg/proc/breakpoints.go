@@ -314,15 +314,22 @@ func (info *SyscallBreakpointInfo) getSocketInfo(fdinfo string) error {
 	}
 
 	// XXX ipv6 and other transports too
-	tcp_socks, err := linuxproc.ReadNetTCPSockets("/proc/net/tcp", linuxproc.NetIPv4Decoder)
-	if err != nil {
-		return fmt.Errorf("ReadNetTCPSockets: %v", err)
-	}
-	for _, sock := range tcp_socks.Sockets {
-		if sock.Inode == inode {
-			info.Local_endpoint = sock.LocalAddress
-			info.Remote_endpoint = sock.RemoteAddress
-			info.Transport = "tcp"
+	for i, sock_path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		decoder := linuxproc.NetIPv4Decoder
+		if i == 1 {
+			decoder = linuxproc.NetIPv6Decoder
+		}
+		tcp_socks, err := linuxproc.ReadNetTCPSockets(sock_path, decoder)
+		if err != nil {
+			return fmt.Errorf("ReadNetTCPSockets, path %v: %v", sock_path, err)
+		}
+		for _, sock := range tcp_socks.Sockets {
+			if sock.Inode == inode {
+				info.Local_endpoint = sock.LocalAddress
+				info.Remote_endpoint = sock.RemoteAddress
+				info.Transport = "tcp"
+				break
+			}
 		}
 	}
 	return nil
@@ -353,7 +360,7 @@ func (bp *Breakpoint) taintedSyscallEntry(tgt *Target, thread Thread) *SyscallBr
 	syscall := ""
 	stack, err := ThreadStacktrace(tgt, thread, 50)
 	if err != nil {
-		log.Panicf("Failed to get stacktrace in checkCondition: %v\n", err)
+		log.Panicf("Failed to get stacktrace in taintedSyscallEntry: %v\n", err)
 	}
 	if len(stack) > 3 {
 		syscall = stack[3].Call.Fn.Name
