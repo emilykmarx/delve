@@ -47,15 +47,25 @@ func taintingParam() ct.TaintingParam {
 	return ct.TaintingParam{Param: ct.Param{Module: "param_module", Param: "param", File: "file"}, Flow: ct.ControlFlow}
 }
 
-func behavior() ct.BehaviorValue {
-	return ct.BehaviorValue{Offset: 1, Send_endpoint: "send_endpoint", Recv_endpoint: "recv_endpoint", Transport: "tcp", Send_module: "send_module"}
+func networkmsg() ct.BehaviorValue {
+	return ct.BehaviorValue{Offset: 1,
+		Behavior_type: ct.NetworkMsg,
+		Network_msg:   ct.NetworkMessage{Send_endpoint: "send_endpoint", Recv_endpoint: "recv_endpoint", Transport: "tcp"},
+		Send_module:   "send_module"}
+}
+
+// Make temporary if applicable
+func outputFile(t *testing.T, file string) string {
+	if os.Getenv("CT_KEEP_CSVS") == "" {
+		return filepath.Join(t.TempDir(), file)
+	} else {
+		return file
+	}
 }
 
 // Checks .gv
 func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expected_lines []string) {
-	if os.Getenv("CT_KEEP_CSVS") == "" {
-		graph_file = filepath.Join(t.TempDir(), graph_file)
-	}
+	graph_file = outputFile(t, graph_file)
 	_, err := ct.WriteGraph(graph_file, behavior_maps)
 	assertNoError(err, t, "write graph")
 
@@ -82,7 +92,7 @@ func checkGraph(t *testing.T, behavior_maps []string, graph_file string, expecte
 
 func TestWriteGraph(t *testing.T) {
 	send_param := taintingParam()
-	send_behavior := behavior()
+	send_behavior := networkmsg()
 	send_tainting_vals := ct.MakeTaintingVals(&send_param, nil)
 
 	send_behavior_map := ct.BehaviorMap{send_behavior: send_tainting_vals}
@@ -94,7 +104,10 @@ func TestWriteGraph(t *testing.T) {
 	recv_untainted := recv_tainted
 	recv_untainted.Offset = recv_tainted.Offset + 1
 
-	send_tainted := ct.BehaviorValue{Offset: 1, Send_endpoint: "send_endpoint_2", Recv_endpoint: "recv_endpoint_2", Transport: "tcp", Send_module: "recv_module"}
+	send_tainted := ct.BehaviorValue{Offset: 1,
+		Behavior_type: ct.NetworkMsg,
+		Network_msg:   ct.NetworkMessage{Send_endpoint: "send_endpoint_2", Recv_endpoint: "recv_endpoint_2", Transport: "tcp"},
+		Send_module:   "recv_module"}
 	send_untainted := send_tainted
 	send_untainted.Offset = send_tainted.Offset + 1
 
@@ -103,12 +116,8 @@ func TestWriteGraph(t *testing.T) {
 	tainting_vals = ct.MakeTaintingVals(nil, &ct.TaintingBehavior{Behavior: recv_untainted, Flow: ct.DataFlow})
 	recv_behavior_map[send_untainted] = tainting_vals
 
-	send_file := "fake_send_map.csv"
-	recv_file := "fake_recv_map.csv"
-	if os.Getenv("CT_KEEP_CSVS") == "" {
-		send_file = filepath.Join(t.TempDir(), send_file)
-		recv_file = filepath.Join(t.TempDir(), recv_file)
-	}
+	send_file := outputFile(t, "fake_send_map.csv")
+	recv_file := outputFile(t, "fake_recv_map.csv")
 	assertNoError(ct.WriteBehaviorMap(send_file, send_behavior_map), t, "write")
 	assertNoError(ct.WriteBehaviorMap(recv_file, recv_behavior_map), t, "write")
 
@@ -124,8 +133,8 @@ func TestWriteGraph(t *testing.T) {
 	checkGraph(t, []string{send_file, recv_file}, "fake_graph.gv", expected_lines)
 }
 
-func readWriteBehaviorMap(t *testing.T, behavior_map ct.BehaviorMap) {
-	file := filepath.Join(t.TempDir(), "behavior_map.csv")
+func readWriteBehaviorMap(t *testing.T, behavior_map ct.BehaviorMap) string {
+	file := outputFile(t, "behavior_map.csv")
 	assertNoError(ct.WriteBehaviorMap(file, behavior_map), t, "write")
 	behavior_map_2, err := ct.ReadBehaviorMap(file)
 	assertNoError(err, t, "read")
@@ -135,12 +144,13 @@ func readWriteBehaviorMap(t *testing.T, behavior_map ct.BehaviorMap) {
 		t.Fatalf("Map before read != after\nDiff: %v\nBefore: %v\nAfter: %v",
 			diff, behavior_map, behavior_map_2)
 	}
+	return file
 }
 
 // Check behavior map read/write to file, and equality operations on it
 func TestReadWriteBehaviorMap(t *testing.T) {
 	tainting_param := taintingParam()
-	behavior := behavior()
+	behavior := networkmsg()
 	tainting_behavior := ct.TaintingBehavior{
 		Behavior: behavior,
 		Flow:     ct.DataFlow,
@@ -757,6 +767,49 @@ func TestLoadConfigParam(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
+// XXX Ignore core-module interface behavior for now
+func TestCaddyManualScan(t *testing.T) {
+	// http response: tainted by param
+	client_endpoint := "127.0.0.1:0" // port unknown
+	server_endpoint := "127.0.0.1:2015"
+	body := "Hello, world!"
+	payload_len := 145
+	module := "caddy"
+	behavior_map := make(ct.BehaviorMap)
+
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: module,
+			File:   ct.ConfigAPI,
+			Param:  "apps.http.servers.routes.handle.static_response.body",
+		},
+		Flow: ct.DataFlow,
+	}
+
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// Each tainted msg offset is entry in behavior map, tainted by param (XXX by behavior)
+	for i := 0; i < len(body); i++ {
+		offset := payload_len - 1 - i
+		sent_msg := ct.BehaviorValue{
+			Offset:        uint64(offset),
+			Behavior_type: ct.NetworkMsg,
+			Network_msg: ct.NetworkMessage{
+				Send_endpoint: server_endpoint,
+				Recv_endpoint: client_endpoint,
+				Transport:     "tcp",
+			},
+			Send_module: module,
+		}
+
+		behavior_map[sent_msg] = tainting_vals
+	}
+
+	behavior_file := readWriteBehaviorMap(t, behavior_map)
+	_, err := ct.WriteGraph("caddy_graph.gv", []string{behavior_file})
+	assertNoError(err, t, "write graph")
+}
+
 func TestNetworkMessages(t *testing.T) {
 	// SENDER
 	initial_line := 34
@@ -769,10 +822,13 @@ func TestNetworkMessages(t *testing.T) {
 	server_endpoint := "127.0.0.1:6060"
 	sent_msg := ct.BehaviorValue{
 		Offset:        1,
-		Send_endpoint: client_endpoint,
-		Recv_endpoint: server_endpoint,
-		Transport:     "tcp",
-		Send_module:   client_config.Module,
+		Behavior_type: ct.NetworkMsg,
+		Network_msg: ct.NetworkMessage{
+			Send_endpoint: client_endpoint,
+			Recv_endpoint: server_endpoint,
+			Transport:     "tcp",
+		},
+		Send_module: client_config.Module,
 	}
 	expected_events :=
 		watchpointSet(&client_config, client_config.Initial_watchexpr, uint64(1), initial_line, ct.DataFlow, nil, nil)
@@ -788,10 +844,13 @@ func TestNetworkMessages(t *testing.T) {
 	server_config.Server_endpoint = "localhost:4041"
 
 	recvd_msg := ct.BehaviorValue{
-		Send_endpoint: client_endpoint,
-		Recv_endpoint: server_endpoint,
-		Transport:     "tcp",
-		Recv_module:   server_config.Module,
+		Behavior_type: ct.NetworkMsg,
+		Network_msg: ct.NetworkMessage{
+			Send_endpoint: client_endpoint,
+			Recv_endpoint: server_endpoint,
+			Transport:     "tcp",
+		},
+		Recv_module: server_config.Module,
 	}
 	tainting_behavior := ct.TaintingBehavior{
 		Behavior: recvd_msg,
@@ -807,10 +866,13 @@ func TestNetworkMessages(t *testing.T) {
 
 	sent_msg = ct.BehaviorValue{
 		Offset:        1,
-		Send_endpoint: server_endpoint,
-		Recv_endpoint: client_endpoint,
-		Transport:     "tcp",
-		Send_module:   server_config.Module,
+		Behavior_type: ct.NetworkMsg,
+		Network_msg: ct.NetworkMessage{
+			Send_endpoint: server_endpoint,
+			Recv_endpoint: client_endpoint,
+			Transport:     "tcp",
+		},
+		Send_module: server_config.Module,
 	}
 	tainting_behavior.Behavior.Offset = 0 // msg_B[1] tainted by msg_A[0] (messageSend takes care of rest of msg_B)
 	expected_events = append(expected_events, messageSend(nil, sent_msg, 3, 2, &tainting_behavior)...)
@@ -945,13 +1007,11 @@ func run(t *testing.T, config *ct.Config, expected_events []TestEvent) {
 	}
 
 	config_file := config.Module + "_client_config.yml"
-	if os.Getenv("CT_KEEP_CSVS") == "" {
-		event_log := filepath.Join(t.TempDir(), config.Event_log_filename)
-		behavior_map := filepath.Join(t.TempDir(), config.Behavior_map_filename)
-		config.Event_log_filename = event_log
-		config.Behavior_map_filename = behavior_map
-		config_file = filepath.Join(t.TempDir(), config_file)
-	}
+	event_log := outputFile(t, config.Event_log_filename)
+	behavior_map := outputFile(t, config.Behavior_map_filename)
+	config.Event_log_filename = event_log
+	config.Behavior_map_filename = behavior_map
+	config_file = outputFile(t, config_file)
 
 	ct.SaveConfig(config_file, *config)
 

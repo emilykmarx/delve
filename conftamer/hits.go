@@ -32,14 +32,32 @@ type TaintingParam struct {
 	Flow  TaintFlow
 }
 
+type BehaviorType string
+
+const (
+	NetworkMsg BehaviorType = "network message"
+	FnArg      BehaviorType = "function argument"
+)
+
 type BehaviorValue struct {
-	Offset        uint64 // offset in message
+	Offset        uint64 // offset in data (e.g. message or argument)
+	Send_module   string
+	Recv_module   string
+	Behavior_type BehaviorType
+	Network_msg   NetworkMessage
+	Function_arg  FunctionArg
+}
+
+type NetworkMessage struct {
 	Send_endpoint string // IP:port
 	Recv_endpoint string // IP:port
 	Transport     string // transport protocol
-	Send_module   string
-	Recv_module   string
 	// XXX protocol, request vs response
+}
+
+type FunctionArg struct {
+	Function_name string
+	Arg_name      string
 }
 
 type TaintingBehavior struct {
@@ -134,6 +152,8 @@ type TaintCheck struct {
 const (
 	// Name of buf param in syscall.write
 	SyscallRecvBuf = "p"
+	// Used as filename for params loaded from config API
+	ConfigAPI = "config API"
 )
 
 // Handle syscall entry bp hit - server returns it to us if tainted
@@ -149,8 +169,11 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		// i.e. region of send buf that overlaps watched region
 		sent_msg := BehaviorValue{
 			Offset:        0,
-			Send_endpoint: info.Local_endpoint, Recv_endpoint: info.Remote_endpoint, Transport: info.Transport,
-			Send_module: tc.config.Module,
+			Send_module:   tc.config.Module,
+			Behavior_type: NetworkMsg,
+			Network_msg: NetworkMessage{
+				Send_endpoint: info.Local_endpoint, Recv_endpoint: info.Remote_endpoint, Transport: info.Transport,
+			},
 		}
 		event := Event{EventType: MessageSend, Address: info.Bufaddr, Size: info.Bufsz, Behavior: &sent_msg}
 		WriteEvent(hit.thread, tc.event_log, event)
@@ -169,8 +192,11 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		// Receive network message (not for config API) => set watchpoint on entire read buffer, tainted by message
 		recvd_msg := BehaviorValue{
 			Offset:        0,
-			Send_endpoint: info.Remote_endpoint, Recv_endpoint: info.Local_endpoint, Transport: info.Transport,
-			Recv_module: tc.config.Module,
+			Recv_module:   tc.config.Module,
+			Behavior_type: NetworkMsg,
+			Network_msg: NetworkMessage{
+				Send_endpoint: info.Remote_endpoint, Recv_endpoint: info.Local_endpoint, Transport: info.Transport,
+			},
 		}
 		event := Event{EventType: MessageRecv, Address: info.Bufaddr, Size: info.Bufsz, Behavior: &recvd_msg}
 		WriteEvent(hit.thread, tc.event_log, event)
@@ -190,7 +216,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		// Load config from file or API => set watchpoint on entire read buffer, tainted by empty param
 		// (Will populate param with contents of buffer on first access)
 		if info.Local_endpoint == tc.config.Config_API_endpoint && socket {
-			info.Filename = "config API"
+			info.Filename = ConfigAPI
 		}
 
 		tainting_param := TaintingParam{

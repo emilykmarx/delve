@@ -35,9 +35,9 @@ func NodeHash(n Node) NodeHashType {
 		Parameter: n.Parameter,
 		Behavior: BehaviorValue{
 			Offset:        n.Behavior.Offset,
-			Send_endpoint: n.Behavior.Send_endpoint,
-			Recv_endpoint: n.Behavior.Recv_endpoint,
-			Transport:     n.Behavior.Transport,
+			Behavior_type: n.Behavior.Behavior_type,
+			Network_msg:   n.Behavior.Network_msg,
+			Function_arg:  n.Behavior.Function_arg,
 		},
 	}
 }
