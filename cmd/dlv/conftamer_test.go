@@ -767,19 +767,18 @@ func TestLoadConfigParam(t *testing.T) {
 	run(t, &config, expected_events)
 }
 
-// XXX Ignore core-module interface behavior for now
 func TestCaddyManualScan(t *testing.T) {
-	// http response: tainted by param
-	client_endpoint := "127.0.0.1:0" // port unknown
+	client_endpoint := "127.0.0.1:46402"
 	server_endpoint := "127.0.0.1:2015"
-	body := "Hello, world!"
-	payload_len := 145
-	module := "caddy"
-	behavior_map := make(ct.BehaviorMap)
+	core_module := "caddy_core"
+	http_module := "http"
+	caddy_client_module := "caddy_client"
+	core_behavior_map := make(ct.BehaviorMap)
+	static_resp_behavior_map := make(ct.BehaviorMap)
 
 	tainting_param := ct.TaintingParam{
 		Param: ct.Param{
-			Module: module,
+			Module: core_module,
 			File:   ct.ConfigAPI,
 			Param:  "apps.http.servers.routes.handle.static_response.body",
 		},
@@ -788,25 +787,102 @@ func TestCaddyManualScan(t *testing.T) {
 
 	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
 
-	// Each tainted msg offset is entry in behavior map, tainted by param (XXX by behavior)
-	for i := 0; i < len(body); i++ {
-		offset := payload_len - 1 - i
-		sent_msg := ct.BehaviorValue{
-			Offset:        uint64(offset),
-			Behavior_type: ct.NetworkMsg,
-			Network_msg: ct.NetworkMessage{
-				Send_endpoint: server_endpoint,
-				Recv_endpoint: client_endpoint,
-				Transport:     "tcp",
-			},
-			Send_module: module,
-		}
-
-		behavior_map[sent_msg] = tainting_vals
+	// 1. PARAM => HTTP PROVISION ARGS
+	provision_arg := ct.BehaviorValue{
+		Behavior_type: ct.FnArg,
+		Function_arg: ct.FunctionArg{
+			Function_name: "caddyhttp.(*App).Provision()",
+		},
+		Send_module: core_module,
+		Recv_module: http_module,
 	}
 
-	behavior_file := readWriteBehaviorMap(t, behavior_map)
-	_, err := ct.WriteGraph("caddy_graph.gv", []string{behavior_file})
+	// XXX ignore all offsets for now
+	// http.Provision.App, http.Provision.Ctx_AppsRaw, http.Provision.Ctx_Ancestry
+	http_args := []string{"app.Servers[hello].Routes[0].HandlersRaw[0]",
+		"ctx.cfg.AppsRaw[http]",
+		"ctx.ancestry[0].Servers[hello].Routes[0].HandlersRaw[0]"}
+	// TODO dot doesn't seem to like quotes in map key (looks ok in .gv, but .svg is weird)
+	nonraw_http_args := []ct.BehaviorValue{}
+
+	for i := 0; i < len(http_args); i++ {
+		provision_arg.Function_arg.Arg_name = http_args[i]
+		core_behavior_map[provision_arg] = tainting_vals
+		if !strings.Contains(http_args[i], "AppsRaw") {
+			nonraw_http_args = append(nonraw_http_args, provision_arg)
+		}
+	}
+
+	// 2. PARAM => NON-HTTP PROVISION ARGS
+	static_resp_module := "http.handlers.static_response"
+
+	// module ID => module_pkg.provision_recvr
+	other_args := map[string]string{
+		"tls":               "caddytls.(*TLS)",
+		"events":            "caddyevents.(*App)",
+		"tls.issuance.acme": "caddytls.(*ACMEIssuer)",
+		"admin.api.metrics": "metrics.(*AdminMetrics)",
+		"admin.api.pki":     "caddypki.(*adminAPI)",
+	}
+
+	for module_ID, provision_prefix := range other_args {
+		provision_arg.Function_arg.Function_name = provision_prefix + "." + "Provision()"
+		provision_arg.Function_arg.Arg_name = "ctx.<X>"
+		provision_arg.Recv_module = module_ID
+		core_behavior_map[provision_arg] = tainting_vals
+	}
+
+	static_resp_servehttp_args := []string{"s.Body", "w.<X>"}
+	servehttp_arg := provision_arg
+	servehttp_arg.Function_arg.Function_name = "caddyhttp.StaticResponse.ServeHTTP()"
+	servehttp_arg.Send_module = http_module
+	servehttp_arg.Recv_module = static_resp_module
+	tainting_http_args := []ct.TaintingBehavior{
+		{Behavior: nonraw_http_args[0], Flow: ct.DataFlow},
+		{Behavior: nonraw_http_args[1], Flow: ct.DataFlow},
+	}
+
+	http_behavior_map := make(ct.BehaviorMap)
+	http_tainting_vals := ct.MakeTaintingVals(nil, &tainting_http_args[0])
+	http_tainting_vals.Behaviors.Insert(tainting_http_args[1])
+	servehttp_tainting_vals := ct.TaintingVals{}
+
+	for i, static_arg := range static_resp_servehttp_args {
+		servehttp_arg.Function_arg.Arg_name = static_arg
+		// 2. NON-RAW HTTP PROVISION ARGS => STATIC_RESP SERVEHTTP ARGS
+		http_behavior_map[servehttp_arg] = http_tainting_vals
+		tainting_servehttp_arg := ct.TaintingBehavior{Behavior: servehttp_arg, Flow: ct.DataFlow}
+		if i == 0 {
+			servehttp_tainting_vals = ct.MakeTaintingVals(nil, &tainting_servehttp_arg)
+		} else {
+			servehttp_tainting_vals.Behaviors.Insert(tainting_servehttp_arg)
+		}
+	}
+
+	// 3. STATIC_RESP SERVEHTTP ARGS => HTTP RESPONSE
+	sent_msg := ct.BehaviorValue{
+		Behavior_type: ct.NetworkMsg,
+		Network_msg: ct.NetworkMessage{
+			Send_endpoint: server_endpoint,
+			Recv_endpoint: client_endpoint,
+			Transport:     "tcp",
+		},
+		Send_module: static_resp_module,
+		Recv_module: caddy_client_module,
+	}
+
+	static_resp_behavior_map[sent_msg] = servehttp_tainting_vals
+
+	// 4. WRITE GRAPH
+	behavior_maps := []ct.BehaviorMap{core_behavior_map, http_behavior_map, static_resp_behavior_map}
+	behavior_map_files := []string{}
+
+	for i, module := range []string{core_module, http_module, static_resp_module} {
+		file := outputFile(t, module+"_behavior_map.csv")
+		assertNoError(ct.WriteBehaviorMap(file, behavior_maps[i]), t, "write")
+		behavior_map_files = append(behavior_map_files, file)
+	}
+	_, err := ct.WriteGraph("caddy_graph.gv", behavior_map_files)
 	assertNoError(err, t, "write graph")
 }
 
