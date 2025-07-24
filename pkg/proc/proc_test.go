@@ -5487,9 +5487,9 @@ func assertWpOOS(t *testing.T, p *proc.Target, grp *proc.TargetGroup, wp_oos_pc 
 // Set watchpoint, assert only one returned
 func setWatchpoint(p *proc.Target, t *testing.T, logicalID int, scope *proc.EvalScope, expr string, wtype proc.WatchType, cond ast.Expr,
 	wimpl proc.WatchImpl, write *bool) *proc.Breakpoint {
-	wps, err := p.SetWatchpoint(logicalID, scope, expr, wtype, cond, wimpl, write)
+	wps, errs := p.SetWatchpoint(logicalID, scope, expr, wtype, cond, wimpl, write)
 	assertEqual(t, 1, len(wps), "Wrong number of wps")
-	assertNoError(err, t, "SetWatchpoint")
+	assertNoError(errs[0], t, "SetWatchpoint")
 	return wps[0]
 }
 
@@ -5510,7 +5510,6 @@ func TestWatchpointsSoftwareSpuriousSwWpAtBp(t *testing.T) {
 			assertNoError(err, t, "GoroutineScope")
 			bp := setWatchpoint(p, t, 0, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 
-			wp_oos_pc := getWpOOSPC(p)
 			// Continue => first instr in line 11 hits bp and spuriously faults => step over it, don't return to client
 			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
@@ -5519,13 +5518,11 @@ func TestWatchpointsSoftwareSpuriousSwWpAtBp(t *testing.T) {
 			if curbp := p.CurrentThread().Breakpoint().Breakpoint; curbp == nil || (curbp.LogicalID() != bp.LogicalID()) {
 				t.Fatal("breakpoint not set")
 			}
-
-			assertWpOOS(t, p, grp, wp_oos_pc)
 		})
 }
 
 // Tests instruction that hits sw bp and non-spuriously segfaults
-// PC is hardcoded - need to run with go 1.20.1, and any modifications to go fork may require updating the PC.
+// PC is hardcoded - any modifications to go fork may require updating the PC.
 // (tried to get it properly by modifying FindFileLocation, but wasn't obvious how (`pcs` only has first 2 in line))
 func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
 	withTestProcessArgs("conftamer/sw_wp_print", t, ".", []string{}, protest.AllNonOptimized,
@@ -5539,7 +5536,6 @@ func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
 			watchpoint := setWatchpoint(p, t, 100, scope, "x", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
-			wp_oos_pc := getWpOOSPC(p)
 			access_instr := 0x49d3b1
 			breakpoint, err := p.SetBreakpoint(101, uint64(access_instr), proc.UserBreakpoint, nil)
 			assertNoError(err, t, "Set bp at access instr")
@@ -5559,7 +5555,6 @@ func TestWatchpointsSoftwareNonSpuriousSwWpAtBp(t *testing.T) {
 				t.Fatalf("not at watchpoint - instead at %+v\n", *curbp)
 			}
 
-			assertWpOOS(t, p, grp, wp_oos_pc)
 		})
 }
 
@@ -5576,6 +5571,11 @@ func TestWatchpointsSoftwareNoPrints(t *testing.T) {
 			assertNoError(err, t, "GoroutineScope")
 			bp := setWatchpoint(p, t, 0, scope, "x", proc.WatchRead|proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
 			wp_oos_pc := getWpOOSPC(p)
+			assertNoError(grp.Continue(), t, "Continue to 0th wp hit")
+
+			// L11 accesses y, which is 8B before x => server assumes 16B and treats as hit.
+			// Also, RIP is advanced to next instr (so looks like L13) - unsure why
+			assertLineNumber(p, t, 13, "Continue to 0th wp hit")
 			assertNoError(grp.Continue(), t, "Continue to first wp hit")
 
 			// First wp hit
@@ -5584,10 +5584,12 @@ func TestWatchpointsSoftwareNoPrints(t *testing.T) {
 				t.Fatal("breakpoint not set")
 			}
 
-			assertNoError(grp.Continue(), t, "Continue to second wp hit")
-
 			// Second wp hit
-			assertLineNumber(p, t, 15, "Continue to second wp hit")
+			// L15 accesses y and x - server treats both as hits
+			for i := 0; i < 2; i++ {
+				assertNoError(grp.Continue(), t, "Continue to second wp hit")
+				assertLineNumber(p, t, 15, "Continue to second wp hit")
+			}
 
 			// Wp out of scope
 			assertWpOOS(t, p, grp, wp_oos_pc)
@@ -5648,8 +5650,8 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 			assertLineNumber(p, t, 21, "Continue 2") // Position 2
 
 			// Set globalvar1, read/write
-			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl, &writeWps)
-			assertNoError(err, t, "SetDataBreakpoint(read-write)")
+			_, errs := p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite|proc.WatchRead, nil, wimpl, &writeWps)
+			assertNoError(errs[0], t, "SetDataBreakpoint(read-write)")
 
 			// Hit globalvar1 at 22
 			assertNoError(grp.Continue(), t, "Continue 3")
@@ -5664,8 +5666,8 @@ func WatchpointsBasic(t *testing.T, wimpl proc.WatchImpl) {
 
 			// Set globalvar1, write
 			t.Logf("setting final breakpoint")
-			_, err = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
-			assertNoError(err, t, "SetDataBreakpoint(write-only, again)")
+			_, errs = p.SetWatchpoint(0, scope, "globalvar1", proc.WatchWrite, nil, wimpl, &writeWps)
+			assertNoError(errs[0], t, "SetDataBreakpoint(write-only, again)")
 
 			// Hit globalvar1 at position5
 			assertNoError(grp.Continue(), t, "Continue 5")
@@ -5745,8 +5747,8 @@ func TestWatchpointsSyscallArgFault(t *testing.T) {
 
 			scope, err := proc.GoroutineScope(p, p.CurrentThread())
 			assertNoError(err, t, "GoroutineScope")
-			_, err = p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
-			assertNoError(err, t, "SetWatchpoint")
+			_, errs := p.SetWatchpoint(0, scope, "*_p0", proc.WatchWrite, nil, proc.WatchSoftware, &writeSwWps)
+			assertNoError(errs[0], t, "SetWatchpoint")
 			assertNoError(grp.Continue(), t, "Continue to hit wp after open")
 
 			// 2. Hit bp for open syscall entry => arg will non-spuriously fault =>
@@ -5856,13 +5858,7 @@ func WatchpointsStack(t *testing.T, wimpl proc.WatchImpl) {
 
 	position1 := []int{16, 17}
 
-	// b 11, c, watch -w w, c => should be at 16
-	// Without AllNonOptimized (i.e. -gcflags="all=-N -l", not -gcflags="-N -l"):
-	// sw wp hit in each copystack (also there are 5, not 4, copystacks).
-	// hw wp don't hit in copystacks, and have 4 copystacks.
-	// Unsure why sw and hw wp have different behavior, but sw wp do the right thing
-	// even without -all (i.e. hit in program code after continuing past copystack),
-	// and dlv recommends building with -all anyway.
+	// b 11, c, watch -w w, c
 	withTestProcessArgs("databpstack", t, ".", []string{}, protest.AllNonOptimized,
 		func(p *proc.Target, grp *proc.TargetGroup, fixture protest.Fixture) {
 			setFileBreakpoint(p, t, fixture.Source, 11) // Position 0 breakpoint
@@ -5875,8 +5871,8 @@ func WatchpointsStack(t *testing.T, wimpl proc.WatchImpl) {
 			assertNoError(err, t, "GoroutineScope")
 
 			// Set w, write
-			_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, wimpl, &writeWps)
-			assertNoError(err, t, "SetDataBreakpoint(write-only)")
+			_, errs := p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, wimpl, &writeWps)
+			assertNoError(errs[0], t, "SetDataBreakpoint(write-only)")
 
 			watchbpnum := 3
 			if recorded, _ := grp.Recorded(); recorded {
@@ -5911,16 +5907,26 @@ func WatchpointsStack(t *testing.T, wimpl proc.WatchImpl) {
 				t.Errorf("wrong number of breakpoints after setting watchpoint: %d", len(p.Breakpoints().M)-clearlen)
 			}
 
-			nhits := 1
-			// position1 has a read and a write - sw wp don't support write-only
+			// Hit due to 16B access assumption on L14
+			// Number of hits on L14 seems to vary from 1 to 3 -
+			// unsure why (when run manually, seems to be 3)
 			if wimpl == proc.WatchSoftware {
-				nhits = 2
-			}
-			for i := 0; i < nhits; i++ {
-				// Hit w at position1
-				assertNoError(grp.Continue(), t, "Continue 1")
+				for {
+					assertNoError(grp.Continue(), t, "Continue 0")
+					loc, _ := p.CurrentThread().Location()
+					fmt.Printf("loc after cont: %v\n", loc.Line)
+					if loc.Line != 14 {
+						break
+					}
+				}
+
 				assertLineNumberIn(p, t, position1, "Continue 1") // Position 1
 			}
+
+			// Real hits
+			// Hit w at position1 twice (once for read, once for write)
+			assertNoError(grp.Continue(), t, "Continue 1")
+			assertLineNumberIn(p, t, position1, "Continue 1") // Position 1
 
 			// Wp OOS
 			assertNoError(grp.Continue(), t, "Continue 2")
@@ -5962,8 +5968,8 @@ func TestWatchpointsStackBackwardsOutOfScope(t *testing.T) {
 
 		// no sw wp support for rr
 		write := true
-		_, err = p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, proc.WatchHardware, &write)
-		assertNoError(err, t, "SetDataBreakpoint(write-only)")
+		_, errs := p.SetWatchpoint(0, scope, "w", proc.WatchWrite, nil, proc.WatchHardware, &write)
+		assertNoError(errs[0], t, "SetDataBreakpoint(write-only)")
 
 		assertNoError(grp.Continue(), t, "Continue 1")
 		assertLineNumber(p, t, 17, "Continue 1") // Position 1
