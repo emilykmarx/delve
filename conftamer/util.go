@@ -251,6 +251,29 @@ func memOverlap(start1 uint64, sz1 uint64, start2 uint64, sz2 uint64) (uint64, u
 	return 0, 0, false
 }
 
+// Whether xv overlaps any watchpoint
+func (tc *TaintCheck) watchpointOverlap(xv *api.Variable, hit *Hit) bool {
+	bps, list_err := tc.client.ListBreakpoints(true)
+	if list_err != nil {
+		log.Panicf("Error listing breakpoints: %v\n", list_err)
+	}
+	for _, bp := range bps {
+		if bp.WatchType == 0 {
+			continue
+		}
+		watch_addr := bp.Addr
+		watch_size := watchSize(bp)
+		xv_size := uint64(xv.Watchsz)
+		tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
+
+		_, _, xv_overlap := memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
+		if xv_overlap {
+			return true
+		}
+	}
+	return false
+}
+
 func getThread(ID int, state *api.DebuggerState) *api.Thread {
 	for _, thread := range state.Threads {
 		if ID == thread.ID {
@@ -340,7 +363,7 @@ func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 	locs, _, err := tc.client.FindLocation(hit.scope, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
-			// TODO (minor) - ast has package name in File - fixes this case, maybe the below too?
+			// TODO (minor) - ast has package name in File (and dlv prints it in fn name in stacktrace?) - fixes this case, maybe the below too?
 			// Ambiguous name => qualify with package name
 			// Can't use lineWithStmt - !hasInstr counts comment, hasInstr skips package line
 			pkg := ""

@@ -160,11 +160,11 @@ func (tc *TaintCheck) isTainted(expr ast.Expr, hit *Hit, fset *token.FileSet) (T
 
 /* Eval expr and record its xv(s), ignoring function calls (except casts and append)
  * and any children of evaluatable expressions.
- * If tainted_only, stop when find an expr that overlaps the watchpoint, e.g.:
+ * If tainted_only, stop when find an expr that overlaps a watchpoint, e.g.:
  * 	- If expr is struct => record struct, even if only one field overlaps.
  * 	- If expr is struct.field => record struct.field.
  * Panic if would record multiple exprs.
- * Return true if expr overlaps the watchpoint.
+ * Return true if expr overlaps a watchpoint.
  * If in branch body, always overlap.
  * Also populate set_now. */
 func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet, tainted_only bool) (TaintedRegion, bool) {
@@ -220,12 +220,10 @@ func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet
 						return true
 					}
 				}
-				watch_addr := hit.hit_bp.Addr
-				watch_size := watchSize(hit.hit_bp)
-				xv_size := uint64(xv.Watchsz)
-				tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
-
-				_, _, xv_overlap = memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
+				// Check all watchpoints, since server assumes a 16B access and returns any watchpoint that overlaps.
+				// TODO in server: If client requests to watch a region with same addr but bigger size as an existing wp,
+				// expand the existing wp
+				xv_overlap = tc.watchpointOverlap(xv, hit)
 				if xv_overlap {
 					break
 				}
@@ -390,6 +388,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - IfStmt cond %v", exprToString(typed_node.Cond))
 
 		case *ast.CallExpr:
+			// TODO ignore if corresp call has already happened (per asm for the line) - see CallAssign1 test
 			call_expr := exprToString(typed_node.Fun)
 			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - CallExpr %v", exprToString(typed_node))
 			if call_expr == "copy" {
@@ -409,6 +408,9 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 			} else {
 				// If method: check receiver for taint if non-pointer, and
 				// count it in args to match what we'll do when creating wp
+				// TODO (minor) realized could treat pointer recvrs same as non-pointer:
+				// If wp hits for pointer recvr, will just end up re-setting wp on underlying data which is fine
+				// (or if dlv's EvalWatchexpr doesn't get the underlying data, won't treat it as a hit)
 				decl_loc := tc.fnDecl(call_expr, hit)
 				file := decl_loc.File
 				lineno := decl_loc.Line + 1
@@ -426,6 +428,7 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 							// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
 							// First line of function body (params are "fake" at declaration line)
 							tainted_region.new_argno = &i
+							// Alternative would be to step/next rather than setting breakpoint
 							tainted_region.set_location = &pending_loc
 							ret = append(ret, tainted_region)
 						}

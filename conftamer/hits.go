@@ -357,6 +357,7 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 
 			// M-c entry has an empty param => presumably we just accessed
 			// (some region of) config read buf for the first time. Populate m-c.
+			// (Alternative would be to read from file on syscall entry, based on the offset passed)
 			if hasEmptyParam(tainting_vals) {
 				if len(new_params) == 0 {
 					new_params = tc.readParams(old_start, old_end, hit.scope.Frame)

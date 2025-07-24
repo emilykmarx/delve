@@ -34,6 +34,10 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 	}
 
 	// TODO also need to remove any PreviousAddrs?
+	// TODO for heap wps, should hit when memory is reused after free since allocator initializes the memory => clear it then -
+	// (e.g. if hit is in mallocgc - may need special handling for callers like growslice that manually initialize it. But
+	// maybe wp will always still hit for some part of the block? May be able to use that depending on how we end up coalescing watchpoints.
+	// Caddy manual scan has an instance of reusing watched memory)
 	for _, wp_oos := range state.WatchOutOfScope {
 		loc := state.SelectedGoroutine.CurrentLoc
 		tc.Logf(slog.LevelInfo, nil, "Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x)",
