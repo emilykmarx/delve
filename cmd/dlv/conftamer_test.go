@@ -181,6 +181,7 @@ func TestReadWriteBehaviorMap(t *testing.T) {
 
 type TestConfig struct {
 	checkDupEvents bool
+	useLocalGo     bool
 }
 
 func Config(testfile string, initial_watchexpr string, initial_line int) ct.Config {
@@ -535,9 +536,9 @@ func TestCasts2(t *testing.T) {
 	run(t, &config, expected_events, nil)
 }
 
-func TestUnmarshal(t *testing.T) {
+func TestUnmarshalYaml(t *testing.T) {
 	initial_line := 17
-	config := Config("unmarshal.go", "data", initial_line)
+	config := Config("unmarshal_yaml.go", "data", initial_line)
 	config.Taint_flow = ct.DataFlow
 	expected_events :=
 		watchpointSet(&config, config.Initial_watchexpr, uint64(9), initial_line, ct.DataFlow, nil, nil)
@@ -549,6 +550,33 @@ func TestUnmarshal(t *testing.T) {
 		watchpointSet(&config, "tainted2", uint64(1), 27, ct.DataFlow, nil, nil)...)
 
 	run(t, &config, expected_events, nil)
+}
+
+func TestMarshalJson(t *testing.T) {
+	initial_line := 17
+	config := Config("marshal_json.go", "c.AppsRaw", initial_line)
+	config.Taint_flow = ct.DataFlow
+	// Just check initial and last wp sets
+	expected_events :=
+		watchpointSet(&config, config.Initial_watchexpr, uint64(4), initial_line, ct.DataFlow, nil, nil)
+	expected_events = append(expected_events,
+		TestEvent{e: ct.Event{EventType: ct.Fake}, tail: 5}) // one set, four m-c updates
+
+	// set wp on entire buf, only taint offsets 1:5 inclusive => fix wp sz and taint offset/size
+	watch_sz := 15
+	taint_sz := uint64(4)
+
+	expected_events = append(expected_events,
+		watchpointSet(&config, "buf", taint_sz, 169, ct.DataFlow, nil, nil)...) // encode.go
+
+	watch_event := &expected_events[len(expected_events)-1-int(taint_sz)]
+	watch_event.taint_offset = 1
+	watch_event.taint_sz = taint_sz
+	watch_event.e.Size = uint64(watch_sz)
+
+	// Use new go since this is to help with caddy, which is currently built with new go
+	testcfg := TestConfig{useLocalGo: true}
+	run(t, &config, expected_events, &testcfg)
 }
 
 func TestMapsInterfaces(t *testing.T) {
@@ -1133,11 +1161,13 @@ func run(t *testing.T, config *ct.Config, expected_events []TestEvent, testcfg *
 	server.Stderr = &server_err
 
 	// Set go version used to build target (after building server and client)
-	path, target_go, err := protest.SetGoVersion()
-	assertNoError(err, t, "set go version")
-	defer func() {
-		protest.UnSetGoVersion(path, target_go)
-	}()
+	if testcfg == nil || !testcfg.useLocalGo {
+		path, target_go, err := protest.SetGoVersion()
+		assertNoError(err, t, "set go version")
+		defer func() {
+			protest.UnSetGoVersion(path, target_go)
+		}()
+	}
 
 	assertNoError(server.Start(), t, "start headless instance")
 	waitForServer(t, &server_out, &server_err)
@@ -1227,24 +1257,39 @@ func checkEvents(t *testing.T, expected []TestEvent, event_log string, testcfg *
 
 	events, err := ct.ReadEventLog(event_log)
 	assertNoError(err, t, "read event log")
-	// Hits are present in actual but not expected => indices are not 1:1
+	// Hits/dups are present in actual but not expected => indices are not 1:1
 	expected_i := 0
-	// All actual events are as expected
-	for actual_i, actual := range events {
+	actual_i := 0
+
+	// 1. Check actual events within range of expected
+	for ; actual_i < len(events); actual_i++ {
+		actual := events[actual_i]
+
 		if expected_i > len(expected)-1 {
 			break
 		}
-		if ignoreDups && dupEvent(events, actual_i, actual) {
+
+		// 1a. Last fake event to ignore (i.e. treat next event as normal)
+		if expected[expected_i].e.EventType == ct.Fake {
+			stop_ignoring_fake := actual_i == len(events)-expected[expected_i].tail-1
+			if stop_ignoring_fake {
+				expected_i++
+			}
+		}
+
+		// 1b. Ignore if applicable
+		if expected[expected_i].e.EventType == ct.Fake ||
+			(ignoreDups && dupEvent(events, actual_i, actual)) ||
+			actual.EventType == ct.WatchpointHit {
+			// Ignore wp hits for now. Might be useful to test in some cases
+			// (i.e. if hit doesn't cause a new wp to be set in this case, but could in other cases), but
+			// annoying to figure out ground truth - whether/how many hits on a line depends on exactly how it compiles.
+			// Ignore
 			continue
 		}
-		if expected[expected_i].e.EventType == ct.Fake {
-			if actual_i == len(events)-expected[expected_i].tail-1 {
-				// Stop ignoring (i.e. treat next event as normal)
-			} else {
-				// Ignore
-				expected_i-- // won't advance in expected
-			}
-		} else if actual.EventType == ct.WatchpointSet {
+
+		// 1c. Check event
+		if actual.EventType == ct.WatchpointSet {
 			// Check wp set (minus address, which is unpredictable) - use address to fill in expected m-c map updates
 			expected_wp := expected[expected_i]
 			assertEventsEqual(t, expected_wp.e, actual, fmt.Sprintf("expected event %v (actual i %v) wrong", expected_i, actual_i), true)
@@ -1278,17 +1323,26 @@ func checkEvents(t *testing.T, expected []TestEvent, event_log string, testcfg *
 		} else if actual.EventType == ct.MessageSend {
 			// Don't know what message send buffer address to expect
 			assertEventsEqual(t, expected[expected_i].e, actual, fmt.Sprintf("expected event %v wrong", expected_i), true)
-		} else if actual.EventType == ct.WatchpointHit {
-			// Ignore for now. Might be useful to test in some cases
-			// (i.e. if hit doesn't cause a new wp to be set in this case, but could in other cases), but
-			// annoying to figure out ground truth - whether/how many hits on a line depends on exactly how it compiles.
-			expected_i-- // won't advance in expected
+		} else {
+			t.Fatalf("Unhandled event type: %+v\n", actual)
 		}
 		expected_i++
 	}
 
-	// All expected events occurred
-	assertEqual(t, len(expected), expected_i, "expected event(s) didn't happen")
+	// 2. Check all expected events occurred
+	assertEqual(t, len(expected), expected_i,
+		fmt.Sprintf("expected event(s) didn't happen: expected %v, got %v", len(expected), expected_i))
+
+	// 3. Check no unexpected events occurred
+	for ; actual_i < len(events); actual_i++ {
+		actual := events[actual_i]
+		ignore := (ignoreDups && dupEvent(events, actual_i, actual)) ||
+			actual.EventType == ct.WatchpointHit
+
+		if !ignore {
+			t.Fatalf("Unexpected event happened: %+v\n", actual)
+		}
+	}
 }
 
 func assertEventsEqual(t testing.TB, expected ct.Event, actual ct.Event, msg string, ignore_addr bool) {

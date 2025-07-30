@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/printer"
@@ -338,7 +339,10 @@ func runtimeOrInternal(file string) bool {
 func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 	full_args := node.Args
 	call_expr := exprToString(node.Fun)
-	decl_loc := tc.fnDecl(call_expr, hit)
+	decl_loc, err := tc.fnDecl(call_expr, hit)
+	if err != nil {
+		log.Panicf("fullArgs failed to find decl loc")
+	}
 	decl_tokens := strings.Split(sourceLine(tc.client, decl_loc.File, decl_loc.Line), " ")
 
 	if decl_tokens[1][0] == '(' {
@@ -359,12 +363,12 @@ func (tc *TaintCheck) fullArgs(node *ast.CallExpr, hit *Hit) []ast.Expr {
 
 // Find the function declaration location,
 // given the call expr - e.g. recvr.f() or pkg.f()
-func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
+func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) (api.Location, error) {
 	locs, _, err := tc.client.FindLocation(hit.scope, call_expr, true, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "ambiguous") {
 			// TODO (minor) - ast has package name in File (and dlv prints it in fn name in stacktrace?) - fixes this case, maybe the below too?
-			// Ambiguous name => qualify with package name
+			// Ambiguous name => qualify with name of current package
 			// Can't use lineWithStmt - !hasInstr counts comment, hasInstr skips package line
 			pkg := ""
 			found := false
@@ -384,23 +388,18 @@ func (tc *TaintCheck) fnDecl(call_expr string, hit *Hit) api.Location {
 					dir := tokens[len(tokens)-3]
 					qualified_fn = filepath.Join(dir, qualified_fn)
 					locs, _, err = tc.client.FindLocation(hit.scope, qualified_fn, true, nil)
-					if err != nil {
-						log.Panicf("Error finding function %v in frame %v: %v\n", qualified_fn, hit.scope.Frame, err)
-					}
 				}
 			}
-		} else {
-			log.Panicf("Error finding function %v in frame %v: %v\n", call_expr, hit.scope.Frame, err)
 		}
 	}
 	// Don't check loc's PCs here - won't use them, and
 	// fn decl loc has "PC" but empty "PCs" , whereas first line loc has "PC" and "PCs" (with PCs matching PC)
 	// (at least for call_assign_1.go)
-	if len(locs) > 1 {
-		// Unsure when this would happen - don't support for now
-		log.Panicf("Too many locations: %v\n", locs)
+	if len(locs) != 1 {
+		tc.Logf(slog.LevelWarn, hit, "Error finding function %v in frame %v: %v\n", call_expr, hit.scope.Frame, err)
+		return api.Location{}, errors.New("not found")
 	}
-	return locs[0]
+	return locs[0], nil
 }
 
 func watchSize(wp *api.Breakpoint) uint64 {

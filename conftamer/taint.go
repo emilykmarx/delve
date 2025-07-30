@@ -283,8 +283,12 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *toke
 	// slice of non-reference elems => flatten xvs' tainting vals into a single array (to match returned slice)
 	concat_xvs := false
 	if len(slice_xvs) > 0 {
-		// Can be 0 if both args eval to nothing (e.g. nil slice, fn call)
 		concat_xvs = !slice_xvs[0].ReferenceElem
+	} else {
+		// HACK: If both args eval to nothing (e.g. nil slice, fn call):
+		// assume ret is entirely tainted by watchpoint, and does not have reference elems
+		wp_xv := api.Variable{Addr: hit.hit_bp.Addr, Watchsz: int64(watchSize(hit.hit_bp))}
+		return []*api.Variable{&wp_xv}, true, false
 	}
 	return slice_xvs, slice_tainted, concat_xvs
 }
@@ -411,26 +415,28 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 				// TODO (minor) realized could treat pointer recvrs same as non-pointer:
 				// If wp hits for pointer recvr, will just end up re-setting wp on underlying data which is fine
 				// (or if dlv's EvalWatchexpr doesn't get the underlying data, won't treat it as a hit)
-				decl_loc := tc.fnDecl(call_expr, hit)
-				file := decl_loc.File
-				lineno := decl_loc.Line + 1
-				pending_loc := tc.lineWithStmt(file, lineno, hit.scope.Frame)
-				for i, arg := range tc.fullArgs(typed_node, hit) {
-					tainted_region, is_tainted := tc.isTainted(arg, hit, fset)
-					if is_tainted { // caller arg tainted
-						if runtimeOrInternal(file) {
-							// Callee is in runtime/internal pkg => don't propagate to args
-							// (may additionally want to unconditionally treat as if retval is tainted -
-							// will need to handle fact that size of arg overlap != retval size)
-							tc.Logf(slog.LevelWarn, hit, "Function with tainted args is in runtime/internal - will not propagate into it")
-						} else {
-							// Propagate to callee's arg
-							// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
-							// First line of function body (params are "fake" at declaration line)
-							tainted_region.new_argno = &i
-							// Alternative would be to step/next rather than setting breakpoint
-							tainted_region.set_location = &pending_loc
-							ret = append(ret, tainted_region)
+				decl_loc, err := tc.fnDecl(call_expr, hit)
+				if err == nil {
+					file := decl_loc.File
+					lineno := decl_loc.Line + 1
+					pending_loc := tc.lineWithStmt(file, lineno, hit.scope.Frame)
+					for i, arg := range tc.fullArgs(typed_node, hit) {
+						tainted_region, is_tainted := tc.isTainted(arg, hit, fset)
+						if is_tainted { // caller arg tainted
+							if runtimeOrInternal(file) {
+								// Callee is in runtime/internal pkg => don't propagate to args
+								// (may additionally want to unconditionally treat as if retval is tainted -
+								// will need to handle fact that size of arg overlap != retval size)
+								tc.Logf(slog.LevelWarn, hit, "Function with tainted args is in runtime/internal - will not propagate into it")
+							} else {
+								// Propagate to callee's arg
+								// TODO handle passing param to func lit not assigned to variable (e.g. goroutine in funclit test)
+								// First line of function body (params are "fake" at declaration line)
+								tainted_region.new_argno = &i
+								// Alternative would be to step/next rather than setting breakpoint
+								tainted_region.set_location = &pending_loc
+								ret = append(ret, tainted_region)
+							}
 						}
 					}
 				}

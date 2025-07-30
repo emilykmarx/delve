@@ -20,7 +20,7 @@ func main() {
 		log.Panicf("unmarshal: %v", err)
 	}
 	fmt.Printf("unmarshaled: %+v\n", c)
-	tainted1 := c.A[0][0]
+	tainted1 := c.A[0][0] // copy vals so can check watchpoint by name (wps are set via aliasing)
 	tainted2 := c.A[0][1]
 	_ = tainted1
 	_ = tainted2
