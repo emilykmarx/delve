@@ -1,0 +1,2 @@
+module: prometheus
+server_endpoint: localhost:4040

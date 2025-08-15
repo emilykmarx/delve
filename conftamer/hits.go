@@ -674,11 +674,6 @@ func (tc *TaintCheck) updateMovedWps() {
 func New(config *Config) (*TaintCheck, error) {
 	client := rpc2.NewClient(config.Server_endpoint)
 
-	event_log_file, err := os.Create(config.Event_log_filename)
-	if err != nil {
-		return nil, err
-	}
-
 	// TODO (minor) rename TaintCheck to e.g. ConfTamerModule
 	tc := TaintCheck{
 		config:         *config,
@@ -686,11 +681,10 @@ func New(config *Config) (*TaintCheck, error) {
 		bp_pending_wps: make(map[uint64]PendingWp),
 		mem_param_map:  make(map[uint64]TaintingVals),
 		behavior_map:   make(BehaviorMap),
-		event_log:      csv.NewWriter(event_log_file),
 	}
 
 	// TODO (minor) make log level configurable
-	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelInfo,
+	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelDebug,
 		// Shorten paths for client filenames
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.SourceKey {
@@ -701,31 +695,6 @@ func New(config *Config) (*TaintCheck, error) {
 			}
 			return a
 		}}))
-
-	tc.event_log.Write([]string{"Type", "Memory Address", "Memory Size", "Expression", "Behavior", "Tainting Values",
-		"Timestamp", "Breakpoint/Watchpoint Hit Location (File Line PC)", "Thread"})
-
-	if config.Initial_watchexpr != "" {
-		// For testing: pass in an expr to set a watchpoint on
-		tainting_param := TaintingParam{Param: Param{Module: tc.config.Module, Param: config.Initial_watchexpr}, Flow: DataFlow}
-		tainting_vals := [][]TaintingVals{{MakeTaintingVals(&tainting_param, nil)}}
-		if config.Initial_bp_file != "" {
-			// Config specifies initial location => set bp there
-			init_loc := tc.lineWithStmt(config.Initial_bp_file, config.Initial_bp_line, 0)
-			tc.bp_pending_wps[init_loc.PC] = PendingWp{
-				watchexprs: *set.From([]string{config.Initial_watchexpr}),
-				// Will be copied into each byte of config variable (don't know its size)
-				tainting_vals:   tainting_vals,
-				taint_all_bytes: true,
-			}
-			tc.setBp(init_loc.PC)
-		} else {
-			// No initial location => set it now (assumes server is already attached to the target - for self-CTscan)
-			tc.setWatchpoint(config.Initial_watchexpr, tainting_vals, true, false, &Hit{
-				scope: api.EvalScope{GoroutineID: config.Initial_goroutine, Frame: config.Initial_frame},
-			})
-		}
-	}
 
 	return &tc, nil
 }
