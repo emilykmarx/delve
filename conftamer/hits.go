@@ -118,6 +118,17 @@ type PendingWp struct {
 	cmd_idx int
 }
 
+// Info on a declared channel
+type ChanInfo struct {
+	name        string
+	goroutineID int64
+	// if declaring goroutine is main, the line of main.go
+	decl_main_line int
+	// Location (file:line) of declaring goroutine spawn and function decl
+	go_spawn_loc string
+	go_fn_loc    string
+}
+
 type TaintCheck struct {
 	config Config
 	client *rpc2.RPCClient
@@ -144,6 +155,7 @@ type TaintCheck struct {
 	// Behavior value => config/behavior values that taint it
 	behavior_map BehaviorMap
 
+	chan_log  *csv.Writer
 	event_log *csv.Writer
 
 	logger *slog.Logger
@@ -673,6 +685,11 @@ func (tc *TaintCheck) updateMovedWps() {
 
 func New(config *Config) (*TaintCheck, error) {
 	client := rpc2.NewClient(config.Server_endpoint)
+	// TODO (minor): make filename configurable
+	chan_log_file, err := os.Create("chan_log.csv")
+	if err != nil {
+		return nil, err
+	}
 
 	// TODO (minor) rename TaintCheck to e.g. ConfTamerModule
 	tc := TaintCheck{
@@ -681,10 +698,11 @@ func New(config *Config) (*TaintCheck, error) {
 		bp_pending_wps: make(map[uint64]PendingWp),
 		mem_param_map:  make(map[uint64]TaintingVals),
 		behavior_map:   make(BehaviorMap),
+		chan_log:       csv.NewWriter(chan_log_file),
 	}
 
 	// TODO (minor) make log level configurable
-	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelDebug,
+	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelInfo,
 		// Shorten paths for client filenames
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.SourceKey {
@@ -696,5 +714,6 @@ func New(config *Config) (*TaintCheck, error) {
 			return a
 		}}))
 
+	tc.chan_log.Write([]string{"Memory Address", "Name", "Goroutine ID", "Line of main"})
 	return &tc, nil
 }

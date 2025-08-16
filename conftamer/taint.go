@@ -51,13 +51,14 @@ type TaintedRegion struct {
 // Get the ith lhs of an assign/range on lineno, if any
 // If lineno instead has return or if stmt, return the node
 // TODO test "_"
-func getLhs(i int, file string, lineno int) (lhs *ast.Expr, caller_node *ast.Node) {
+func getLhs(i int, file string, lineno int) (lhs *string, caller_node *ast.Node) {
 	fset := token.NewFileSet()
 	root, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
 		log.Panicf("Failed to parse source file %v: %v\n", file, err)
 	}
 
+	lhs_str := ""
 	ast.Inspect(root, func(node ast.Node) bool {
 		cur_line := -1
 		if node != nil {
@@ -68,11 +69,14 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr, caller_node *ast.Nod
 		}
 
 		switch typed_node := node.(type) {
+		case *ast.ValueSpec:
+			lhs_str = exprToString(typed_node.Names[0])
+
 		case *ast.AssignStmt:
-			lhs = &typed_node.Lhs[i]
+			lhs_str = exprToString(typed_node.Lhs[i])
 
 		case *ast.RangeStmt:
-			lhs = &typed_node.Value
+			lhs_str = exprToString(typed_node.Value)
 
 		case *ast.ReturnStmt:
 			caller_node = &node
@@ -84,6 +88,9 @@ func getLhs(i int, file string, lineno int) (lhs *ast.Expr, caller_node *ast.Nod
 		return true
 	})
 
+	if lhs_str != "" {
+		lhs = &lhs_str
+	}
 	return lhs, caller_node
 }
 
@@ -97,7 +104,7 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 	tainted_region.cmds = runtime_stepout_cmd_seq(hit)
 
 	stack := tc.stacktrace()
-	var caller_lhs *ast.Expr
+	var caller_lhs *string
 	var caller_node *ast.Node
 
 	// Check caller frame for assign/range, if stmt, or return stmt
@@ -117,8 +124,7 @@ func (tc *TaintCheck) propagateReturn(lhs_i int, hit *Hit, tainted_region *Taint
 
 		if caller_lhs != nil {
 			// Assignment
-			watchexpr := exprToString(*caller_lhs)
-			tainted_region.new_expr = &watchexpr
+			tainted_region.new_expr = caller_lhs
 		} else if _, ok := (*caller_node).(*ast.ReturnStmt); ok {
 			// Propagate to next frame
 			// Nexting from return exits its stack frame => expect to be in caller frame

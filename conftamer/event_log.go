@@ -47,6 +47,15 @@ type Event struct {
 	Line         int // Filled in on read from csv
 }
 
+func WriteChanInfo(w *csv.Writer, addr uint64, info ChanInfo) {
+	row := []string{fmt.Sprintf("%#x", addr), info.name, fmt.Sprintf("%v", info.goroutineID),
+		fmt.Sprintf("%v", info.decl_main_line)}
+
+	if err := w.WriteAll([][]string{row}); err != nil {
+		log.Panicf("writing chan %v: %v\n", row, err.Error())
+	}
+}
+
 // Also used in test to print events
 func WriteEvent(thread *api.Thread, w *csv.Writer, e Event) {
 	behavior := []byte{}

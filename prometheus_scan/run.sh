@@ -3,7 +3,11 @@
 # Run from delve
 set -x
 
-#go install github.com/go-delve/delve/cmd/dlv
+set +e
+pkill dlv
+set -e
+# don't use my go - it can't read c
+go install github.com/go-delve/delve/cmd/dlv@latest
 go build github.com/go-delve/delve/cmd/dlv/conftamer_main
 pushd ../prometheus
 #go build -gcflags="all=-N -l" ./cmd/prometheus/
