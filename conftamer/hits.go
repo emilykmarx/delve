@@ -123,10 +123,12 @@ type ChanInfo struct {
 	name        string
 	goroutineID int64
 	// if declaring goroutine is main, the line of main.go
-	decl_main_line int
+	decl_main_lineno int
+	decl_main_line   string
 	// Location (file:line) of declaring goroutine spawn and function decl
 	go_spawn_loc string
 	go_fn_loc    string
+	go_stack     []string
 }
 
 type TaintCheck struct {
@@ -714,6 +716,5 @@ func New(config *Config) (*TaintCheck, error) {
 			return a
 		}}))
 
-	tc.chan_log.Write([]string{"Memory Address", "Name", "Goroutine ID", "Line of main"})
 	return &tc, nil
 }

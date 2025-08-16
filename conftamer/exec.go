@@ -1,9 +1,11 @@
 package conftamer
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
 	"log/slog"
+	"strings"
 
 	"github.com/go-delve/delve/service/api"
 )
@@ -18,7 +20,7 @@ const (
 /* Functions to start the target, and
  * dispatcher to handle target stop. */
 
-func (tc *TaintCheck) getChanInfo(goroutine int64, hit *Hit) {
+func (tc *TaintCheck) getChanInfo(goroutine int64) {
 	chan_info := ChanInfo{goroutineID: goroutine}
 	// Get channel name from declaring frame (frame 1)
 	stack, err := tc.client.Stacktrace(goroutine, 100, api.StacktraceSimple, &api.LoadConfig{})
@@ -44,41 +46,53 @@ func (tc *TaintCheck) getChanInfo(goroutine int64, hit *Hit) {
 		log.Panicf("converting chan addr to hex: %v", err)
 	}
 
-	// Get context on the goroutine (ID, spawn/fct decl loc): -g, -s
-	filters := []api.ListGoroutinesFilter{
-		{Kind: api.GoroutineUser},
-		{Kind: api.GoroutineCurrentLoc, Arg: fmt.Sprintf("%v:%v", chan_file, makechan_ret_line)},
-	}
-	// If multiple goroutines hit the bp, find the one we're currently handling
-	goroutines, _, _, _, err := tc.client.ListGoroutinesWithFilter(0, 0, filters, nil, &scope)
-	if err != nil {
-		log.Panicf("listing goroutines: %v", err)
-	}
-	// XXX get the spawn and decl loc, and other info that will be useful for grouping - maybe the whole stacktrace for now
-	_ = goroutines
-
-	// Get context on where chan was declared: if main goroutine, line in main
+	// Get context on where chan was declared
 	if goroutine == 1 {
+		// If main goroutine, line in main
 		main_loc := stack[len(stack)-3]
-		chan_info.decl_main_line = main_loc.Line
+		chan_info.decl_main_lineno = main_loc.Line
+		chan_info.decl_main_line = sourceLine(tc.client, main_loc.File, main_loc.Line)
+	} else {
+		// spawn/fct decl loc: -g, -s
+		filters := []api.ListGoroutinesFilter{
+			{Kind: api.GoroutineUser},
+			{Kind: api.GoroutineCurrentLoc, Arg: fmt.Sprintf("%v:%v", chan_file, makechan_ret_line)},
+		}
+		goroutines, _, _, _, err := tc.client.ListGoroutinesWithFilter(0, 0, filters, nil, &scope)
+		if err != nil {
+			log.Panicf("listing goroutines: %v", err)
+		}
+
+		for _, g := range goroutines {
+			if g.ID == goroutine {
+				// If multiple goroutines hit the bp, find the one we're currently handling
+				chan_info.go_spawn_loc = fmt.Sprintf("%v:%v", g.GoStatementLoc.File, g.GoStatementLoc.Line)
+				chan_info.go_fn_loc = fmt.Sprintf("%v:%v", g.StartLoc.File, g.StartLoc.Line)
+			}
+		}
+
 	}
+
+	// Stacktrace of declaring goroutine
+	for _, frame := range stack {
+		chan_info.go_stack = append(chan_info.go_stack, fmt.Sprintf("%v:%v", frame.File, frame.Line))
+	}
+
 	WriteChanInfo(tc.chan_log, chan_addr, chan_info)
 }
 
 // Assuming target is stopped, handle breakpoint/watchpoint hits across all threads.
 // Return false if we hit the end of range bp instead of a makechan bp
 func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState, chandecl_end_bp int, makechan_bp int) bool {
-
 	for _, thread := range state.Threads {
 		hit_bp := thread.Breakpoint
 		if hit_bp != nil {
-			hit := &Hit{hit_bp: hit_bp, thread: thread, scope: api.EvalScope{GoroutineID: -1}}
-			// TODO see gdoc (Instr that would hit multiple*) - may need more logic here for multiple hits
-			if hit_bp.ID == chandecl_end_bp {
+			switch hit_bp.ID {
+			case chandecl_end_bp:
 				return false
-			} else if hit_bp.ID == makechan_bp {
-				tc.getChanInfo(thread.GoroutineID, hit)
-			} else {
+			case makechan_bp:
+				tc.getChanInfo(thread.GoroutineID)
+			default:
 				log.Panicf("Hit unexpected breakpoint/watchpoint %+v on thread %v\n", hit_bp, thread.ID)
 			}
 		}
@@ -87,8 +101,23 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState, chandecl_end_bp
 	return true
 }
 
+func WriteChanInfo(w *csv.Writer, addr uint64, info ChanInfo) {
+	row := []string{fmt.Sprintf("%#x", addr), info.name, fmt.Sprintf("%v", info.goroutineID),
+		fmt.Sprintf("%v", info.decl_main_lineno), info.decl_main_line,
+		info.go_spawn_loc, info.go_fn_loc,
+		strings.Join(info.go_stack, "\n")}
+
+	if err := w.WriteAll([][]string{row}); err != nil {
+		log.Panicf("writing chan %v: %v\n", row, err.Error())
+	}
+}
+
 func (tc *TaintCheck) Run() {
 	tc.Logf(slog.LevelInfo, nil, "Starting CT-Scan")
+	tc.chan_log.Write([]string{"Memory Address", "Name", "Goroutine ID",
+		"main() lineno", "main() line",
+		"Goroutine spawn", "Goroutine fn decl",
+		"Goroutine stack"})
 	// 1. Set bp at beginning and end of range where shared channels are declared
 	if _, err := tc.client.CreateBreakpoint(&api.Breakpoint{FunctionName: "main.main"}); err != nil {
 		log.Panicf("range start bp: %v", err)
