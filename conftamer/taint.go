@@ -407,8 +407,11 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 					tainted_region.new_expr = &watchexpr
 					ret = append(ret, tainted_region)
 				}
-			} else if builtinFcts.Contains(call_expr) || tc.isCast(typed_node.Fun) || call_expr == "runtime.KeepAlive" {
-				// builtins and casts will be handled in assign/range
+			} else if builtinFcts.Contains(call_expr) || call_expr == "runtime.KeepAlive" {
+				// builtins are handled in assign/range
+			} else if tc.isCast(typed_node.Fun) {
+				// eval child (casted expr)
+				return true
 			} else {
 				// If method: check receiver for taint if non-pointer, and
 				// count it in args to match what we'll do when creating wp
@@ -442,6 +445,8 @@ func (tc *TaintCheck) propagateTaint(hit *Hit) []TaintedRegion {
 				}
 			}
 			tc.Logf(slog.LevelDebug, hit, "Finish propagateTaint - CallExpr %v", exprToString(typed_node))
+			// Already dealt with args => don't inspect them
+			return false
 
 		case *ast.ReturnStmt:
 			tc.Logf(slog.LevelDebug, hit, "Start propagateTaint - ReturnStmt lhs ret %v", exprToString(typed_node.Results[0]))

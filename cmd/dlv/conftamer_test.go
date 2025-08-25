@@ -566,6 +566,7 @@ func TestMarshalJson(t *testing.T) {
 	watch_sz := 15
 	taint_sz := uint64(4)
 
+	// TODO this assumes go 1.22.4, as does caddy_scan - add a version check
 	expected_events = append(expected_events,
 		watchpointSet(&config, "buf", taint_sz, 169, ct.DataFlow, nil, nil)...) // encode.go
 

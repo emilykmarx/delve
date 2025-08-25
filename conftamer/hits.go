@@ -250,6 +250,8 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 
 	skip := runtimeOrInternal(stack[0].File)
 	if skip {
+		// runtime/internal hit
+		// TODO look into how delve implements -u to do this better
 		tc.Logf(slog.LevelDebug, hit, "Watchpoint hit in runtime or internal, stack len %v - "+
 			"full stack (including first non-runtime frame, whose PC is one after call instr)\n", len(stack))
 		tc.printStacktrace()
@@ -259,18 +261,20 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 
 			skip = runtimeOrInternal(frame.File)
 
-			// TODO can go runtime goroutines ever cause hits? (maybe sysmon in early sw wp commit, but may have been due to mprotecting dlv's pages instead)
-			// To detect if runtime goroutine: see `goroutines -with user` (https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md#goroutine)
 			if fn == "runtime.newstack" {
 				return nil, false
 			}
 			if !skip {
+				// found non-runtime/internal frame
 				hit.scope.Frame = i
 				return &frame, true
 			}
 		}
+		// whole stack is runtime => ignore (runtime goroutine?)
+		return nil, false
 	}
 
+	// non-runtime/internal hit
 	return nil, true
 }
 
@@ -357,7 +361,7 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 
 			// M-c entry has an empty param => presumably we just accessed
 			// (some region of) config read buf for the first time. Populate m-c.
-			// (Alternative would be to read from file on syscall entry, based on the offset passed)
+			// (Alternative would be to read from file on syscall entry, based on the offset passed - doesn't work for API loads though)
 			if hasEmptyParam(tainting_vals) {
 				if len(new_params) == 0 {
 					new_params = tc.readParams(old_start, old_end, hit.scope.Frame)
