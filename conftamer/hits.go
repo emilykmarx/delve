@@ -151,7 +151,7 @@ type TaintCheck struct {
 
 const (
 	// Name of buf param in syscall.write
-	SyscallRecvBuf = "p"
+	SyscallRecvBuf = "p[296]"
 	// Used as filename for params loaded from config API
 	ConfigAPI = "config API"
 )
@@ -213,6 +213,9 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 			tc.setWatchpoint(SyscallRecvBuf, [][]TaintingVals{{tv}}, true, true, hit)
 		}
 	} else if info.SyscallName == "syscall.read" {
+		if info.Bufsz == 1 {
+			return
+		}
 		// Load config from file or API => set watchpoint on entire read buffer, tainted by empty param
 		// (Will populate param with contents of buffer on first access)
 		if info.Local_endpoint == tc.config.Config_API_endpoint && socket {
