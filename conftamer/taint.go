@@ -34,6 +34,9 @@ type TaintedRegion struct {
 	old_region []*api.Variable // list of vars that old region evaluates to (order matters)
 	// Whether to concatenate tainting vals across xvs
 	concat_xvs bool
+	// Append where args eval to nothing =>
+	// identify tainted portion of lhs based on content (check for match with watch region)
+	append_blind bool
 
 	// Where watchpoint can be set
 	// Immediately, once found (unless runtime hit)
@@ -185,6 +188,11 @@ func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet
 			if exprToString(typed_node.Fun) == "append" {
 				// append => return args appended together
 				tainted_region.old_region, is_tainted, tainted_region.concat_xvs = tc.handleAppend(typed_node, hit, fset)
+				if is_tainted && tainted_region.old_region == nil {
+					wp_xv := api.Variable{Addr: hit.hit_bp.Addr, Watchsz: int64(watchSize(hit.hit_bp))}
+					tainted_region.old_region = []*api.Variable{&wp_xv}
+					tainted_region.append_blind = true
+				}
 				return false
 			} else if !tc.isCast(typed_node.Fun) {
 				// regular function call => ignore (another call to isTainted checks its args)
@@ -266,7 +274,6 @@ var builtinFcts = set.From([]string{
 })
 
 // Append xvs for each arg to get new slice's []xv
-// Return true if any arg tainted
 // TODO handle strcat similarly
 func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *token.FileSet) ([]*api.Variable, bool, bool) {
 	slice_tainted := false
@@ -287,8 +294,7 @@ func (tc *TaintCheck) handleAppend(call_node *ast.CallExpr, hit *Hit, fset *toke
 	} else {
 		// HACK: If both args eval to nothing (e.g. nil slice, fn call):
 		// assume ret is entirely tainted by watchpoint, and does not have reference elems
-		wp_xv := api.Variable{Addr: hit.hit_bp.Addr, Watchsz: int64(watchSize(hit.hit_bp))}
-		return []*api.Variable{&wp_xv}, true, false
+		return nil, true, false
 	}
 	return slice_xvs, slice_tainted, concat_xvs
 }

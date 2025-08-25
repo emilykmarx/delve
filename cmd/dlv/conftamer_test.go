@@ -562,7 +562,7 @@ func TestMarshalJson(t *testing.T) {
 	expected_events = append(expected_events,
 		TestEvent{e: ct.Event{EventType: ct.Fake}, tail: 5}) // one set, four m-c updates
 
-	// set wp on entire buf, only taint offsets 1:5 inclusive => fix wp sz and taint offset/size
+	// set wp on entire buf, only taint offsets 9:12 inclusive => fix wp sz and taint offset/size
 	watch_sz := 15
 	taint_sz := uint64(4)
 
@@ -570,7 +570,7 @@ func TestMarshalJson(t *testing.T) {
 		watchpointSet(&config, "buf", taint_sz, 169, ct.DataFlow, nil, nil)...) // encode.go
 
 	watch_event := &expected_events[len(expected_events)-1-int(taint_sz)]
-	watch_event.taint_offset = 1
+	watch_event.taint_offset = 9
 	watch_event.taint_sz = taint_sz
 	watch_event.e.Size = uint64(watch_sz)
 
@@ -612,6 +612,17 @@ func TestMapsInterfaces(t *testing.T) {
 		expected_events = append(expected_events,
 			watchpointSet(&config, expr, lens[i], initial_line, ct.DataFlow, nil, nil)...)
 	}
+	run(t, &config, expected_events, nil)
+}
+
+func TestTmpAppend(t *testing.T) {
+	initial_line := 22
+	config := Config("tmp_append.go", "recvr.buf[2:]", initial_line)
+	expected_events :=
+		watchpointSet(&config, config.Initial_watchexpr, uint64(2), initial_line, ct.DataFlow, nil, nil)
+	expected_events = append(expected_events,
+		watchpointSet(&config, "buf", uint64(1), 24, ct.DataFlow, nil, nil)...)
+
 	run(t, &config, expected_events, nil)
 }
 

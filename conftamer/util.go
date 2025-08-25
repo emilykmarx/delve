@@ -119,24 +119,31 @@ func insert[T comparable](s *set.Set[T], val T) {
 	s.Insert(val)
 }
 
-// Parse params assuming \n-separated. Return offset => param
-func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame int) map[uint64]string {
-	param_taint := map[uint64]string{}
-	// 1. Parse all params
-	buf_contents := ""
+// Read the contents of the given memory region
+func (tc *TaintCheck) readBytes(overlap_start uint64, overlap_end uint64, frame int) []byte {
+	buf_contents := []byte{}
 	for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
 		eval_expr := fmt.Sprintf("*(*uint8)(%#x)", watchaddr)
 		s := api.EvalScope{GoroutineID: -1, Frame: frame}
 		xv, err := tc.client.EvalVariable(s, eval_expr, api.LoadConfig{})
 		if err != nil {
-			log.Panicf("read param char at %#x: %v\n", watchaddr, err)
+			log.Panicf("read char at %#x: %v\n", watchaddr, err)
 		}
 		var char uint8
 		if _, err := fmt.Sscanf(xv.Value, "%d", &char); err != nil {
-			log.Panicf("parse param char at %#x: %v\n", watchaddr, err)
+			log.Panicf("parse char at %#x: %v\n", watchaddr, err)
 		}
-		buf_contents += string(char)
+		buf_contents = append(buf_contents, char)
 	}
+
+	return buf_contents
+}
+
+// Parse params assuming \n-separated. Return offset => param
+func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame int) map[uint64]string {
+	param_taint := map[uint64]string{}
+	// 1. Parse all params
+	buf_contents := string(tc.readBytes(overlap_start, overlap_end, frame))
 	params := strings.Split(buf_contents, "\n")
 	// 2. Map offsets to params
 	param_idx := 0

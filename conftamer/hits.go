@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -107,6 +108,8 @@ type PendingWp struct {
 	tainting_vals [][]TaintingVals
 	// Whether to apply tainting_vals[0][0] to all bytes rather than applying taint byte-by-byte
 	taint_all_bytes bool
+	// The content of the watch region - used only for append_blind
+	watch_content []byte
 
 	threadID int
 
@@ -210,7 +213,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 			hit.scope.Frame = 3
 			// PERF consider delaying this wp set - server will immediately un-mprotect for duration of read)
 			tv := MakeTaintingVals(nil, &tainting_msg)
-			tc.setWatchpoint(SyscallRecvBuf, [][]TaintingVals{{tv}}, true, true, hit)
+			tc.setWatchpoint(SyscallRecvBuf, [][]TaintingVals{{tv}}, nil, true, true, hit)
 		}
 	} else if info.SyscallName == "syscall.read" {
 		// Load config from file or API => set watchpoint on entire read buffer, tainted by empty param
@@ -230,7 +233,7 @@ func (tc *TaintCheck) handleSyscallEntry(hit *Hit) {
 		event := Event{EventType: ConfigLoad, Address: info.Bufaddr, Size: info.Bufsz, TaintingVals: &tv}
 		WriteEvent(hit.thread, tc.event_log, event)
 		hit.scope.Frame = 3
-		tc.setWatchpoint(SyscallRecvBuf, [][]TaintingVals{{tv}}, true, false, hit)
+		tc.setWatchpoint(SyscallRecvBuf, [][]TaintingVals{{tv}}, nil, true, false, hit)
 	} else {
 		log.Panicf("Syscall entry breakpoint hit for unexpected syscall %v\n", info.SyscallName)
 	}
@@ -347,10 +350,19 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 		}
 		old_start := old_xv.Addr
 		old_end := old_start + uint64(old_xv.Watchsz)
+		if tainted_region.append_blind {
+			// Get watch content, to check against lhs on watchpoint set (can't read lhs content yet)
+			existing_info.watch_content = tc.readBytes(old_start, old_end, hit.scope.Frame)
+		}
+
 		for watchaddr := old_start; watchaddr < old_end; watchaddr++ {
+			offset := int(watchaddr - old_start)
 			tainting_vals, ok := tc.mem_param_map[watchaddr]
 			if ok {
 				found_taint = true
+				if tainted_region.append_blind {
+					fmt.Printf("Append blind - found taint at %#x, in watch region %#x:%#x\n", watchaddr, old_start, old_end)
+				}
 			} else {
 				// Untainted address => leave tainting vals empty
 			}
@@ -363,7 +375,7 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 					new_params = tc.readParams(old_start, old_end, hit.scope.Frame)
 				}
 				// XXX ignore offsets that don't correspond to params (e.g. \n)
-				tc.populateParam(watchaddr, new_params[watchaddr-old_start])
+				tc.populateParam(watchaddr, new_params[uint64(offset)])
 				tainting_vals = tc.mem_param_map[watchaddr]
 			}
 
@@ -374,7 +386,7 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 					existing_info.updateTaintingVals(tainting_vals, 0, cur_len)
 					cur_len++
 				} else {
-					existing_info.updateTaintingVals(tainting_vals, i, int(watchaddr-old_start))
+					existing_info.updateTaintingVals(tainting_vals, i, offset)
 				}
 			} else {
 				// Case 1b: Watchpoint in if condition => gather vals from all bytes of overlapping region,
@@ -444,7 +456,7 @@ func (tc *TaintCheck) logWatchpoint(watchexpr string, wp *api.Breakpoint, hit *H
 
 // Set any watchpoint(s) corresponding to watchexpr
 // Update m-c map
-func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]TaintingVals, taint_all_bytes bool, msg_recv bool, hit *Hit) {
+func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]TaintingVals, watch_content []byte, taint_all_bytes bool, msg_recv bool, hit *Hit) {
 	// 1. Set watchpoint on full new expr
 	// We really want a read-only wp, but not supported
 	watchpoints, errs := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
@@ -465,6 +477,7 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 	}
 
 	// TODO test for adding new taint to existing addr
+	// LEFT OFF add logging w/ printfs for wps if append_blind
 
 	// If !taint_all_bytes, add tainting_vals to newly tainted region(s), byte by byte
 	// Else, we're tainting the recv buf of a network message or config file/API read buf (or initial_watchexpr) =>
@@ -478,6 +491,43 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 	}
 
 	// Update m-c map
+	// XXX move to util
+	var new_start, new_end uint64
+	if watch_content != nil {
+		if len(new_xvs) != 1 || new_xvs[0].Type != "[]uint8" {
+			// Only support for []byte (which appears here as []uint8) - could extend for other types of slices,
+			// but will need to handle fact that children don't have a watchsz below (unsure why)
+			log.Panicf("setWatchpoint with watch_content - len(new_xvs) %v, new_xvs[0] %+v", len(new_xvs), *new_xvs[0])
+		}
+
+		fmt.Printf("watch content in setWatchpoint: %v\n", string(watch_content))
+		slice := *new_xvs[0]
+		lhs_content := []byte{}
+		for _, elem := range slice.Children {
+			lhs_content = append(lhs_content, tc.readBytes(elem.Addr, elem.Addr+1, hit.scope.Frame)[0])
+		}
+		fmt.Printf("lhs content in setWatchpoint: %v\n", string(lhs_content))
+		// Find the first contiguous region of lhs whose contents match the watch contents, only taint that part
+		for i := range lhs_content {
+			if i+len(watch_content) > len(lhs_content) {
+				break // only look for full match
+			}
+			// TODO if part of wp untainted (i.e. empty tvs), don't compare content and adjust new_start/new_end
+			if slices.Equal(lhs_content[i:i+len(watch_content)], watch_content) {
+				new_start = slice.Addr + uint64(i)
+				new_end = new_start + uint64(len(watch_content))
+				fmt.Printf("OFFSET: %v\n", i)
+				break
+			}
+		}
+
+		if new_start == 0 {
+			fmt.Printf("Appending blind - found no content matching watch content in %v\n", watchexpr)
+			return
+		}
+		fmt.Printf("new start %#x, end %#x\n", new_start, new_end)
+	}
+
 	for i, xv := range new_xvs {
 		if i < len(watchpoints) && watchpoints[i] != nil {
 			// For testing convenience, interleave watchpoint and m-c map logging
@@ -491,9 +541,12 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 		if len(tainting_vals) > i {
 			xv_tainting_vals = tainting_vals[i]
 		}
-		new_end := xv.Addr + uint64(xv.Watchsz)
-		for new_addr := xv.Addr; new_addr < new_end; new_addr++ {
-			offset := new_addr - xv.Addr
+		if new_start == 0 {
+			new_start = xv.Addr
+			new_end = xv.Addr + uint64(xv.Watchsz)
+		}
+		for new_addr := new_start; new_addr < new_end; new_addr++ {
+			offset := new_addr - new_start
 			new_taint := allbytes_taint
 
 			if !taint_all_bytes {
@@ -614,7 +667,7 @@ func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 		log.Panicf("No pending watches found\n")
 	}
 	pendingWp.watchexprs.ForEach(func(watchexpr string) bool {
-		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.taint_all_bytes, false, hit)
+		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.watch_content, pendingWp.taint_all_bytes, false, hit)
 		return true
 	})
 	pendingWp.watchargs.ForEach(func(watcharg int) bool {
@@ -624,7 +677,7 @@ func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 			log.Panicf("Failed to list function args for pending wp %+v: %v\n", pendingWp, err)
 		}
 		watchexpr := args[watcharg].Name
-		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.taint_all_bytes, false, hit)
+		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.watch_content, pendingWp.taint_all_bytes, false, hit)
 		return true
 	})
 	pendingWp.watchexprs = *set.New[string](0)
@@ -721,7 +774,7 @@ func New(config *Config) (*TaintCheck, error) {
 			tc.setBp(init_loc.PC)
 		} else {
 			// No initial location => set it now (assumes server is already attached to the target - for self-CTscan)
-			tc.setWatchpoint(config.Initial_watchexpr, tainting_vals, true, false, &Hit{
+			tc.setWatchpoint(config.Initial_watchexpr, tainting_vals, nil, true, false, &Hit{
 				scope: api.EvalScope{GoroutineID: config.Initial_goroutine, Frame: config.Initial_frame},
 			})
 		}
