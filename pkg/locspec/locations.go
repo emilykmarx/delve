@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"go/constant"
+	"math"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 )
 
 const maxFindLocationCandidates = 5
+const AllCandidateFuncs = "allCandidateFuncs"
 
 // LocationSpec is an interface that represents a parsed location spec string.
 type LocationSpec interface {
@@ -371,14 +373,25 @@ func (ale AmbiguousLocationError) Error() string {
 	} else {
 		candidates = ale.CandidatesString
 	}
-	return fmt.Sprintf("Location %q ambiguous: %s…", ale.Location, strings.Join(candidates, ", "))
+	return fmt.Sprintf("Location %q ambiguous - some candidates:\n%s", ale.Location, strings.Join(candidates, "\n"))
 }
 
 // Find will return a list of locations that match the given location spec.
 // This matches each other location spec that does not already have its own spec
 // implemented (such as regex, or addr).
+// If substitutePathRules[0][0] = "allCandidateFuncs", return all candidate funcs
 func (loc *NormalLocationSpec) Find(t *proc.Target, processArgs []string, scope *proc.EvalScope, locStr string, includeNonExecutableLines bool, substitutePathRules [][2]string) ([]api.Location, string, error) {
 	limit := maxFindLocationCandidates
+	allCandidateFuncs := false
+	if len(substitutePathRules) > 0 && substitutePathRules[0][0] == AllCandidateFuncs {
+		allCandidateFuncs = true
+	}
+
+	if allCandidateFuncs {
+		limit = math.MaxInt
+		substitutePathRules = substitutePathRules[1:]
+	}
+
 	var candidateFiles []string
 	for _, sourceFile := range t.BinInfo().Sources {
 		substFile := sourceFile
@@ -413,12 +426,14 @@ func (loc *NormalLocationSpec) Find(t *proc.Target, processArgs []string, scope 
 			return nil, "", fmt.Errorf("location %q not found", locStr)
 		}
 		return locs, subst, nil
-	} else if matching > 1 {
+	} else if (!allCandidateFuncs && matching > 1) || // ambiguous file, or ambiguous function when we don't want all the candidates
+		(allCandidateFuncs && len(candidateFiles) > 1) { // ambiguous file
 		return nil, "", AmbiguousLocationError{Location: locStr, CandidatesString: append(candidateFiles, candidateFuncs...)}
 	}
 
-	// len(candidateFiles) + len(candidateFuncs) == 1
+	// loc is disambiguated
 	var addrs []uint64
+	var locs []api.Location
 	var err error
 	if len(candidateFiles) == 1 {
 		if loc.LineOffset < 0 {
@@ -426,21 +441,27 @@ func (loc *NormalLocationSpec) Find(t *proc.Target, processArgs []string, scope 
 			return nil, "", errors.New("Malformed breakpoint location, no line offset specified")
 		}
 		addrs, err = proc.FindFileLocation(t, candidateFiles[0], loc.LineOffset)
+		locs = append(locs, addressesToLocation(addrs))
 		if includeNonExecutableLines {
 			if _, isCouldNotFindLine := err.(*proc.ErrCouldNotFindLine); isCouldNotFindLine {
 				return []api.Location{{File: candidateFiles[0], Line: loc.LineOffset}}, "", nil
 			}
 		}
-	} else { // len(candidateFuncs) == 1
-		addrs, err = proc.FindFunctionLocation(t, candidateFuncs[0], loc.LineOffset)
+	} else {
+		// >=1 candidate fct
+		for _, candidateFunc := range candidateFuncs {
+			addrs, err = proc.FindFunctionLocation(t, candidateFunc, loc.LineOffset)
+			locs = append(locs, addressesToLocation(addrs))
+		}
 	}
 
 	if err != nil {
 		return nil, "", err
 	}
-	return []api.Location{addressesToLocation(addrs)}, "", nil
+	return locs, "", nil
 }
 
+// Return all fct names
 func (loc *NormalLocationSpec) findFuncCandidates(bi *proc.BinaryInfo, limit int) []string {
 	candidateFuncs := map[string]struct{}{}
 	// See if it matches generic functions first

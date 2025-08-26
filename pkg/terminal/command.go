@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1409,7 +1410,7 @@ func (c *Commands) rebuild(t *Term, ctx callContext, args string) error {
 
 func (c *Commands) cont(t *Term, ctx callContext, args string) error {
 	if args != "" {
-		tmp, err := setBreakpoint(t, ctx, false, args)
+		tmp, err := setBreakpoint(t, ctx, false, args, false)
 		if err != nil {
 			if !strings.Contains(err.Error(), "Breakpoint exists") {
 				return err
@@ -1821,7 +1822,12 @@ func formatBreakpointAttrs(prefix string, bp *api.Breakpoint, includeTrace bool)
 	return attrs
 }
 
-func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]*api.Breakpoint, error) {
+func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string, allCandidateFuncs bool) ([]*api.Breakpoint, error) {
+	substPathRules := t.substitutePathRules()
+	if allCandidateFuncs {
+		// match the hack in (loc *NormalLocationSpec) Find()
+		substPathRules = slices.Insert(substPathRules, 0, [2]string{locspec.AllCandidateFuncs, ""})
+	}
 	var (
 		cond string
 		spec string
@@ -1857,7 +1863,7 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 	}
 
 	requestedBp.Tracepoint = tracepoint
-	locs, substSpec, findLocErr := t.client.FindLocation(ctx.Scope, spec, true, t.substitutePathRules())
+	locs, substSpec, findLocErr := t.client.FindLocation(ctx.Scope, spec, true, substPathRules)
 	if findLocErr != nil {
 		r := regexp.MustCompile(`^if | if `)
 		if match := r.FindStringIndex(argstr); match != nil {
@@ -1868,7 +1874,7 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 			if err := parseSpec(args); err != nil {
 				return nil, err
 			}
-			locs, substSpec, findLocErr = t.client.FindLocation(ctx.Scope, spec, true, t.substitutePathRules())
+			locs, substSpec, findLocErr = t.client.FindLocation(ctx.Scope, spec, true, substPathRules)
 		}
 	}
 	if findLocErr != nil && requestedBp.Name != "" {
@@ -1876,12 +1882,14 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 		spec = argstr
 		var err2 error
 		var substSpec2 string
-		locs, substSpec2, err2 = t.client.FindLocation(ctx.Scope, spec, true, t.substitutePathRules())
+		locs, substSpec2, err2 = t.client.FindLocation(ctx.Scope, spec, true, substPathRules)
 		if err2 == nil {
 			findLocErr = nil
 			substSpec = substSpec2
 		}
 	}
+	// TODO include allCandidateFuncs in RPC API (would allow client to specify it without changing dlv's config)
+	// TODO also allow passing in the signature of an iface and filtering out non-matching candidate fcts
 	if findLocErr != nil && shouldAskToSuspendBreakpoint(t) {
 		fmt.Fprintf(os.Stderr, "Command failed: %s\n", findLocErr.Error())
 		question := "Set a suspended breakpoint (Delve will try to set this breakpoint when a plugin is loaded) [Y/n]?"
@@ -1896,7 +1904,7 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 			return nil, nil
 		}
 		findLocErr = nil
-		bp, err := t.client.CreateBreakpointWithExpr(requestedBp, spec, t.substitutePathRules(), true)
+		bp, err := t.client.CreateBreakpointWithExpr(requestedBp, spec, substPathRules, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1905,6 +1913,17 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 	}
 
 	if findLocErr != nil {
+		if AmbiguousLocationError(findLocErr) {
+			fmt.Fprintln(t.stdout, findLocErr.Error())
+			question := "Set breakpoint on all candidates [Y/n]?"
+			answer, err := yesno(t.line, question, "yes")
+			if err != nil || !answer {
+				return nil, findLocErr
+			} else {
+				// Set bp on each candidate
+				setBreakpoint(t, ctx, tracepoint, argstr, true)
+			}
+		}
 		return nil, findLocErr
 	}
 	if substSpec != "" {
@@ -1921,7 +1940,7 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 		}
 
 		requestedBp.Cond = cond
-		bp, err := t.client.CreateBreakpointWithExpr(requestedBp, spec, t.substitutePathRules(), false)
+		bp, err := t.client.CreateBreakpointWithExpr(requestedBp, spec, substPathRules, false)
 		if err != nil {
 			return nil, err
 		}
@@ -1967,7 +1986,7 @@ func setBreakpoint(t *Term, ctx callContext, tracepoint bool, argstr string) ([]
 }
 
 func breakpoint(t *Term, ctx callContext, args string) error {
-	_, err := setBreakpoint(t, ctx, false, args)
+	_, err := setBreakpoint(t, ctx, false, args, false)
 	return err
 }
 
@@ -1979,7 +1998,7 @@ func tracepoint(t *Term, ctx callContext, args string) error {
 		ctx.Breakpoint.Tracepoint = true
 		return nil
 	}
-	_, err := setBreakpoint(t, ctx, true, args)
+	_, err := setBreakpoint(t, ctx, true, args, false)
 	return err
 }
 
@@ -3095,6 +3114,10 @@ type ExitRequestError struct{}
 
 func (ere ExitRequestError) Error() string {
 	return ""
+}
+
+func AmbiguousLocationError(findLocErr error) bool {
+	return strings.Contains(findLocErr.Error(), "ambiguous - some candidates")
 }
 
 func exitCommand(t *Term, ctx callContext, args string) error {

@@ -397,7 +397,11 @@ func (t *Term) Run() (int, error) {
 				if quitting {
 					return t.handleExit()
 				}
-				fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
+				if !AmbiguousLocationError(err) {
+					fmt.Fprintf(os.Stderr, "Command failed: %s\n", err)
+				} else {
+					// we've already printed it
+				}
 			}
 		}
 
