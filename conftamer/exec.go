@@ -10,11 +10,16 @@ import (
 	"github.com/go-delve/delve/service/api"
 )
 
+// These assume go 1.22.7 via toolchain, and prometheus 3.2.1
 const (
-	chan_file         = "/usr/local/go/src/runtime/chan.go"
-	makechan_ret_line = 124
-	chandecl_file     = "/home/emily/prometheus/cmd/prometheus/main.go"
-	chandecl_end_line = 1065
+	toolchain_path = "/home/emily/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.22.7.linux-amd64/src/"
+	// chan.go doesn't work in headless (at least when using toolchain)
+	chan_file = toolchain_path + "runtime/chan.go"
+	// `return c` lineno in makechan
+	makechan_ret_line = 118
+	chandecl_file     = "/home/emily/projects/config_tracing/prometheus/cmd/prometheus/main.go"
+	// `var g run.Group` lineno in main.main
+	chandecl_end_line = 1004
 )
 
 /* Functions to start the target, and
@@ -29,7 +34,7 @@ func (tc *TaintCheck) getChanInfo(goroutine int64) {
 	}
 	decl_loc := stack[1].Location
 	// Ignore timer channels
-	if decl_loc.File == "/usr/local/go/src/time/tick.go" {
+	if decl_loc.File == toolchain_path+"time/tick.go" {
 		return
 	}
 

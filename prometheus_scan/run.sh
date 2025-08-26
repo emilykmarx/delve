@@ -6,14 +6,13 @@ set -x
 set +e
 pkill dlv
 set -e
-# don't use my go - it can't read c from makechan()
-go install github.com/go-delve/delve/cmd/dlv@latest
+go install github.com/go-delve/delve/cmd/dlv
 go build github.com/go-delve/delve/cmd/dlv/conftamer_main
 pushd ../prometheus
 go build -gcflags="all=-N -l" ./cmd/prometheus/
 
 dlv --headless --api-version=2 --accept-multiclient --listen localhost:4040 \
-  exec ./prometheus -- --config.file=conftamer/self_scrape.yml
+  exec ./prometheus -- --config.file=../delve/prometheus_scan/self_scrape.yaml
 popd
 
 
