@@ -28,11 +28,20 @@ func (tc *TaintCheck) getChanInfo(goroutine int64) {
 		log.Panicf("Error getting stacktrace: %v\n", err)
 	}
 	decl_loc := stack[1].Location
+	// Ignore timer channels
+	if decl_loc.File == "/usr/local/go/src/time/tick.go" {
+		return
+	}
+
 	// Only get channel name if declared with `=` (with single lhs) or `:=` for now -
 	// other common cases include ": ", but in any case should be easy to manually ID given the declaring location
 	chan_name, _ := getLhs(0, decl_loc.File, decl_loc.Line)
 	if chan_name != nil {
 		chan_info.name = *chan_name
+		// Ignore description channels
+		if *chan_name == "descChan" || *chan_name == "descc" {
+			return
+		}
 	}
 	// Get channel addr: p c
 	scope := api.EvalScope{GoroutineID: goroutine}
@@ -40,7 +49,8 @@ func (tc *TaintCheck) getChanInfo(goroutine int64) {
 	if err != nil {
 		log.Panicf("no retval in makechan: %v", err)
 	}
-	// NOTE: my dlv can't read c, but new dlv can...maybe due to go version mismatch
+	// NOTE: ignoring go version check in dlv makes it unable to read c (var.Unreadable = "could not find loclist entry"),
+	// so Sscanf will panic - at least with my dlv fork and prometheus built with go 1.25
 	chan_addr := uint64(0) // the value of the *chan, i.e. addr of the chan
 	if _, err := fmt.Sscanf(chan_var.Value, "%d", &chan_addr); err != nil {
 		log.Panicf("converting chan addr to hex: %v", err)
