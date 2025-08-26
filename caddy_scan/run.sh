@@ -16,10 +16,12 @@ popd
 
 # Rest is manual for now
 # 1. Start client (will continue caddy):
-# ./conftamer_main --config=caddy_scan/client_config.yaml
+# ./conftamer_main --config=caddy_scan/client_config.yaml &> caddy_client.md
 # 2. Wait for caddy to say it's serving the admin endpoint (takes a second)
 # 3. Load config:
 # curl localhost:2019/load \
  #       -H "Content-Type: application/json" \
  #       -d @caddy.json
 # 4. Ctrl-C the curl to avoid follow-on request to API endpoint (haven't invesitaged what it is)
+# 5. Make request to server:
+  # curl localhost:2015
