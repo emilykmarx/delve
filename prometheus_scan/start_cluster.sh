@@ -5,11 +5,20 @@
 # Assumes some once-per-machine setup has been done (some of below may be unnecessary on an already used machine)
 set -ex
 
-# Build scannable Prometheus
+# Build scannable Prometheus image
 pushd ../prometheus
 # Must match kube-prometheus-stack values.yaml
 # prometheus-operator requires tag in format vX.Y.Z, where X is 2 or 3
 docker build -f ./Dockerfile -t my/prometheus:v3.5.0 .
+popd
+
+# Build scannable k8s scheduler image
+pushd /home/emily/go/src/k8s.io/kubernetes
+# Build binary and image
+make quick-release-images DBG=1
+# Load tar into local registry where kubeadm expects to find it
+docker load --input _output/release-images/amd64/kube-scheduler.tar
+docker tag registry.k8s.io/kube-scheduler-amd64:v1.31.1-dirty registry.k8s.io/kube-scheduler:v1.31.1
 popd
 
 # Cleanup existing cluster
@@ -19,7 +28,7 @@ sudo kubeadm reset --cri-socket unix:///var/run/cri-dockerd.sock
 sudo swapoff -a
 sudo systemctl enable --now kubelet
 #Use `ip a` to confirm this IP block doesn’t overlap - if need to change IPs, change calico.yaml
-sudo kubeadm init --pod-network-cidr=172.16.0.0/16 --control-plane-endpoint orpheus --cri-socket unix:///var/run/cri-dockerd.sock
+sudo kubeadm init --config=./prometheus_scan/kubeadm_config.yml
 mkdir -p $HOME/.kube
 sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
 sudo chown $(id -u):$(id -g) $HOME/.kube/config

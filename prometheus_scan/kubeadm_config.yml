@@ -1,0 +1,11 @@
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: "unix:///var/run/cri-dockerd.sock"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: "v1.31.1"
+networking:
+  podSubnet: "172.16.0.0/16" # --pod-network-cidr
+controlPlaneEndpoint: "orpheus"
