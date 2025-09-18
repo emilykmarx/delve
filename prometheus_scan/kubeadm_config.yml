@@ -9,3 +9,7 @@ kubernetesVersion: "v1.31.1"
 networking:
   podSubnet: "172.16.0.0/16" # --pod-network-cidr
 controlPlaneEndpoint: "orpheus"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+failSwapOn: false

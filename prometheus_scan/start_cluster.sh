@@ -25,7 +25,6 @@ popd
 sudo kubeadm reset --cri-socket unix:///var/run/cri-dockerd.sock
 
 # Start cluster
-sudo swapoff -a
 sudo systemctl enable --now kubelet
 #Use `ip a` to confirm this IP block doesn’t overlap - if need to change IPs, change calico.yaml
 sudo kubeadm init --config=./prometheus_scan/kubeadm_config.yml
