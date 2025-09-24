@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"log/slog"
 
 	yaml "gopkg.in/yaml.v2"
 )
 
+type LogLevel string
 type Config struct {
 	/* Test params */
 	// If setting initial watchpoint immediately, the goroutine and frame
@@ -38,6 +41,7 @@ type Config struct {
 	Ignore_msg_recvs bool `yaml:"ignore_msg_recvs"`
 	// Target config API endpoint
 	Config_API_endpoint string `yaml:"config_api_endpoint"`
+	LoggerLevel string `yaml:"logger_level"`
 }
 
 func LoadConfig(file string) (*Config, error) {
@@ -78,4 +82,19 @@ func SaveConfig(file string, conf Config) error {
 
 	_, err = f.Write(out)
 	return err
+}
+
+func (c *Config) Level() slog.Level {
+	switch strings.ToLower(c.LoggerLevel) {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	}
+	//default log level
+	return slog.LevelInfo
 }

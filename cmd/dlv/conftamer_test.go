@@ -193,6 +193,7 @@ func Config(testfile string, initial_watchexpr string, initial_line int) ct.Conf
 		Event_log_filename:    "event_log.csv",
 		Behavior_map_filename: "behavior_map.csv",
 		Server_endpoint:       "localhost:4040",
+		LoggerLevel:           "info",
 	}
 	return c
 }
