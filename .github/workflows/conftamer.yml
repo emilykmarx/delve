@@ -1,0 +1,34 @@
+# This is a basic workflow that is manually triggered
+
+name: Conftamer Pre-Commit Hook
+
+# Controls when the action will run. Workflow runs when manually triggered using the UI
+# or API.
+on:
+  push:
+  pull_request:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  run-hook:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-go@v5
+      with:
+        go-version: '1.21.13'
+
+    - run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential git
+        git clone https://github.com/emilykmarx/go-set.git
+        git clone https://github.com/emilykmarx/graph.git
+        git clone https://github.com/emilykmarx/go.git
+        cd ./go/src
+        ./make.bash
+        echo "CT_TARGET_GO=${{ github.workspace }}/go" >> "$GITHUB_ENV"
+        sudo ln -s "$(go env GOROOT)" /usr/local/go
+
+    - run: python3 conftamer/pre-commit-hook.py
