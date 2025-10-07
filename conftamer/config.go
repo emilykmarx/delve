@@ -41,6 +41,7 @@ type Config struct {
 	Ignore_msg_recvs bool `yaml:"ignore_msg_recvs"`
 	// Target config API endpoint
 	Config_API_endpoint string `yaml:"config_api_endpoint"`
+	// Options are "debug", info", "warn", "error" corresponding to these SLOG levels https://pkg.go.dev/log/slog#Level
 	LoggerLevel string `yaml:"logger_level"`
 }
 
