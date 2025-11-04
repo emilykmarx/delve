@@ -694,7 +694,7 @@ func New(config *Config) (*TaintCheck, error) {
 	}
 
 	// TODO (minor) make log level configurable
-	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: slog.LevelInfo,
+	tc.logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{AddSource: true, Level: config.Level(),
 		// Shorten paths for client filenames
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			if a.Key == slog.SourceKey {
