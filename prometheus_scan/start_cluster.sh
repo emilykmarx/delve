@@ -14,10 +14,13 @@ popd
 
 # Build scannable k8s scheduler image
 pushd /home/emily/go/src/k8s.io/kubernetes
-# Build binary and image
+# Build binary and image (this builds all components - we will only use the scheduler)
 make quick-release-images DBG=1
 # Load tar into local registry where kubeadm expects to find it
 docker load --input _output/release-images/amd64/kube-scheduler.tar
+echo 'continue manually starting with docker tag'
+# TODO image name after `docker load` has a random string, e.g. registry.k8s.io/kube-scheduler-amd64:v1.31.1-1_3f3c562b1935de-dirty
+exit
 docker tag registry.k8s.io/kube-scheduler-amd64:v1.31.1-dirty registry.k8s.io/kube-scheduler:v1.31.1
 popd
 
