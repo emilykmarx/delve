@@ -6,9 +6,11 @@ import (
 	"regexp"
 	"sort"
 	"time"
+	"slices"
 
 	"github.com/go-delve/delve/pkg/dwarf/op"
 	"github.com/go-delve/delve/pkg/proc"
+	"github.com/go-delve/delve/pkg/locspec"
 	"github.com/go-delve/delve/service"
 	"github.com/go-delve/delve/service/api"
 	"github.com/go-delve/delve/service/debugger"
@@ -261,11 +263,32 @@ func (s *RPCServer) CreateBreakpoint(arg CreateBreakpointIn, out *CreateBreakpoi
 	if err := api.ValidBreakpointName(arg.Breakpoint.Name); err != nil {
 		return err
 	}
-	createdbp, err := s.debugger.CreateBreakpoint(&arg.Breakpoint, arg.LocExpr, arg.SubstitutePathRules, arg.Suspended)
-	if err != nil {
-		return err
+	// Normal Path
+	if !arg.Breakpoint.AllCandidateFuncs {
+		createdbp, err := s.debugger.CreateBreakpoint(&arg.Breakpoint, arg.LocExpr, arg.SubstitutePathRules, arg.Suspended)
+		if err != nil {
+			return err
+		}
+		out.Breakpoint = *createdbp
+	// Ambig Breakpoint Path
+	} else {
+		substPathRules := arg.SubstitutePathRules
+		substPathRules = slices.Insert(substPathRules, 0, [2]string{locspec.AllCandidateFuncs, ""})
+
+		locs, _, err := s.debugger.FindLocation(-1, 0, 0, arg.LocExpr, true, substPathRules)
+		if err != nil {return err}
+		if len(locs) == 0 { return errors.New("no locations matched") }
+
+		var firstBp *api.Breakpoint
+		for _, loc := range locs {
+			req := arg.Breakpoint
+			req.Addr, req.Addrs, req.AddrPid = loc.PC, loc.PCs, loc.PCPids
+			bp, err := s.debugger.CreateBreakpoint(&req, arg.LocExpr, substPathRules, arg.Suspended)
+			if err != nil { return err }
+			if firstBp == nil { firstBp = bp }
+		}
+		out.Breakpoint = *firstBp
 	}
-	out.Breakpoint = *createdbp
 	return nil
 }
 

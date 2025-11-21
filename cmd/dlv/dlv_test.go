@@ -28,6 +28,7 @@ import (
 	"github.com/go-delve/delve/service/rpc2"
 	godap "github.com/google/go-dap"
 	"golang.org/x/tools/go/packages"
+	"github.com/go-delve/delve/service/api"
 )
 
 var testBackend string
@@ -1494,4 +1495,41 @@ func TestUnixDomainSocket(t *testing.T) {
 
 	client.Detach(true)
 	cmd.Wait()
+}
+
+func TestMultipleBreakpoints(t *testing.T) {
+	const listenAddr = "127.0.0.1:6767"
+
+	fixturePath := filepath.Join(protest.FindFixturesDir(), "conftamer", "multiple_breakpoints.go")
+	cmd := exec.Command(getDlvBin(t), "debug", "--headless", "--listen="+listenAddr, "--api-version=2", fixturePath)
+	stdout, err := cmd.StdoutPipe()
+	assertNoError(err, t, "stdout pipe")
+	defer stdout.Close()
+
+	assertNoError(cmd.Start(), t, "start headless instance")
+
+	scanOut := bufio.NewScanner(stdout)
+	for scanOut.Scan() {
+		text := scanOut.Text() 
+		if strings.Contains(text, "API server listening") {
+			break
+		}
+	}
+
+	client := rpc2.NewClient(listenAddr)
+	defer client.Disconnect(false)
+
+	bp := &api.Breakpoint {
+		AllCandidateFuncs : true,
+	}
+
+	_, err = client.CreateBreakpointWithExpr(bp, "doSomething", nil, false)
+	assertNoError(err, t, "error while setting breakpoints")
+	bps, err := client.ListBreakpoints(false)
+	assertNoError(err, t, "error while listing breakpoints")
+	fmt.Printf("Expected %d breakpoints, got %d breakpoints\n", 3, len(bps) - 3)
+	
+	if len(bps) - 3 != 3 {
+		t.Errorf("Wrong amount of breakpoints")	
+	}
 }

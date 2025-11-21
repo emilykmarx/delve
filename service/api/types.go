@@ -155,6 +155,8 @@ type Breakpoint struct {
 	RootFuncName string
 	// TraceFollowCalls indicates the Depth of tracing
 	TraceFollowCalls int
+	// Signifies whether to set breakpoints on breakpoints with same function header
+	AllCandidateFuncs bool `json:"allCandidateFuncs,omitempty"`
 }
 
 // ValidBreakpointName returns an error if
