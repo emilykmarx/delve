@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"unicode"
+	_ "unicode"
 
 	"github.com/go-delve/delve/pkg/proc"
 )
@@ -166,11 +166,6 @@ func ValidBreakpointName(name string) error {
 		return errors.New("breakpoint name can not be a number")
 	}
 
-	for _, ch := range name {
-		if !(unicode.IsLetter(ch) || unicode.IsDigit(ch)) {
-			return fmt.Errorf("invalid character in breakpoint name '%c'", ch)
-		}
-	}
 
 	return nil
 }
