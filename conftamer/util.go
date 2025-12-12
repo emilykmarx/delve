@@ -181,18 +181,22 @@ func printJSON(i ...interface{}) string {
 	}
 	return "cannot marshal for logging"
 }
-func (t TaintedRegion) String() string {
-	old_region := ""
-	for i, xv := range t.old_region {
+func varsToString(vars []*api.Variable) string {
+	output := ""
+	for i, xv := range vars {
 		s := "<nil xv>"
 		if xv != nil {
-			s = fmt.Sprintf("%#x (sz %#x)", xv.Addr, xv.Watchsz)
+			s = fmt.Sprintf("%v (%#x:+%#x)", xv.Name, xv.Addr, xv.Watchsz)
 		}
 		if i > 0 {
-			old_region += ", "
+			output += ", "
 		}
-		old_region += s
+		output += s
 	}
+	return output
+}
+func (t TaintedRegion) String() string {
+	old_region := varsToString(t.old_region)
 	// handle nils
 	return fmt.Sprintf("{new_expr %v new_argno %v old_region %s}", printJSON(t.new_expr), printJSON(t.new_argno), old_region)
 }
@@ -243,6 +247,12 @@ func exprToString(t ast.Expr) string {
 	return buf.String()
 }
 
+func stmtToString(t ast.Stmt) string {
+	var buf bytes.Buffer
+	printer.Fprint(&buf, token.NewFileSet(), t)
+	return buf.String()
+}
+
 // Return overlapping region: start, exclusive end, ok
 func memOverlap(start1 uint64, sz1 uint64, start2 uint64, sz2 uint64) (uint64, uint64, bool) {
 	end1 := start1 + sz1 // exclusive
@@ -261,13 +271,13 @@ func (tc *TaintCheck) watchpointOverlap(xv *api.Variable, hit *Hit) bool {
 	if list_err != nil {
 		log.Panicf("Error listing breakpoints: %v\n", list_err)
 	}
+	xv_size := uint64(xv.Watchsz)
 	for _, bp := range bps {
 		if bp.WatchType == 0 {
 			continue
 		}
 		watch_addr := bp.Addr
 		watch_size := watchSize(bp)
-		xv_size := uint64(xv.Watchsz)
 		tc.Logf(slog.LevelDebug, hit, "isTainted check overlap - watch region %#x:%v, xv %#x:%v", watch_addr, watch_size, xv.Addr, xv_size)
 
 		_, _, xv_overlap := memOverlap(xv.Addr, xv_size, watch_addr, watch_size)
