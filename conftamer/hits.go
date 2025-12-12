@@ -311,7 +311,7 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) 
 func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	non_runtime_frame, handle := tc.handleRuntimeHit(hit)
 	// Ignore prints (may be within print, or when setting up to call print) for convenience
-	if tc.hitInPrint() || !handle {
+	if !handle || tc.hitInIgnored() {
 		tc.Logf(slog.LevelDebug, hit, "Ignoring hit")
 		return false
 	}
