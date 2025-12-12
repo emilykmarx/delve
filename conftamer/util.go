@@ -355,7 +355,14 @@ func ignoreSourceLine(src_line string) bool {
 		strings.Contains(line, "infof") ||
 		strings.Contains(line, "warnf") ||
 		strings.Contains(line, "errorf") ||
-		strings.Contains(line, "fatalf")
+		strings.Contains(line, "fatalf") ||
+		src_line == "encoding/json.checkValid" ||
+		src_line == "regexp.(*inputBytes).step" ||
+		src_line == "encoding/json.(*decodeState).scanWhile" ||
+		src_line == "encoding/json.stateEndValue" ||
+		src_line == "path.Join" || // just for caddy
+		src_line == "github.com/caddyserver/caddy/v2.(*Context).initMetrics" || // just for caddy
+		strings.HasPrefix(src_line, "go.uber.org/zap") // just for caddy
 }
 
 // Whether file is in go's runtime or internal packages, based on filename.
