@@ -307,6 +307,16 @@ func (tc *TaintCheck) printStacktrace() {
 	}
 }
 
+func (tc *TaintCheck) printRegisters(scope api.EvalScope) {
+	regs, err := tc.client.ListScopeRegisters(scope, false)
+	if err != nil {
+		log.Panicf("Error getting registers: %v\n", err)
+	}
+	for _, reg := range regs {
+		tc.Logf(slog.LevelDebug, nil, "%s: %s", reg.Name, reg.Value)
+	}
+}
+
 // Whether the stack contains a print-/log-flavored function
 func (tc *TaintCheck) hitInPrint() bool {
 	stack := tc.stacktrace()
@@ -441,6 +451,46 @@ func (tc *TaintCheck) setBp(addr uint64) {
 		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") {
 			log.Panicf("Failed to create breakpoint at %v: %v\n", addr, err)
 		}
+	}
+}
+
+func (tc *TaintCheck) setBpEx(bp api.Breakpoint) *api.Breakpoint {
+	res_bp, err := tc.client.CreateBreakpoint(&bp)
+	if err != nil {
+		if !strings.HasPrefix(err.Error(), "Breakpoint exists at") {
+			tc.Logf(slog.LevelWarn, nil, "Failed to create breakpoint: %v: %v\n", err, bp)
+		}
+	}
+	return res_bp
+}
+
+func (tc *TaintCheck) clearBpID(ID int) {
+	if _, err := tc.client.ClearBreakpoint(ID); err != nil {
+		log.Panicf("Failed to clear bp: %+v ; %+v\n", err, ID)
+	}
+}
+
+func (tc *TaintCheck) clearBpByName(name string) {
+	if _, err := tc.client.ClearBreakpointByName(name); err != nil {
+		log.Panicf("Failed to clear bp: %+v ; %+v\n", err, name)
+	}
+}
+
+func (tc *TaintCheck) eval(expr string, scope api.EvalScope) *api.Variable {
+	xv, err := tc.client.EvalVariable(scope, expr, api.LoadConfig{})
+	if err != nil {
+		tc.printStacktrace()
+		tc.printRegisters(scope)
+		tc.Logf(slog.LevelWarn, nil, "Failed to eval %s at scope %+v: %+v", expr, scope, err)
+		return nil
+	}
+	return xv
+}
+
+func (tc *TaintCheck) stepOut() {
+	_, err := tc.client.StepOut()
+	if err != nil {
+		log.Panicf("Failed to step out")
 	}
 }
 
