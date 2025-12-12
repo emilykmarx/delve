@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -132,6 +133,10 @@ type TaintCheck struct {
 	body_start int
 	body_end   int
 
+	// TODO should be []*apiBreakpoint?
+	handling_json int
+	json_new_wps []string
+
 	// Note for both mem_param_map and behavior_map, each entry is for a single byte
 	// (memory address or message offset).
 	// Everything in mem_param_map overlaps some watchpoint, but each watchpoint is a contiguous region
@@ -248,18 +253,18 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 
 	hit.stack_len = len(stack)
 
-	skip := runtimeOrInternal(stack[0].File)
+	skip := hit.thread.PC != stack[0].PC || runtimeOrInternal(stack[0].File)
 	if skip {
 		// runtime/internal hit
 		// TODO look into how delve implements -u to do this better
-		tc.Logf(slog.LevelDebug, hit, "Watchpoint hit in runtime or internal, stack len %v - "+
-			"full stack (including first non-runtime frame, whose PC is one after call instr)\n", len(stack))
+		tc.Logf(slog.LevelDebug, hit, "Watchpoint hit in runtime or internal @ %#x, stack len %v - "+
+			"full stack (including first non-runtime frame, whose PC is one after call instr)", hit.thread.PC, len(stack))
 		tc.printStacktrace()
 
 		for i, frame := range stack {
 			fn := frame.Function.Name()
 
-			skip = runtimeOrInternal(frame.File)
+			skip = frame.PC > 0xffffffffffff || runtimeOrInternal(frame.File)
 
 			if fn == "runtime.newstack" {
 				return nil, false
@@ -279,14 +284,15 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 }
 
 /* Get instruction corresponding to hit */
-func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) {
+func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) bool {
 	pc := hit.thread.PC
 	if non_runtime_frame != nil {
 		pc = non_runtime_frame.PC
 	}
 	fct_instr, err := tc.client.DisassemblePC(hit.scope, pc, api.IntelFlavour) // dst, src
 	if err != nil {
-		log.Panicf("Error disassembling at PC 0x%x: %v\n", pc, err)
+		tc.Logf(slog.LevelWarn, hit, "Error disassembling at PC 0x%x: %v\n", pc, err)
+		return false
 	}
 
 	for i, instr := range fct_instr {
@@ -297,11 +303,12 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) 
 			} else {
 				hit.hit_instr = &fct_instr[i]
 			}
-			return
+			return true
 		}
 	}
 
-	log.Panicf("Failed to find instruction at PC 0x%x: %v\n", pc, err)
+	tc.Logf(slog.LevelWarn, hit, "Failed to find instruction at PC 0x%x\n", pc)
+	return false
 }
 
 /* Get source line corresponding to hit.
@@ -309,12 +316,15 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) 
 func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	non_runtime_frame, handle := tc.handleRuntimeHit(hit)
 	// Ignore prints (may be within print, or when setting up to call print) for convenience
-	if tc.hitInPrint() || !handle {
+	if !handle || tc.hitInIgnored() {
 		tc.Logf(slog.LevelDebug, hit, "Ignoring hit")
 		return false
 	}
 
-	tc.hittingInstr(non_runtime_frame, hit)
+	if !tc.hittingInstr(non_runtime_frame, hit) {
+		// should have already issued warning from within hittingInstr
+		return false
+	}
 
 	src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 	if ignoreSourceLine(src_line) {
@@ -323,7 +333,8 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	}
 
 	if src_line == "" {
-		log.Panicf("No source line found for PC 0x%x\n", hit.hit_instr.Loc.PC)
+		tc.Logf(slog.LevelWarn, hit, "No source line found for PC 0x%x\n", hit.hit_instr.Loc.PC)
+		return false
 	}
 
 	return true
@@ -414,6 +425,84 @@ func (tc *TaintCheck) onPendingWpBpHitDone(hit *Hit) {
 	delete(tc.bp_pending_wps, bp_addr)
 }
 
+func (tc *TaintCheck) onJsonBP(hit *Hit) {
+	switch hit.hit_bp.Name {
+	case "conftamerJSONUnmarshal1", "conftamerJSONUnmarshal2":
+		tc.Logf(slog.LevelDebug, hit, "hit conftamerJSONUnmarshal")
+		tc.handling_json += 1
+		ripret := tc.eval("RIP", api.EvalScope{GoroutineID: -1, Frame: 1})
+		ripretval, _ := strconv.Atoi(ripret.Value)
+		bp := tc.setBpEx(api.Breakpoint{Name: "conftamerJSONretFromUnmarshal", Addrs: []uint64{uint64(ripretval)}})
+		tc.Logf(slog.LevelDebug, hit, "JSONUnmarshal: returning to %+v:%+v", bp.File, bp.Line)
+		tc.setBpEx(api.Breakpoint{Name: "conftamerJSONliteralStore", FunctionName: "encoding/json.(*decodeState).literalStore"})
+		tc.setBpEx(api.Breakpoint{Name: "conftamerJSONRawMessage", FunctionName: "encoding/json.(*RawMessage).UnmarshalJSON"})
+	case "conftamerJSONliteralStore":
+		// RSI: v.typ_
+		// R8: v.ptr
+		vptr := tc.eval("R8", hit.scope)
+		vptrNum,_ := strconv.Atoi(vptr.Value)
+		vty := tc.eval("(\"internal/abi.Kind\")((*\"internal/abi.Type\")(RSI).Kind_)", hit.scope)
+		if vty != nil {
+			tc.Logf(slog.LevelDebug, hit, "literalStore: Kind: %s", vty.Value)
+			if strings.Contains(vty.Value, "String") {
+				tc.stepOut()
+				tc.json_new_wps = append(tc.json_new_wps, fmt.Sprintf("*(*string)(%#x)", vptrNum))
+				tc.json_new_wps = append(tc.json_new_wps, fmt.Sprintf("*(*uint64)(%#x)", vptrNum))
+			} else if strings.Contains(vty.Value, "Interface") {
+				tc.stepOut()
+				tc.json_new_wps = append(tc.json_new_wps, fmt.Sprintf("**(**uint64)(%#x)", vptrNum))
+			}
+		}
+	case "conftamerJSONRawMessage":
+		tc.Logf(slog.LevelDebug, hit, "RawMessage.UnmarshalJSON:")
+		{
+			tainted_region := TaintedRegion{}
+			// tainted_region.old_region = TODO
+			// tainted_region.concat_xvs = TODO?
+			// pending_loc := tc.lineWithStmt(TODO
+			// tainted_region.set_location &pending_loc
+			watchexpr := "*u.(*json.RawMessage)"
+			// TODO handle error(s) from EvalWatchexpr
+			xvs, errs := tc.client.EvalWatchexpr(hit.scope, "data", true)
+			tc.Logf(slog.LevelDebug, hit, "RawMessage.UnmarshalJSON: xvs for data: %+v errs: %+v", xvs, errs)
+			tainted_region.old_region = xvs
+			tainted_region.new_expr = &watchexpr
+			stacktrace := tc.stacktrace()
+			cmds := []Command{{cmd: api.Next, stack_len: len(stacktrace), lineno: hit.hit_bp.Line+1}, {cmd: api.StepOut, stack_len: len(stacktrace)-1}}
+			tainted_region.cmds = cmds
+			{
+				// XXX this is such a bodge
+				pending_watchpoint := PendingWp{}
+				if tc.cmd_pending_wp != nil {
+					pending_watchpoint = *tc.cmd_pending_wp
+					// TODO there's more; I'm cudgeling pendingWatchpoint here
+				}
+				pending_watchpoint.cmds = tainted_region.cmds
+				insert(&pending_watchpoint.watchexprs, *tainted_region.new_expr)
+				pending_watchpoint.cmd_idx = 0
+				pending_watchpoint.threadID = hit.thread.ID
+				tainting_param := TaintingParam{Param: Param{Module: tc.config.Module, Param: "json"}, Flow: DataFlow}
+				pending_watchpoint.tainting_vals = [][]TaintingVals{{MakeTaintingVals(&tainting_param, nil)}}
+				tc.cmd_pending_wp = &pending_watchpoint
+			}
+		}
+	case "conftamerJSONretFromUnmarshal":
+		tc.Logf(slog.LevelDebug, hit, "hit JSONUnmarshal return point")
+		tc.clearBpByName("conftamerJSONliteralStore")
+		tc.clearBpByName("conftamerJSONRawMessage")
+		tc.clearBpByName("conftamerJSONretFromUnmarshal")
+		tc.handling_json = 0
+		for _, new_wp := range tc.json_new_wps {
+			tainting_param := TaintingParam{Param: Param{Module: tc.config.Module, Param: "json"}, Flow: DataFlow}
+			tainting_vals := [][]TaintingVals{{MakeTaintingVals(&tainting_param, nil)}}
+			tc.setWatchpoint(new_wp, tainting_vals, true, false, hit)
+		}
+		tc.json_new_wps = nil
+	default:
+		log.Panicf("Unhandled breakpoint: %+v", hit.hit_bp)
+	}
+}
+
 // Warn or panic if needed
 func (tc *TaintCheck) logWatchErr(msg string, err error, hit *Hit) {
 	if err == nil {
@@ -430,7 +519,7 @@ func (tc *TaintCheck) logWatchErr(msg string, err error, hit *Hit) {
 		// could improve (see gdoc) by only setting on field (may help PERF too)
 		tc.Logf(slog.LevelWarn, hit, errstr)
 	} else {
-		log.Panicln(errstr)
+		tc.Logf(slog.LevelDebug, hit, "Failed to set watchpoint: %v", errstr)
 	}
 }
 
@@ -452,11 +541,21 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 	// 1. Set watchpoint on full new expr
 	// We really want a read-only wp, but not supported
 	watchpoints, errs := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
-	for _, err := range errs {
-		tc.logWatchErr(fmt.Sprintf("Failed to set watchpoint for %v", watchexpr), err, hit)
-	}
 	if len(watchpoints) != len(errs) {
 		log.Panicf("Debugger returned watchpoints and errs with mismatched lengths: %v vs %v", watchpoints, errs)
+	}
+	validWatchpoints := []*api.Breakpoint{}
+	for i, err := range errs {
+		tc.logWatchErr(fmt.Sprintf("Failed to set watchpoint for %v", watchexpr), err, hit)
+		if err == nil {
+			validWatchpoints = append(validWatchpoints, watchpoints[i])
+		}
+	}
+	watchpoints = validWatchpoints
+	if len(watchpoints) == 0 {
+		tc.Logf(slog.LevelWarn, hit, "No valid watchpoints for %v", watchexpr)
+		tc.printStacktrace()
+		return
 	}
 
 	// 2. Update m-c map only for tainted part of new expr
@@ -615,7 +714,7 @@ func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
 // Set all watchpoints corresponding to pendingWp, remove them from pendingWp
 func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 	if pendingWp.watchexprs.Empty() && pendingWp.watchargs.Empty() {
-		log.Panicf("No pending watches found\n")
+		tc.Logf(slog.LevelWarn, hit, "No pending watches found")
 	}
 	pendingWp.watchexprs.ForEach(func(watchexpr string) bool {
 		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.taint_all_bytes, false, hit)
@@ -626,6 +725,14 @@ func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 		args, err := tc.client.ListFunctionArgs(hit.scope, api.LoadConfig{})
 		if err != nil {
 			log.Panicf("Failed to list function args for pending wp %+v: %v\n", pendingWp, err)
+		}
+		if len(args) == 0 {
+			tc.Logf(slog.LevelWarn, hit, "args length is zero, this is maybe not a method? : %+v", watcharg)
+			return false
+		}
+		if watcharg >= len(args) {
+			tc.Logf(slog.LevelWarn, hit, "watch arg index out of range?? %+v [%+v]", pendingWp, watcharg)
+			return false
 		}
 		watchexpr := args[watcharg].Name
 		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.taint_all_bytes, false, hit)
@@ -730,6 +837,8 @@ func New(config *Config) (*TaintCheck, error) {
 			})
 		}
 	}
+	tc.setBpEx(api.Breakpoint{Name: "conftamerJSONUnmarshal1", FunctionName: "encoding/json.Unmarshal"})
+	tc.setBpEx(api.Breakpoint{Name: "conftamerJSONUnmarshal2", FunctionName: "encoding/json.(*decodeState).unmarshal"})
 
 	return &tc, nil
 }

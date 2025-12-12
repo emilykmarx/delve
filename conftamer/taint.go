@@ -215,6 +215,9 @@ func (tc *TaintCheck) evalWatchexpr(expr ast.Expr, hit *Hit, fset *token.FileSet
 						tc.Logf(slog.LevelWarn, hit, "Eval %v: %v", exprToString(typed_node), errs[i])
 						// Don't eval children
 						return false
+					} else if strings.Contains(errs[i].Error(), "nil slice") {
+						// zero-length region, don't eval children
+						return false
 					} else {
 						// Try evaluating any AST children (for e.g. binary ops)
 						return true
