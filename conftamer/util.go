@@ -200,14 +200,16 @@ func (t TaintedRegion) String() string {
 // Get line of source (as string)
 func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 	if os.Setenv("TERM", "dumb") != nil {
-		log.Panicf("Error setting TERM=dumb")
+		// XXX log.Panicf("Error setting TERM=dumb")
+		return ""
 	}
 
 	t := terminal.New(client, nil)
 	// PERF faster way to do this?
 	lines, err := t.GetOutput(fmt.Sprintf("list %v:%v", file, lineno))
 	if err != nil {
-		log.Panicf("Error getting source code for %v:%v: %v\n", file, lineno, err)
+		// XXX log.Panicf("Error getting source code for %v:%v: %v\n", file, lineno, err)
+		return ""
 	}
 
 	var src_line string
@@ -217,7 +219,8 @@ func sourceLine(client *rpc2.RPCClient, file string, lineno int) string {
 			continue
 		}
 		if _, err := fmt.Sscanf(line, " %d:", &curline); err != nil {
-			log.Panicf("Failed to parse line number from %v:%v: %v\n", file, line, err)
+			// XXX log.Panicf("Failed to parse line number from %v:%v: %v\n", file, line, err)
+			return ""
 		}
 		if curline != lineno {
 			continue
@@ -428,7 +431,7 @@ func (tc *TaintCheck) lineWithStmt(file string, lineno int, frame int) api.Locat
 		lineno += 1
 	}
 
-	log.Panicf("Failed to find location %v in frame %v\n", loc, frame)
+	tc.Logf(slog.LevelWarn, nil, "Failed to find location %v in frame %v\n", loc, frame)
 	return api.Location{}
 }
 
@@ -477,8 +480,10 @@ func (tc *TaintCheck) Logf(lvl slog.Level, hit *Hit, format string, args ...any)
 		// May be called from bp hit or wp hit (where wp hit may not have hit_bp, if called from Run())
 		if hit.hit_instr != nil {
 			r.Add("target_file", hit.hit_instr.Loc.File, "target_line", hit.hit_instr.Loc.Line)
-		} else {
+		} else if hit.hit_bp != nil {
 			r.Add("target_file", hit.hit_bp.File, "target_line", hit.hit_bp.Line)
+		} else {
+			r.Add("somehow the hit.hit_bp became nil??")
 		}
 	}
 	_ = tc.logger.Handler().Handle(context.Background(), r)

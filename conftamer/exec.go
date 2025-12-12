@@ -1,7 +1,6 @@
 package conftamer
 
 import (
-	"log"
 	"log/slog"
 
 	"github.com/go-delve/delve/pkg/proc"
@@ -26,7 +25,7 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 				tc.onWatchpointHit(hit)
 			} else if hit_bp.Name == proc.UnrecoveredPanic || hit_bp.Name == proc.FatalThrow || hit_bp.Name == proc.HardcodedBreakpoint ||
 				hit_bp.Name == proc.SyscallExitBreakpoint {
-				log.Panicf("Hit unexpected breakpoint %+v on thread %v\n", hit_bp, thread.ID)
+				tc.Logf(slog.LevelWarn, nil, "Hit unexpected breakpoint %+v on thread %v\n", hit_bp, thread.ID)
 			} else {
 				tc.onPendingWpBpHit(hit)
 			}
@@ -39,6 +38,10 @@ func (tc *TaintCheck) handleTargetStop(state *api.DebuggerState) {
 	// maybe wp will always still hit for some part of the block? May be able to use that depending on how we end up coalescing watchpoints.
 	// Caddy manual scan has an instance of reusing watched memory)
 	for _, wp_oos := range state.WatchOutOfScope {
+		if state.SelectedGoroutine == nil {
+			tc.Logf(slog.LevelWarn, nil, "Somehow the goroutine pointer went nil when handling watchpoint %v", wp_oos.WatchExpr)
+			return
+		}
 		loc := state.SelectedGoroutine.CurrentLoc
 		tc.Logf(slog.LevelInfo, nil, "Watchpoint on %v went out of scope - current goroutine at %v:%v (0x%x)",
 			wp_oos.WatchExpr, loc.File, loc.Line, loc.PC)
@@ -91,7 +94,8 @@ func (tc *TaintCheck) Run() {
 			break
 		}
 		if state.Err != nil {
-			log.Panicf("Error in debugger state: %v\n", state.Err)
+			tc.Logf(slog.LevelError, nil, "Error in debugger state: %v\n", state.Err)
+			break
 		}
 
 		// Target stopped => check if last start finished the command we were executing

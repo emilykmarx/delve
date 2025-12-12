@@ -279,14 +279,15 @@ func (tc *TaintCheck) handleRuntimeHit(hit *Hit) (*api.Stackframe, bool) {
 }
 
 /* Get instruction corresponding to hit */
-func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) {
+func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) bool {
 	pc := hit.thread.PC
 	if non_runtime_frame != nil {
 		pc = non_runtime_frame.PC
 	}
 	fct_instr, err := tc.client.DisassemblePC(hit.scope, pc, api.IntelFlavour) // dst, src
 	if err != nil {
-		log.Panicf("Error disassembling at PC 0x%x: %v\n", pc, err)
+		tc.Logf(slog.LevelWarn, hit, "Error disassembling at PC 0x%x: %v\n", pc, err)
+		return false
 	}
 
 	for i, instr := range fct_instr {
@@ -297,11 +298,12 @@ func (tc *TaintCheck) hittingInstr(non_runtime_frame *api.Stackframe, hit *Hit) 
 			} else {
 				hit.hit_instr = &fct_instr[i]
 			}
-			return
+			return true
 		}
 	}
 
-	log.Panicf("Failed to find instruction at PC 0x%x: %v\n", pc, err)
+	tc.Logf(slog.LevelWarn, hit, "Failed to find instruction at PC 0x%x\n", pc)
+	return false
 }
 
 /* Get source line corresponding to hit.
@@ -314,7 +316,10 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 		return false
 	}
 
-	tc.hittingInstr(non_runtime_frame, hit)
+	if !tc.hittingInstr(non_runtime_frame, hit) {
+		// should have already issued warning from within hittingInstr
+		return false
+	}
 
 	src_line := sourceLine(tc.client, hit.hit_instr.Loc.File, hit.hit_instr.Loc.Line)
 	if ignoreSourceLine(src_line) {
@@ -323,7 +328,8 @@ func (tc *TaintCheck) hittingLine(hit *Hit) bool {
 	}
 
 	if src_line == "" {
-		log.Panicf("No source line found for PC 0x%x\n", hit.hit_instr.Loc.PC)
+		tc.Logf(slog.LevelWarn, hit, "No source line found for PC 0x%x\n", hit.hit_instr.Loc.PC)
+		return false
 	}
 
 	return true
@@ -430,7 +436,7 @@ func (tc *TaintCheck) logWatchErr(msg string, err error, hit *Hit) {
 		// could improve (see gdoc) by only setting on field (may help PERF too)
 		tc.Logf(slog.LevelWarn, hit, errstr)
 	} else {
-		log.Panicln(errstr)
+		tc.Logf(slog.LevelDebug, hit, "Failed to set watchpoint: %v", errstr)
 	}
 }
 
@@ -452,11 +458,21 @@ func (tc *TaintCheck) setWatchpoint(watchexpr string, tainting_vals [][]Tainting
 	// 1. Set watchpoint on full new expr
 	// We really want a read-only wp, but not supported
 	watchpoints, errs := tc.client.CreateWatchpoint(hit.scope, watchexpr, api.WatchRead|api.WatchWrite, api.WatchSoftware, tc.config.Move_wps)
-	for _, err := range errs {
-		tc.logWatchErr(fmt.Sprintf("Failed to set watchpoint for %v", watchexpr), err, hit)
-	}
 	if len(watchpoints) != len(errs) {
 		log.Panicf("Debugger returned watchpoints and errs with mismatched lengths: %v vs %v", watchpoints, errs)
+	}
+	validWatchpoints := []*api.Breakpoint{}
+	for i, err := range errs {
+		tc.logWatchErr(fmt.Sprintf("Failed to set watchpoint for %v", watchexpr), err, hit)
+		if err == nil {
+			validWatchpoints = append(validWatchpoints, watchpoints[i])
+		}
+	}
+	watchpoints = validWatchpoints
+	if len(watchpoints) == 0 {
+		tc.Logf(slog.LevelWarn, hit, "No valid watchpoints for %v", watchexpr)
+		tc.printStacktrace()
+		return
 	}
 
 	// 2. Update m-c map only for tainted part of new expr
@@ -615,7 +631,7 @@ func (tc *TaintCheck) onWatchpointHit(hit *Hit) {
 // Set all watchpoints corresponding to pendingWp, remove them from pendingWp
 func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 	if pendingWp.watchexprs.Empty() && pendingWp.watchargs.Empty() {
-		log.Panicf("No pending watches found\n")
+		tc.Logf(slog.LevelWarn, hit, "No pending watches found")
 	}
 	pendingWp.watchexprs.ForEach(func(watchexpr string) bool {
 		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.taint_all_bytes, false, hit)
@@ -626,6 +642,14 @@ func (tc *TaintCheck) setPendingWatchpoints(pendingWp *PendingWp, hit *Hit) {
 		args, err := tc.client.ListFunctionArgs(hit.scope, api.LoadConfig{})
 		if err != nil {
 			log.Panicf("Failed to list function args for pending wp %+v: %v\n", pendingWp, err)
+		}
+		if len(args) == 0 {
+			tc.Logf(slog.LevelWarn, hit, "args length is zero, this is maybe not a method? : %+v", watcharg)
+			return false
+		}
+		if watcharg >= len(args) {
+			tc.Logf(slog.LevelWarn, hit, "watch arg index out of range?? %+v [%+v]", pendingWp, watcharg)
+			return false
 		}
 		watchexpr := args[watcharg].Name
 		tc.setWatchpoint(watchexpr, pendingWp.tainting_vals, pendingWp.taint_all_bytes, false, hit)
