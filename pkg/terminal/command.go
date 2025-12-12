@@ -160,7 +160,7 @@ A tracepoint is a breakpoint that does not stop the execution of the program, in
 See also: "help on", "help cond" and "help clear"`},
 		{aliases: []string{"watch"}, group: breakCmds, cmdFn: watchpoint, helpMsg: `Set watchpoint.
 
-	watch [-r|-w|-rw] [-hw|-sw] <expr>
+	watch [-r|-w|-rw] [-hw|-sw] [-move] <expr>
 
 	-r	stops when the memory location is read
 	-w	stops when the memory location is written
@@ -2045,42 +2045,73 @@ func edit(t *Term, ctx callContext, args string) error {
 	}
 }
 
-func watchpoint(t *Term, ctx callContext, args string) error {
-	v := strings.SplitN(args, " ", 4)
-	if len(v) != 3 && len(v) != 4 { // -nomove is optional
-		return errors.New("wrong number of arguments: watch [-r|-w|-rw] [-hw|-sw] (-nomove) <expr>")
+func watchpoint(t *Term, ctx callContext, argstr string) error {
+	args := strings.Split(argstr, " ")
+
+	var expr string
+	wtype := api.WatchRead | api.WatchWrite
+	wimpl := api.WatchSoftware
+	move := false
+
+	setWtype, setWimpl := false, false
+
+	// nextArg returns the next argument that is not an empty string, if any, and
+	// advances the args slice to the position after that.
+	nextArg := func() string {
+		for len(args) > 0 {
+			arg := args[0]
+			args = args[1:]
+			if arg != "" {
+				return arg
+			}
+		}
+		return ""
 	}
-	var wtype api.WatchType
-	switch v[0] {
-	case "-r":
-		wtype = api.WatchRead
-	case "-w":
-		wtype = api.WatchWrite
-	case "-rw":
-		wtype = api.WatchRead | api.WatchWrite
-	default:
-		return fmt.Errorf("wrong argument %q to watch", v[0])
-	}
-	var wimpl api.WatchImpl
-	switch v[1] {
-	case "-hw":
-		wimpl = api.WatchHardware
-	case "-sw":
-		wimpl = api.WatchSoftware
-	default:
-		return fmt.Errorf("wrong argument %q to watch", v[1])
-	}
-	move := wimpl == api.WatchSoftware
-	if len(v) == 4 {
-		if v[2] != "-nomove" {
-			return fmt.Errorf("wrong argument %q to watch", v[2])
-		} else if wimpl == api.WatchHardware {
-			return errors.New("-nomove argument does not apply to hardware watchpoints")
-		} else {
-			move = false
+
+loop:
+	for {
+		switch arg := nextArg(); arg {
+		case "":
+			// no more arguments
+			break loop
+		case "-r", "-w", "-rw":
+			if setWtype {
+				return errors.New("cannot set multiple -r/-w/-rw")
+			}
+			setWtype = true
+			wtype = 0
+			if arg == "-r" || arg == "-rw" {
+				wtype |= api.WatchRead
+			}
+			if arg == "-w" || arg == "-rw" {
+				wtype |= api.WatchWrite
+			}
+		case "-hw", "-sw":
+			if setWimpl {
+				return errors.New("cannot set multiple -hw/-sw")
+			}
+			setWimpl = true
+			if arg == "-hw" {
+				wimpl = api.WatchHardware
+			} else {
+				wimpl = api.WatchSoftware
+			}
+		case "-move":
+			if move {
+				return errors.New("cannot set multiple -move")
+			}
+			move = true
+		default:
+			if len(args) > 0 {
+				return errors.New("too many arguments")
+			}
+			expr = arg
+			break loop
 		}
 	}
-	expr := v[len(v)-1]
+	if move && wimpl == api.WatchHardware {
+		return errors.New("-move argument does not apply to hardware watchpoints")
+	}
 	bps, errs := t.client.CreateWatchpoint(ctx.Scope, expr, wtype, wimpl, move)
 	for i, bp := range bps {
 		if errs[i] != nil {
