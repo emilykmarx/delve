@@ -7,14 +7,12 @@ set -ex
 
 KUBESRC=/home/emily/go/src/k8s.io/kubernetes
 
-# Build scannable Prometheus image
-pushd ../prometheus
+## Build scannable Prometheus image
 # Must match kube-prometheus-stack values.yaml
 # prometheus-operator requires tag in format vX.Y.Z, where X is 2 or 3
-docker build -f ./Dockerfile -t my/prometheus:v3.5.0 .
-popd
+docker build -f prometheus/Dockerfile -t my/prometheus:v3.5.0 .
 
-# Build scannable k8s scheduler image
+## Build scannable k8s scheduler image
 pushd $KUBESRC
 # Build binary and image (this builds all components - we will only use the scheduler)
 make quick-release-images DBG=1
@@ -29,14 +27,14 @@ docker tag registry.k8s.io/kube-scheduler-amd64:v1.31.1-dirty registry.k8s.io/ku
 docker build -f build/server-image/kube-scheduler/Dockerfile_wrapper -t registry.k8s.io/kube-scheduler:v1.31.1 .
 popd
 
-# Cleanup existing cluster
+## Cleanup existing cluster (skip preflight checks - can't skip etcd though or `kubeadm init` fails)
 sudo kubeadm reset --force --skip-phases preflight --cri-socket unix:///var/run/cri-dockerd.sock
+
+## Start cluster
 # Enable ptrace for dlv
 echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope
-
-# Start cluster
 sudo systemctl enable --now kubelet
-#Use `ip a` to confirm this IP block doesn’t overlap - if need to change IPs, change calico.yaml
+# Use `ip a` to confirm this IP block doesn’t overlap - if need to change IPs, change calico.yaml
 sudo kubeadm init --config=./prometheus_scan/kubeadm_config.yml
 mkdir -p $HOME/.kube
 sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
@@ -46,33 +44,33 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 kubectl taint nodes --all node-role.kubernetes.io/control-plane-
 kubectl apply -f prometheus_scan/calico.yaml
 
-# Wait for calico
+## Wait for calico
 watch kubectl get pods -A
 exit # rest isn't fully automated, but commands should work
 
-# Edit scheduler manifest to prepare for dlv => pod will restart
+## Edit scheduler manifest to prepare for dlv => pod will restart
 pushd $KUBESRC/build/server-image/kube-scheduler
 sudo cp kube-scheduler.yaml /etc/kubernetes/manifests/
 popd
 
-# Cluster checks
+## Cluster checks
 SONO_PATH='../sonobuoy'
 $SONO_PATH run --wait --mode quick
 results=$($SONO_PATH retrieve)
 $SONO_PATH results $results
 $SONO_PATH delete --wait
 
-# Install kubeshark
+## Install kubeshark
 helm repo add kubeshark https://helm.kubeshark.co
 helm install kubeshark kubeshark/kubeshark
 kubectl port-forward service/kubeshark-front 8899:80
 # kubeshark: localhost:8899
 
-# Install kube-prometheus-stack helm chart
+## Install kube-prometheus-stack helm chart
 pushd ../prometheus-helm-charts/charts/kube-prometheus-stack
 helm dependency build # only needed once
 helm install kube-prometheus-stack .
-# Wait for k-p-s pods
+# Wait for k-p-s pods - prometheus will stay as 1/2 if entrypoint is bash
 watch kubectl get pods -A
 popd
 
@@ -84,7 +82,8 @@ export PROM_POD=prometheus-kube-prometheus-stack-prometheus-0
 kubectl port-forward $PROM_POD 9090
 # Prometheus: localhost:9090
 
-# START SCANNING SCHEDULER (bind-address arg to kube-scheduler)
+
+## MANUAL SCHEDULER SCAN
 kubectl -n=kube-system exec -it kube-scheduler-orpheus -- bash
 dlv exec /usr/local/bin/kube-scheduler -- \
   --authentication-kubeconfig=/etc/kubernetes/scheduler.conf \
@@ -94,3 +93,8 @@ dlv exec /usr/local/bin/kube-scheduler -- \
   --leader-elect=true
 
 # (dlv) config substitute-path /go/src/k8s.io/kubernetes .
+
+
+### MANUAL PROMETHEUS SCAN
+dlv exec ./prometheus -- --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus
+# (dlv) config substitute-path /home/emily/projects/config_tracing/prometheus/ .
