@@ -22,10 +22,21 @@ import (
 
 // Data structures used to create the configuration tamer
 
+type TaintOrigin struct {
+	name string
+
+	// Both variables are 0-indexed
+	row_number    int
+	column_number int
+}
+
 type Param struct {
 	Module string
 	File   string
 	Param  string
+
+	Row_number    int
+	Column_number int
 }
 type TaintingParam struct {
 	Param Param
@@ -336,7 +347,7 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 	existing_info.threadID = hit.thread.ID
 	ifstmt_taint := newTaintingVals()
 	found_taint := false
-	new_params := map[uint64]string{}
+	new_params := map[uint64]TaintOrigin{}
 	var total_len, cur_len int
 	for _, old_xv := range tainted_region.old_region {
 		if old_xv == nil {
@@ -402,7 +413,6 @@ func (tc *TaintCheck) getTaintingVals(existing_info *PendingWp, tainted_region *
 		existing_info.updateTaintingVals(ifstmt_taint, 0, 0) // put them all at offset 0 - setWatchpoint will pick them out
 		existing_info.taint_all_bytes = true
 	}
-
 	return found_taint
 }
 

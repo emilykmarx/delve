@@ -1,3 +1,6 @@
+# github.com/buger/jsonparser v1.1.1
+## explicit; go 1.13
+github.com/buger/jsonparser
 # github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
 ## explicit
 github.com/c9s/goprocinfo/linux
@@ -89,6 +92,10 @@ go.starlark.net/resolve
 go.starlark.net/starlark
 go.starlark.net/starlarkstruct
 go.starlark.net/syntax
+# go.yaml.in/yaml/v4 v4.0.0-rc.4
+## explicit; go 1.18
+go.yaml.in/yaml/v4
+go.yaml.in/yaml/v4/internal/libyaml
 # golang.org/x/arch v0.6.0
 ## explicit; go 1.18
 golang.org/x/arch/arm64/arm64asm
@@ -131,5 +138,5 @@ gopkg.in/yaml.v2
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
-# github.com/hashicorp/go-set => ../go-set
 # github.com/dominikbraun/graph => ../graph
+# github.com/hashicorp/go-set => ../go-set

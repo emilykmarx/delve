@@ -18,6 +18,9 @@ import (
 	"strings"
 	"time"
 
+	"go.yaml.in/yaml/v4"
+
+	"github.com/buger/jsonparser"
 	"github.com/go-delve/delve/pkg/proc"
 	"github.com/go-delve/delve/pkg/terminal"
 	"github.com/go-delve/delve/service/api"
@@ -80,13 +83,15 @@ func (tc *TaintCheck) updateTaintingVals(watchaddr uint64, tainting_vals Taintin
 }
 
 // Fill in any empty params at m-p[watchaddr]
-func (tc *TaintCheck) populateParam(watchaddr uint64, param string) {
+func (tc *TaintCheck) populateParam(watchaddr uint64, param TaintOrigin) {
 	existing_taint := tc.mem_param_map[watchaddr]
 	new_params := existing_taint.Params
 	existing_taint.Params.ForEach(func(tp TaintingParam) bool {
 		if tp.Param.Param == "" {
 			new_params.Remove(tp)
-			tp.Param.Param = param
+			tp.Param.Param = param.name
+			tp.Param.Column_number = param.column_number
+			tp.Param.Row_number = param.row_number
 			new_params.Insert(tp)
 		}
 		return true
@@ -120,10 +125,10 @@ func insert[T comparable](s *set.Set[T], val T) {
 }
 
 // Parse params assuming \n-separated. Return offset => param
-func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame int) map[uint64]string {
-	param_taint := map[uint64]string{}
+func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame int) map[uint64]TaintOrigin {
+	param_taint := map[uint64]TaintOrigin{}
 	// 1. Parse all params
-	buf_contents := ""
+	buf_contents := make([]byte, 0, overlap_end-overlap_start)
 	for watchaddr := overlap_start; watchaddr < overlap_end; watchaddr++ {
 		eval_expr := fmt.Sprintf("*(*uint8)(%#x)", watchaddr)
 		s := api.EvalScope{GoroutineID: -1, Frame: frame}
@@ -131,27 +136,187 @@ func (tc *TaintCheck) readParams(overlap_start uint64, overlap_end uint64, frame
 		if err != nil {
 			log.Panicf("read param char at %#x: %v\n", watchaddr, err)
 		}
-		var char uint8
-		if _, err := fmt.Sscanf(xv.Value, "%d", &char); err != nil {
+		var b uint8
+		if _, err := fmt.Sscanf(xv.Value, "%d", &b); err != nil {
 			log.Panicf("parse param char at %#x: %v\n", watchaddr, err)
 		}
-		buf_contents += string(char)
-	}
-	params := strings.Split(buf_contents, "\n")
-	// 2. Map offsets to params
-	param_idx := 0
-	len_consumed := len(params[param_idx])
-	for offset := 0; offset < len(buf_contents); offset++ {
-		if buf_contents[offset] == '\n' && param_idx < len(params)-1 {
-			// \n (not the last one)
-			param_idx++
-			len_consumed += len(params[param_idx])
-		} else {
-			param_taint[uint64(offset)] = params[param_idx]
-		}
+		buf_contents = append(buf_contents, b)
 	}
 
+	switch tc.config.Config_file_type {
+	// NSL
+	case 0:
+		params := strings.Split(string(buf_contents), "\n")
+		// 2. Map offsets to params
+		param_idx := 0
+		len_consumed := len(params[param_idx])
+		col := 0
+		for offset := 0; offset < len(buf_contents); offset++ {
+			if buf_contents[offset] == '\n' && param_idx < len(params)-1 {
+				param_idx++
+				len_consumed += len(params[param_idx])
+				col = 0
+			} else {
+				param_taint[uint64(offset)] = TaintOrigin{params[param_idx], param_idx, col}
+				col++
+			}
+		}
+	// JSON
+	case 1:
+		// We assume that we are always working with a JSON object
+		taintJSON(param_taint, buf_contents)
+	// YAML
+	case 2:
+		taintYAML(param_taint, buf_contents)
+	}
 	return param_taint
+}
+
+// taints a range of bytes from start (inclusive) to end (exclusive)
+func taintRange(param_taint map[uint64]TaintOrigin, buf_contents []byte, start, end int, label string) {
+	for i := start; i < end; i++ {
+		row, col := rowColPos(buf_contents, i)
+		param_taint[uint64(i)] = TaintOrigin{
+			name:          label,
+			row_number:    row,
+			column_number: col,
+		}
+	}
+}
+
+func joinPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+func taintYAML(param_taint map[uint64]TaintOrigin, buf_contents []byte) {
+	var n yaml.Node
+	if err := yaml.Unmarshal(buf_contents, &n); err != nil {
+		log.Panic("No yaml object found")
+	}
+	root := &n
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+	walkYAML(param_taint, buf_contents, root, "")
+}
+
+func walkYAML(param_taint map[uint64]TaintOrigin, buf_contents []byte, node *yaml.Node, prefix string) {
+	if node == nil {
+		return
+	}
+
+	switch node.Kind {
+	case yaml.DocumentNode:
+		for _, c := range node.Content {
+			walkYAML(param_taint, buf_contents, c, prefix)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			k := node.Content[i]
+			v := node.Content[i+1]
+			// taints the key
+			path := joinPath(prefix, k.Value)
+			walkYAML(param_taint, buf_contents, k, path)
+			// taints the value
+			walkYAML(param_taint, buf_contents, v, path)
+		}
+	case yaml.SequenceNode:
+		for i, c := range node.Content {
+			walkYAML(param_taint, buf_contents, c, fmt.Sprintf("%s[%d]", prefix, i))
+		}
+	case yaml.ScalarNode:
+		start, end := yamlSpan(buf_contents, node)
+		taintRange(param_taint, buf_contents, start, end, prefix)
+	}
+
+}
+func yamlSpan(buf_contents []byte, node *yaml.Node) (int, int) {
+	start := indexPos(buf_contents, node.Line, node.Column)
+
+	// if key uses quotation marks, 'start' starts at the first quote
+	if buf_contents[start] == '"' {
+		start += 1
+	}
+	end := start + len(node.Value)
+	return start, end
+}
+
+func taintJSON(param_taint map[uint64]TaintOrigin, buf_contents []byte) {
+	if err := json.Unmarshal(buf_contents, &json.RawMessage{}); err != nil {
+		log.Panic("No JSON object found")
+	}
+	base := 0
+	for i := 0; i < len(buf_contents); i++ {
+		switch buf_contents[i] {
+		case '{':
+			base = i
+		case ' ', '\t', '\n':
+			continue
+		default:
+			base = -1
+		}
+	}
+	if base == -1 {
+		log.Panic("something went wrong")
+	}
+	walkJSONObject(param_taint, buf_contents, base, buf_contents[base:], "")
+}
+
+func walkJSONObject(param_taint map[uint64]TaintOrigin, buf_contents []byte, base int, obj []byte, prefix string) {
+	_ = jsonparser.ObjectEach(obj, func(key []byte, value []byte, dataType jsonparser.ValueType, offset int) error {
+		keyStr := string(key)
+		path := joinPath(prefix, keyStr)
+
+		// jsonparser library is weird... $offset$ includes the quotes around string but $value$ does not include the quotes
+		// for example, if {"user": "jamie"}, $offset$ would be 15 and buf[offset] = '}'
+		start := offset - len(value)
+		keyStartIndex := bytes.LastIndex(obj[:start], []byte(`"`+keyStr+`"`))
+
+		if keyStartIndex >= 0 {
+			keyCharsStart := base + keyStartIndex + 1
+			keyCharsEnd := keyCharsStart + len(keyStr)
+			taintRange(param_taint, buf_contents, keyCharsStart, keyCharsEnd, path)
+		}
+
+		switch dataType {
+		case jsonparser.Object:
+			walkJSONObject(param_taint, buf_contents, base+start, value, path)
+		case jsonparser.Array:
+			walkJSONArray(param_taint, buf_contents, base+start, value, path)
+		case jsonparser.String:
+			// Using the example above, base + start - 1 would = char 'j' and base + offset - 1 would = char '"' but taintRange is end exclusive
+			taintRange(param_taint, buf_contents, base+start-1, base+offset-1, path)
+		default:
+			taintRange(param_taint, buf_contents, base+start, base+offset, path)
+		}
+		return nil
+	})
+}
+
+func walkJSONArray(param_taint map[uint64]TaintOrigin, buf_contents []byte, base int, arr []byte, prefix string) {
+	index := 0
+	_, _ = jsonparser.ArrayEach(arr, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
+
+		if err != nil {
+			return
+		}
+		path := fmt.Sprintf("%s[%d]", prefix, index)
+
+		switch dataType {
+		case jsonparser.Object:
+			walkJSONObject(param_taint, buf_contents, base+offset, value, path)
+		case jsonparser.Array:
+			walkJSONArray(param_taint, buf_contents, base+offset, value, path)
+		case jsonparser.String:
+			taintRange(param_taint, buf_contents, base+offset-1, base+offset+len(value)-1, path)
+		default:
+			taintRange(param_taint, buf_contents, base+offset, base+offset+len(value), path)
+		}
+		index++
+	})
 }
 
 func hasEmptyParam(tainting_vals TaintingVals) bool {
@@ -168,6 +333,40 @@ func hasEmptyParam(tainting_vals TaintingVals) bool {
 		return true
 	})
 	return empty
+}
+
+func rowColPos(b []byte, index int) (row, col int) {
+	row = 0
+	col = 0
+	for _, v := range b[:index] {
+		if v == '\n' {
+			row++
+			col = 0
+		} else {
+			col++
+		}
+	}
+	return
+}
+
+func indexPos(b []byte, row, col int) int {
+	if row <= 0 || col <= 0 {
+		return 0
+	}
+
+	curRow, curCol := 1, 1
+	for i := 0; i < len(b); i++ {
+		if curRow == row && curCol == col {
+			return i
+		}
+		if b[i] == '\n' {
+			curRow++
+			curCol = 1
+		} else {
+			curCol++
+		}
+	}
+	return -1
 }
 
 // pretty-print
