@@ -1051,259 +1051,259 @@ func TestLoadConfigParamJSONComplex(t *testing.T) {
 	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
 }
 
-// TODO: Update test to work with row/col numbers
-// func TestLoadConfigParamJSONFull(t *testing.T) {
-// 	// Flattened original JSON
-// 	config_params := []byte(`{"apps":{"http":{"servers":{"example":{"listen":[":2015"],"routes":[{"handle":[{"handler":"static_response","body":"Hello, world!"}]}]}}}}}`)
+// TODO: test currently does not include the update to have row/col numbers, failing intended
+func TestLoadConfigParamJSONFull(t *testing.T) {
+	// Flattened original JSON
+	config_params := []byte(`{"apps":{"http":{"servers":{"example":{"listen":[":2015"],"routes":[{"handle":[{"handler":"static_response","body":"Hello, world!"}]}]}}}}}`)
 
-// 	target_config_file := filepath.Join(t.TempDir(), "target_config.json")
-// 	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+	target_config_file := filepath.Join(t.TempDir(), "target_config.json")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
 
-// 	dlv_config_path := t.TempDir()
-// 	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
-// 	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
-// 	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
-// 	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
-// 	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
 
-// 	config := Config("load_config_param_JSON_full.go", "", 0)
-// 	config.Config_file_type = 1 // JSON
+	config := Config("load_config_param_JSON_full.go", "", 0)
+	config.Config_file_type = 1 // JSON
 
-// 	tainting_param := ct.TaintingParam{
-// 		Param: ct.Param{
-// 			Module: config.Module,
-// 			File:   target_config_file,
-// 		},
-// 		Flow: ct.DataFlow,
-// 	}
-// 	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
 
-// 	// First read
-// 	readbufsz := uint64(512)
-// 	config_load := ct.Event{
-// 		EventType:    ct.ConfigLoad,
-// 		Size:         readbufsz,
-// 		TaintingVals: &tainting_vals,
-// 		Line:         syscall_entry_line,
-// 	}
-// 	expected_events := []TestEvent{{e: config_load}}
-// 	expected_events = append(expected_events,
-// 		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+	// First read
+	readbufsz := uint64(512)
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []TestEvent{{e: config_load}}
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
 
-// 	// Second read (EOF)
-// 	readbufsz -= uint64(len(config_params))
-// 	config_load.Size = readbufsz
-// 	expected_events = append(expected_events, TestEvent{e: config_load})
-// 	expected_events = append(expected_events,
-// 		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+	// Second read (EOF)
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, TestEvent{e: config_load})
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
 
-// 	// bytes2 watchpoint
-// 	val := string(config_params)
-// 	sz := uint64(len(val))
-// 	expected_events = append(expected_events, TestEvent{
-// 		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24},
-// 		taint_sz: sz,
-// 	})
+	// bytes2 watchpoint
+	val := string(config_params)
+	sz := uint64(len(val))
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24},
+		taint_sz: sz,
+	})
 
-// 	empty := tainting_param
-// 	empty.Param.Param = ""
-// 	empty_tv := ct.MakeTaintingVals(&empty, nil)
+	empty := tainting_param
+	empty.Param.Param = ""
+	empty_tv := ct.MakeTaintingVals(&empty, nil)
 
-// 	apps := tainting_param
-// 	apps.Param.Param = "apps"
-// 	apps_tv := ct.MakeTaintingVals(&apps, nil)
+	apps := tainting_param
+	apps.Param.Param = "apps"
+	apps_tv := ct.MakeTaintingVals(&apps, nil)
 
-// 	http := tainting_param
-// 	http.Param.Param = "apps.http"
-// 	http_tv := ct.MakeTaintingVals(&http, nil)
+	http := tainting_param
+	http.Param.Param = "apps.http"
+	http_tv := ct.MakeTaintingVals(&http, nil)
 
-// 	servers := tainting_param
-// 	servers.Param.Param = "apps.http.servers"
-// 	servers_tv := ct.MakeTaintingVals(&servers, nil)
+	servers := tainting_param
+	servers.Param.Param = "apps.http.servers"
+	servers_tv := ct.MakeTaintingVals(&servers, nil)
 
-// 	example := tainting_param
-// 	example.Param.Param = "apps.http.servers.example"
-// 	example_tv := ct.MakeTaintingVals(&example, nil)
+	example := tainting_param
+	example.Param.Param = "apps.http.servers.example"
+	example_tv := ct.MakeTaintingVals(&example, nil)
 
-// 	listen := tainting_param
-// 	listen.Param.Param = "apps.http.servers.example.listen"
-// 	listen_tv := ct.MakeTaintingVals(&listen, nil)
+	listen := tainting_param
+	listen.Param.Param = "apps.http.servers.example.listen"
+	listen_tv := ct.MakeTaintingVals(&listen, nil)
 
-// 	listen0 := tainting_param
-// 	listen0.Param.Param = "apps.http.servers.example.listen[0]"
-// 	listen0_tv := ct.MakeTaintingVals(&listen0, nil)
+	listen0 := tainting_param
+	listen0.Param.Param = "apps.http.servers.example.listen[0]"
+	listen0_tv := ct.MakeTaintingVals(&listen0, nil)
 
-// 	routes := tainting_param
-// 	routes.Param.Param = "apps.http.servers.example.routes"
-// 	routes_tv := ct.MakeTaintingVals(&routes, nil)
+	routes := tainting_param
+	routes.Param.Param = "apps.http.servers.example.routes"
+	routes_tv := ct.MakeTaintingVals(&routes, nil)
 
-// 	handle := tainting_param
-// 	handle.Param.Param = "apps.http.servers.example.routes[0].handle"
-// 	handle_tv := ct.MakeTaintingVals(&handle, nil)
+	handle := tainting_param
+	handle.Param.Param = "apps.http.servers.example.routes[0].handle"
+	handle_tv := ct.MakeTaintingVals(&handle, nil)
 
-// 	handler := tainting_param
-// 	handler.Param.Param = "apps.http.servers.example.routes[0].handle[0].handler"
-// 	handler_tv := ct.MakeTaintingVals(&handler, nil)
+	handler := tainting_param
+	handler.Param.Param = "apps.http.servers.example.routes[0].handle[0].handler"
+	handler_tv := ct.MakeTaintingVals(&handler, nil)
 
-// 	body := tainting_param
-// 	body.Param.Param = "apps.http.servers.example.routes[0].handle[0].body"
-// 	body_tv := ct.MakeTaintingVals(&body, nil)
+	body := tainting_param
+	body.Param.Param = "apps.http.servers.example.routes[0].handle[0].body"
+	body_tv := ct.MakeTaintingVals(&body, nil)
 
-// 	tvs := []*ct.TaintingVals{
-// 		// {"apps":{"http":{"servers":{"example":{"listen":[":2015"],"routes":[{"handle":[{"handler":"static_response","body":"Hello, world!"}]}]}}}}}
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&apps_tv,    // a
-// 		&apps_tv,    // p
-// 		&apps_tv,    // p
-// 		&apps_tv,    // s
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&http_tv,    // h
-// 		&http_tv,    // t
-// 		&http_tv,    // t
-// 		&http_tv,    // p
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&servers_tv, // s
-// 		&servers_tv, // e
-// 		&servers_tv, // r
-// 		&servers_tv, // v
-// 		&servers_tv, // e
-// 		&servers_tv, // r
-// 		&servers_tv, // s
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&example_tv, // e
-// 		&example_tv, // x
-// 		&example_tv, // a
-// 		&example_tv, // m
-// 		&example_tv, // p
-// 		&example_tv, // l
-// 		&example_tv, // e
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&listen_tv,  // l
-// 		&listen_tv,  // i
-// 		&listen_tv,  // s
-// 		&listen_tv,  // t
-// 		&listen_tv,  // e
-// 		&listen_tv,  // n
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // [
-// 		&empty_tv,   // "
-// 		// :2015
-// 		&listen0_tv, // :
-// 		&listen0_tv, // 2
-// 		&listen0_tv, // 0
-// 		&listen0_tv, // 1
-// 		&listen0_tv, // 5
-// 		&empty_tv,   // "
-// 		&empty_tv,   // ]
-// 		&empty_tv,   // ,
-// 		&empty_tv,   // "
-// 		&routes_tv,  // r
-// 		&routes_tv,  // o
-// 		&routes_tv,  // u
-// 		&routes_tv,  // t
-// 		&routes_tv,  // e
-// 		&routes_tv,  // s
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // [
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&handle_tv,  // h
-// 		&handle_tv,  // a
-// 		&handle_tv,  // n
-// 		&handle_tv,  // d
-// 		&handle_tv,  // l
-// 		&handle_tv,  // e
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // [
-// 		&empty_tv,   // {
-// 		&empty_tv,   // "
-// 		&handler_tv, // h
-// 		&handler_tv, // a
-// 		&handler_tv, // n
-// 		&handler_tv, // d
-// 		&handler_tv, // l
-// 		&handler_tv, // e
-// 		&handler_tv, // r
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // "
-// 		// static response
-// 		&handler_tv, // s
-// 		&handler_tv, // t
-// 		&handler_tv, // a
-// 		&handler_tv, // t
-// 		&handler_tv, // i
-// 		&handler_tv, // c
-// 		&handler_tv, // _
-// 		&handler_tv, // r
-// 		&handler_tv, // e
-// 		&handler_tv, // s
-// 		&handler_tv, // p
-// 		&handler_tv, // o
-// 		&handler_tv, // n
-// 		&handler_tv, // s
-// 		&handler_tv, // e
-// 		&empty_tv,   // "
-// 		&empty_tv,   // ,
-// 		&empty_tv,   // "
-// 		&body_tv,    // b
-// 		&body_tv,    // o
-// 		&body_tv,    // d
-// 		&body_tv,    // y
-// 		&empty_tv,   // "
-// 		&empty_tv,   // :
-// 		&empty_tv,   // "
-// 		// Hello, world!
-// 		&body_tv,  // H
-// 		&body_tv,  // e
-// 		&body_tv,  // l
-// 		&body_tv,  // l
-// 		&body_tv,  // o
-// 		&body_tv,  // ,
-// 		&body_tv,  //
-// 		&body_tv,  // w
-// 		&body_tv,  // o
-// 		&body_tv,  // r
-// 		&body_tv,  // l
-// 		&body_tv,  // d
-// 		&body_tv,  // !
-// 		&empty_tv, // "
-// 		&empty_tv, // }
-// 		&empty_tv, // ]
-// 		&empty_tv, // }
-// 		&empty_tv, // ]
-// 		&empty_tv, // }
-// 		&empty_tv, // }
-// 		&empty_tv, // }
-// 		&empty_tv, // }
-// 		&empty_tv, // }
-// 	}
+	tvs := []*ct.TaintingVals{
+		// {"apps":{"http":{"servers":{"example":{"listen":[":2015"],"routes":[{"handle":[{"handler":"static_response","body":"Hello, world!"}]}]}}}}}
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&apps_tv,    // a
+		&apps_tv,    // p
+		&apps_tv,    // p
+		&apps_tv,    // s
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&http_tv,    // h
+		&http_tv,    // t
+		&http_tv,    // t
+		&http_tv,    // p
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&servers_tv, // s
+		&servers_tv, // e
+		&servers_tv, // r
+		&servers_tv, // v
+		&servers_tv, // e
+		&servers_tv, // r
+		&servers_tv, // s
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&example_tv, // e
+		&example_tv, // x
+		&example_tv, // a
+		&example_tv, // m
+		&example_tv, // p
+		&example_tv, // l
+		&example_tv, // e
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&listen_tv,  // l
+		&listen_tv,  // i
+		&listen_tv,  // s
+		&listen_tv,  // t
+		&listen_tv,  // e
+		&listen_tv,  // n
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // [
+		&empty_tv,   // "
+		// :2015
+		&listen0_tv, // :
+		&listen0_tv, // 2
+		&listen0_tv, // 0
+		&listen0_tv, // 1
+		&listen0_tv, // 5
+		&empty_tv,   // "
+		&empty_tv,   // ]
+		&empty_tv,   // ,
+		&empty_tv,   // "
+		&routes_tv,  // r
+		&routes_tv,  // o
+		&routes_tv,  // u
+		&routes_tv,  // t
+		&routes_tv,  // e
+		&routes_tv,  // s
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // [
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&handle_tv,  // h
+		&handle_tv,  // a
+		&handle_tv,  // n
+		&handle_tv,  // d
+		&handle_tv,  // l
+		&handle_tv,  // e
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // [
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&handler_tv, // h
+		&handler_tv, // a
+		&handler_tv, // n
+		&handler_tv, // d
+		&handler_tv, // l
+		&handler_tv, // e
+		&handler_tv, // r
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // "
+		// static response
+		&handler_tv, // s
+		&handler_tv, // t
+		&handler_tv, // a
+		&handler_tv, // t
+		&handler_tv, // i
+		&handler_tv, // c
+		&handler_tv, // _
+		&handler_tv, // r
+		&handler_tv, // e
+		&handler_tv, // s
+		&handler_tv, // p
+		&handler_tv, // o
+		&handler_tv, // n
+		&handler_tv, // s
+		&handler_tv, // e
+		&empty_tv,   // "
+		&empty_tv,   // ,
+		&empty_tv,   // "
+		&body_tv,    // b
+		&body_tv,    // o
+		&body_tv,    // d
+		&body_tv,    // y
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // "
+		// Hello, world!
+		&body_tv,  // H
+		&body_tv,  // e
+		&body_tv,  // l
+		&body_tv,  // l
+		&body_tv,  // o
+		&body_tv,  // ,
+		&body_tv,  //
+		&body_tv,  // w
+		&body_tv,  // o
+		&body_tv,  // r
+		&body_tv,  // l
+		&body_tv,  // d
+		&body_tv,  // !
+		&empty_tv, // "
+		&empty_tv, // }
+		&empty_tv, // ]
+		&empty_tv, // }
+		&empty_tv, // ]
+		&empty_tv, // }
+		&empty_tv, // }
+		&empty_tv, // }
+		&empty_tv, // }
+		&empty_tv, // }
+	}
 
-// 	for _, tv := range tvs {
-// 		expected_events = append(expected_events, TestEvent{
-// 			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: tv, Line: 24},
-// 		})
-// 	}
+	for _, tv := range tvs {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: tv, Line: 24},
+		})
+	}
 
-// 	os.Setenv("config", target_config_file)
-// 	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
-// }
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
+}
 
 // Also tests copy builtin
 func TestLoadConfigParamYAML(t *testing.T) {
