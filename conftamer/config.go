@@ -3,9 +3,9 @@ package conftamer
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
-	"log/slog"
 
 	yaml "gopkg.in/yaml.v2"
 )
@@ -43,6 +43,11 @@ type Config struct {
 	Config_API_endpoint string `yaml:"config_api_endpoint"`
 	// Options are "debug", info", "warn", "error" corresponding to these SLOG levels https://pkg.go.dev/log/slog#Level
 	LoggerLevel string `yaml:"logger_level"`
+	// Path to the file which has function signatures corresponding to the interfaces
+	Function_signatures string `yaml:"function_signatures"`
+	// Type of config file (defaults to newline searated list)
+	// options are 0 : NSL, 1 : JSON, 2 : YAML
+	Config_file_type int `yaml:"config_file_type"`
 }
 
 func LoadConfig(file string) (*Config, error) {

@@ -3,11 +3,13 @@ module github.com/go-delve/delve
 go 1.21
 
 require (
+	github.com/buger/jsonparser v1.1.1
 	github.com/c9s/goprocinfo v0.0.0-20210130143923-c95fcf8c64a8
 	github.com/cilium/ebpf v0.11.0
 	github.com/cosiner/argv v0.1.0
 	github.com/creack/pty v1.1.20
 	github.com/derekparker/trie v0.0.0-20230829180723-39f4de51ef7d
+	github.com/dominikbraun/graph v0.23.0
 	github.com/go-delve/liner v1.2.3-0.20231231155935-4726ab1d7f62
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-dap v0.12.0
@@ -19,6 +21,7 @@ require (
 	github.com/spf13/cobra v1.7.0
 	github.com/spf13/pflag v1.0.5
 	go.starlark.net v0.0.0-20231101134539-556fd59b42f6
+	go.yaml.in/yaml/v4 v4.0.0-rc.4
 	golang.org/x/arch v0.6.0
 	golang.org/x/sys v0.17.0
 	golang.org/x/tools v0.14.0
@@ -27,7 +30,6 @@ require (
 
 require (
 	github.com/cpuguy83/go-md2man/v2 v2.0.2 // indirect
-	github.com/dominikbraun/graph v0.23.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect
@@ -39,6 +41,6 @@ require (
 )
 
 replace (
-	github.com/hashicorp/go-set => ../go-set
 	github.com/dominikbraun/graph => ../graph
+	github.com/hashicorp/go-set => ../go-set
 )

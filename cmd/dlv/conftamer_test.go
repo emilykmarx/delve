@@ -640,7 +640,7 @@ func configTaintingParam(config *ct.Config, flow ct.TaintFlow) set.Set[ct.Tainti
 // Return resulting watchpoint set and mem-param update events.
 func watchpointSet(config *ct.Config, watchexpr string, sz uint64, line int, flow ct.TaintFlow,
 	extra_tainting_param *ct.TaintingParam, extra_tainting_behavior *ct.TaintingBehavior) []TestEvent {
-	// Watchpoint set
+	// Watchpoint
 	events := []TestEvent{{
 		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: watchexpr, Line: line},
 		taint_sz: sz,
@@ -782,15 +782,31 @@ func TestLoadConfigParam(t *testing.T) {
 
 	param := "param1"
 	tainting_param.Param.Param = param
+	col := 0
 	for offset := uint64(0); offset < sz; offset++ {
+		tp := ct.TaintingParam{
+			Param: ct.Param{
+				Module: config.Module,
+				File:   target_config_file,
+			},
+			Flow: ct.DataFlow,
+		}
 		if offset == 6 {
 			// \n
-			tainting_param.Param.Param = ""
+			tp.Param.Param = ""
+			col = 0
+		} else if offset < 6 {
+			tp.Param.Param = "param1"
+			tp.Param.Column_number = col
+			tp.Param.Row_number = 0
+			col++
 		} else if offset > 6 {
-			param = "param2"
-			tainting_param.Param.Param = param
+			tp.Param.Param = "param2"
+			tp.Param.Column_number = col
+			tp.Param.Row_number = 1
+			col++
 		}
-		tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+		tainting_vals := ct.MakeTaintingVals(&tp, nil)
 		expected_events = append(expected_events, TestEvent{
 			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &tainting_vals, Line: 24},
 		})
@@ -799,8 +815,695 @@ func TestLoadConfigParam(t *testing.T) {
 	// param1_var
 	param = "param1"
 	tainting_param.Param.Param = param
+
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: uint64(len(param)), Expression: "param1_var", Line: 26},
+		taint_sz: uint64(len(param)),
+	})
+
+	for i := 0; i < len(param); i++ {
+		tp := ct.TaintingParam{
+			Param: ct.Param{
+				Module:        config.Module,
+				File:          target_config_file,
+				Param:         "param1",
+				Row_number:    0,
+				Column_number: i, // 0-indexed
+			},
+			Flow: ct.DataFlow,
+		}
+		tv := ct.MakeTaintingVals(&tp, nil)
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{
+				EventType:    ct.MemParamMapUpdate,
+				Size:         1,
+				TaintingVals: &tv,
+				Line:         26,
+			},
+		})
+	}
+	// Not using watchpoint set because it assumes that the params are unique (b4 adding col/line number)
+
+	//expected_events = append(expected_events,
+	// watchpointSet(nil, "param1_var", uint64(len(param)), 26, ct.DataFlow, &tainting_param, nil)...)
+
+	// The usual syntax for passing args from dlv to target doesn't work in test
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
+}
+
+// Also tests copy builtin
+func TestLoadConfigParamJSON(t *testing.T) {
+	// Write a config file, tell dlv where it is
+	config_params := []byte(`{"param1": 1}`)
+	target_config_file := filepath.Join(t.TempDir(), "target_config.json")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+
+	config := Config("load_config_param_JSON.go", "", 0)
+	config.Config_file_type = 1
+	//config.LoggerLevel = "Debug"
+
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
+	// First read
+	readbufsz := uint64(512) // ReadFile uses buf of this size (0x200) for smaller files
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []TestEvent{{e: config_load}}
 	expected_events = append(expected_events,
-		watchpointSet(nil, "param1_var", uint64(len(param)), 26, ct.DataFlow, &tainting_param, nil)...)
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// Second read
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, TestEvent{e: config_load})
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// bytes2
+	val := `{"param1": 1}`
+
+	sz := uint64(len(val))
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24},
+		taint_sz: sz})
+
+	empty_tainting_param := tainting_param
+	empty_tainting_param.Param.Param = ""
+	empty_tainting_vals := ct.MakeTaintingVals(&empty_tainting_param, nil)
+
+	param_tainting_param := tainting_param
+	param_tainting_param.Param.Param = "param1"
+
+	// chars: {"
+	for i := 0; i <= 1; i++ {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &empty_tainting_vals, Line: 24},
+		})
+	}
+	// chars: param1
+	for offset := 2; offset <= 7; offset++ {
+		param_tainting_param.Param.Column_number = offset
+		param_tainting_param.Param.Row_number = 0
+
+		param_tainting_vals := ct.MakeTaintingVals(&param_tainting_param, nil)
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &param_tainting_vals, Line: 24},
+		})
+	}
+	// chars: ":
+	for i := 8; i <= 10; i++ {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &empty_tainting_vals, Line: 24},
+		})
+	}
+	param_tainting_param.Param.Column_number = 11
+	param_tainting_param.Param.Row_number = 0
+
+	param_tainting_vals := ct.MakeTaintingVals(&param_tainting_param, nil)
+	expected_events = append(expected_events, TestEvent{
+		e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &param_tainting_vals, Line: 24},
+	})
+
+	expected_events = append(expected_events, TestEvent{
+		e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &empty_tainting_vals, Line: 24},
+	})
+
+	// The usual syntax for passing args from dlv to target doesn't work in test
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
+}
+
+func TestLoadConfigParamJSONComplex(t *testing.T) {
+	// Write a config file, tell dlv where it is
+	config_params := []byte(`{"apps":{"listen":[":2015",":2016"]}}`)
+	target_config_file := filepath.Join(t.TempDir(), "target_config.json")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+
+	config := Config("load_config_param_complex_JSON.go", "", 0)
+	config.Config_file_type = 1
+	//config.LoggerLevel = "Debug"
+
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
+	// First read
+	readbufsz := uint64(512) // ReadFile uses buf of this size (0x200) for smaller files
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []TestEvent{{e: config_load}}
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// Second read
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, TestEvent{e: config_load})
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// bytes2
+	val := string(config_params)
+	sz := uint64(len(val))
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24},
+		taint_sz: sz})
+
+	testing_tainting_param := tainting_param
+	testing_tainting_param.Param.Param = "testing"
+	//testing := ct.MakeTaintingVals(&testing_tainting_param, nil)
+
+	helper := func(paramName string, row, col int) *ct.TaintingVals {
+		ret := tainting_param
+		ret.Param.Param = paramName
+		ret.Param.Row_number = row
+		ret.Param.Column_number = col
+		tv := ct.MakeTaintingVals(&ret, nil)
+		return &tv
+	}
+
+	tvs := []*ct.TaintingVals{
+		// `{"`
+		helper("", 0, 0), helper("", 0, 0),
+		// `apps`
+		helper("apps", 0, 2), helper("apps", 0, 3), helper("apps", 0, 4), helper("apps", 0, 5),
+		// `":{"`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0),
+		// `listen`
+		helper("apps.listen", 0, 10), helper("apps.listen", 0, 11), helper("apps.listen", 0, 12), helper("apps.listen", 0, 13), helper("apps.listen", 0, 14), helper("apps.listen", 0, 15),
+		// `":["`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0),
+		// `:2015`
+		helper("apps.listen[0]", 0, 20), helper("apps.listen[0]", 0, 21), helper("apps.listen[0]", 0, 22), helper("apps.listen[0]", 0, 23), helper("apps.listen[0]", 0, 24),
+		// `","`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0),
+		// `:2016`
+		helper("apps.listen[1]", 0, 28), helper("apps.listen[1]", 0, 29), helper("apps.listen[1]", 0, 30), helper("apps.listen[1]", 0, 31), helper("apps.listen[1]", 0, 32),
+		// `"]}}`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0),
+	}
+
+	for _, tv := range tvs {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: tv, Line: 24},
+		})
+	}
+
+	// The usual syntax for passing args from dlv to target doesn't work in test
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
+}
+
+// TODO: test currently does not include the update to have row/col numbers, failing intended
+func TestLoadConfigParamJSONFull(t *testing.T) {
+	// Flattened original JSON
+	config_params := []byte(`{"apps":{"http":{"servers":{"example":{"listen":[":2015"],"routes":[{"handle":[{"handler":"static_response","body":"Hello, world!"}]}]}}}}}`)
+
+	target_config_file := filepath.Join(t.TempDir(), "target_config.json")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+
+	config := Config("load_config_param_JSON_full.go", "", 0)
+	config.Config_file_type = 1 // JSON
+
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// First read
+	readbufsz := uint64(512)
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []TestEvent{{e: config_load}}
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// Second read (EOF)
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, TestEvent{e: config_load})
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// bytes2 watchpoint
+	val := string(config_params)
+	sz := uint64(len(val))
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24},
+		taint_sz: sz,
+	})
+
+	empty := tainting_param
+	empty.Param.Param = ""
+	empty_tv := ct.MakeTaintingVals(&empty, nil)
+
+	apps := tainting_param
+	apps.Param.Param = "apps"
+	apps_tv := ct.MakeTaintingVals(&apps, nil)
+
+	http := tainting_param
+	http.Param.Param = "apps.http"
+	http_tv := ct.MakeTaintingVals(&http, nil)
+
+	servers := tainting_param
+	servers.Param.Param = "apps.http.servers"
+	servers_tv := ct.MakeTaintingVals(&servers, nil)
+
+	example := tainting_param
+	example.Param.Param = "apps.http.servers.example"
+	example_tv := ct.MakeTaintingVals(&example, nil)
+
+	listen := tainting_param
+	listen.Param.Param = "apps.http.servers.example.listen"
+	listen_tv := ct.MakeTaintingVals(&listen, nil)
+
+	listen0 := tainting_param
+	listen0.Param.Param = "apps.http.servers.example.listen[0]"
+	listen0_tv := ct.MakeTaintingVals(&listen0, nil)
+
+	routes := tainting_param
+	routes.Param.Param = "apps.http.servers.example.routes"
+	routes_tv := ct.MakeTaintingVals(&routes, nil)
+
+	handle := tainting_param
+	handle.Param.Param = "apps.http.servers.example.routes[0].handle"
+	handle_tv := ct.MakeTaintingVals(&handle, nil)
+
+	handler := tainting_param
+	handler.Param.Param = "apps.http.servers.example.routes[0].handle[0].handler"
+	handler_tv := ct.MakeTaintingVals(&handler, nil)
+
+	body := tainting_param
+	body.Param.Param = "apps.http.servers.example.routes[0].handle[0].body"
+	body_tv := ct.MakeTaintingVals(&body, nil)
+
+	tvs := []*ct.TaintingVals{
+		// {"apps":{"http":{"servers":{"example":{"listen":[":2015"],"routes":[{"handle":[{"handler":"static_response","body":"Hello, world!"}]}]}}}}}
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&apps_tv,    // a
+		&apps_tv,    // p
+		&apps_tv,    // p
+		&apps_tv,    // s
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&http_tv,    // h
+		&http_tv,    // t
+		&http_tv,    // t
+		&http_tv,    // p
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&servers_tv, // s
+		&servers_tv, // e
+		&servers_tv, // r
+		&servers_tv, // v
+		&servers_tv, // e
+		&servers_tv, // r
+		&servers_tv, // s
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&example_tv, // e
+		&example_tv, // x
+		&example_tv, // a
+		&example_tv, // m
+		&example_tv, // p
+		&example_tv, // l
+		&example_tv, // e
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&listen_tv,  // l
+		&listen_tv,  // i
+		&listen_tv,  // s
+		&listen_tv,  // t
+		&listen_tv,  // e
+		&listen_tv,  // n
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // [
+		&empty_tv,   // "
+		// :2015
+		&listen0_tv, // :
+		&listen0_tv, // 2
+		&listen0_tv, // 0
+		&listen0_tv, // 1
+		&listen0_tv, // 5
+		&empty_tv,   // "
+		&empty_tv,   // ]
+		&empty_tv,   // ,
+		&empty_tv,   // "
+		&routes_tv,  // r
+		&routes_tv,  // o
+		&routes_tv,  // u
+		&routes_tv,  // t
+		&routes_tv,  // e
+		&routes_tv,  // s
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // [
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&handle_tv,  // h
+		&handle_tv,  // a
+		&handle_tv,  // n
+		&handle_tv,  // d
+		&handle_tv,  // l
+		&handle_tv,  // e
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // [
+		&empty_tv,   // {
+		&empty_tv,   // "
+		&handler_tv, // h
+		&handler_tv, // a
+		&handler_tv, // n
+		&handler_tv, // d
+		&handler_tv, // l
+		&handler_tv, // e
+		&handler_tv, // r
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // "
+		// static response
+		&handler_tv, // s
+		&handler_tv, // t
+		&handler_tv, // a
+		&handler_tv, // t
+		&handler_tv, // i
+		&handler_tv, // c
+		&handler_tv, // _
+		&handler_tv, // r
+		&handler_tv, // e
+		&handler_tv, // s
+		&handler_tv, // p
+		&handler_tv, // o
+		&handler_tv, // n
+		&handler_tv, // s
+		&handler_tv, // e
+		&empty_tv,   // "
+		&empty_tv,   // ,
+		&empty_tv,   // "
+		&body_tv,    // b
+		&body_tv,    // o
+		&body_tv,    // d
+		&body_tv,    // y
+		&empty_tv,   // "
+		&empty_tv,   // :
+		&empty_tv,   // "
+		// Hello, world!
+		&body_tv,  // H
+		&body_tv,  // e
+		&body_tv,  // l
+		&body_tv,  // l
+		&body_tv,  // o
+		&body_tv,  // ,
+		&body_tv,  //
+		&body_tv,  // w
+		&body_tv,  // o
+		&body_tv,  // r
+		&body_tv,  // l
+		&body_tv,  // d
+		&body_tv,  // !
+		&empty_tv, // "
+		&empty_tv, // }
+		&empty_tv, // ]
+		&empty_tv, // }
+		&empty_tv, // ]
+		&empty_tv, // }
+		&empty_tv, // }
+		&empty_tv, // }
+		&empty_tv, // }
+		&empty_tv, // }
+	}
+
+	for _, tv := range tvs {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: tv, Line: 24},
+		})
+	}
+
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
+}
+
+// Also tests copy builtin
+func TestLoadConfigParamYAML(t *testing.T) {
+	// Write a config file, tell dlv where it is
+	config_params := []byte(`param1: 1`)
+	target_config_file := filepath.Join(t.TempDir(), "target_config.YAML")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+
+	config := Config("load_config_param_YAML.go", "", 0)
+	config.Config_file_type = 2
+	//config.LoggerLevel = "Debug"
+
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
+	// First read
+	readbufsz := uint64(512) // ReadFile uses buf of this size (0x200) for smaller files
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []TestEvent{{e: config_load}}
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// Second read
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, TestEvent{e: config_load})
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// bytes2
+	val := `param1: 1`
+
+	sz := uint64(len(val))
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 24},
+		taint_sz: sz})
+
+	empty_tainting_param := tainting_param
+	empty_tainting_param.Param.Param = ""
+	empty_tainting_vals := ct.MakeTaintingVals(&empty_tainting_param, nil)
+
+	param_tainting_param := tainting_param
+	param_tainting_param.Param.Param = "param1"
+
+	// chars: param1
+	for offset := 0; offset <= 5; offset++ {
+		param_tainting_param.Param.Column_number = offset
+		param_tainting_param.Param.Row_number = 0
+
+		param_tainting_vals := ct.MakeTaintingVals(&param_tainting_param, nil)
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &param_tainting_vals, Line: 24},
+		})
+	}
+	// chars: :
+	for i := 6; i <= 7; i++ {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &empty_tainting_vals, Line: 24},
+		})
+	}
+	param_tainting_param.Param.Column_number = 8
+	param_tainting_param.Param.Row_number = 0
+
+	param_tainting_vals := ct.MakeTaintingVals(&param_tainting_param, nil)
+	expected_events = append(expected_events, TestEvent{
+		e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: &param_tainting_vals, Line: 24},
+	})
+
+	// The usual syntax for passing args from dlv to target doesn't work in test
+	os.Setenv("config", target_config_file)
+	run(t, &config, expected_events, &TestConfig{checkDupEvents: true})
+}
+
+func TestLoadConfigParamYAMLComplex(t *testing.T) {
+	// Write a config file, tell dlv where it is
+	config_params := []byte(
+		"global:\n" +
+			"  scrape_interval: 30s\n" +
+			"rule_files:\n" +
+			"  - /etc/a.yaml\n" +
+			"scrape_configs:\n" +
+			"  - job_name: svc/0\n" +
+			"    kubernetes_sd_configs:\n" +
+			"      - role: endpoints\n" +
+			"        namespaces:\n" +
+			"          names:\n" +
+			"            - kube_system\n",
+	)
+	target_config_file := filepath.Join(t.TempDir(), "target_config.YAML")
+	assertNoError(os.WriteFile(target_config_file, config_params, 0666), t, "WriteFile")
+	dlv_config_path := t.TempDir()
+	assertNoError(os.MkdirAll(dlv_config_path+"/dlv", 0770), t, "Mkdir")
+	dlv_config_file := filepath.Join(dlv_config_path, "dlv", "config.yml")
+	dlv_config := fmt.Sprintf("target-config-files: [%v]", target_config_file)
+	assertNoError(os.WriteFile(dlv_config_file, []byte(dlv_config), 0666), t, "WriteFile")
+	os.Setenv("XDG_CONFIG_HOME", dlv_config_path)
+
+	config := Config("load_config_param_complex_YAML.go", "", 0)
+	config.Config_file_type = 2
+	//config.LoggerLevel = "Debug"
+
+	tainting_param := ct.TaintingParam{
+		Param: ct.Param{
+			Module: config.Module,
+			File:   target_config_file,
+		},
+		Flow: ct.DataFlow,
+	}
+
+	tainting_vals := ct.MakeTaintingVals(&tainting_param, nil)
+
+	// Two read syscalls: one reads whole file, second advances buf pointer and reads nothing (EOF)
+	// First read
+	readbufsz := uint64(512) // ReadFile uses buf of this size (0x200) for smaller files
+	config_load := ct.Event{
+		EventType:    ct.ConfigLoad,
+		Size:         readbufsz,
+		TaintingVals: &tainting_vals,
+		Line:         syscall_entry_line,
+	}
+	expected_events := []TestEvent{{e: config_load}}
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// Second read
+	readbufsz -= uint64(len(config_params))
+	config_load.Size = readbufsz
+	expected_events = append(expected_events, TestEvent{e: config_load})
+	expected_events = append(expected_events,
+		watchpointSet(nil, ct.SyscallRecvBuf, readbufsz, syscall_entry_line, ct.DataFlow, &tainting_param, nil)...)
+
+	// bytes2
+	val := string(config_params)
+	sz := uint64(len(val))
+	expected_events = append(expected_events, TestEvent{
+		e:        ct.Event{EventType: ct.WatchpointSet, Size: sz, Expression: "bytes2", Line: 36},
+		taint_sz: sz})
+
+	testing_tainting_param := tainting_param
+	testing_tainting_param.Param.Param = "testing"
+	//testing := ct.MakeTaintingVals(&testing_tainting_param, nil)
+
+	helper := func(paramName string, row, col int) *ct.TaintingVals {
+		ret := tainting_param
+		ret.Param.Param = paramName
+		ret.Param.Row_number = row
+		ret.Param.Column_number = col
+		tv := ct.MakeTaintingVals(&ret, nil)
+		return &tv
+	}
+
+	tvs := []*ct.TaintingVals{
+		// `global:\n `
+		helper("global", 0, 0), helper("global", 0, 1), helper("global", 0, 2), helper("global", 0, 3), helper("global", 0, 4), helper("global", 0, 5), helper("", 0, 0), helper("", 0, 0),
+		// `  scrape_interval: 30s\n`
+		helper("", 0, 0), helper("", 0, 0), helper("global.scrape_interval", 1, 2), helper("global.scrape_interval", 1, 3), helper("global.scrape_interval", 1, 4), helper("global.scrape_interval", 1, 5), helper("global.scrape_interval", 1, 6), helper("global.scrape_interval", 1, 7), helper("global.scrape_interval", 1, 8), helper("global.scrape_interval", 1, 9), helper("global.scrape_interval", 1, 10), helper("global.scrape_interval", 1, 11), helper("global.scrape_interval", 1, 12), helper("global.scrape_interval", 1, 13), helper("global.scrape_interval", 1, 14), helper("global.scrape_interval", 1, 15), helper("global.scrape_interval", 1, 16), helper("", 0, 0), helper("", 0, 0), helper("global.scrape_interval", 1, 19), helper("global.scrape_interval", 1, 20), helper("global.scrape_interval", 1, 21), helper("", 0, 0),
+		// `"rule_files:\n"`
+		helper("rule_files", 2, 0), helper("rule_files", 2, 1), helper("rule_files", 2, 2), helper("rule_files", 2, 3), helper("rule_files", 2, 4), helper("rule_files", 2, 5), helper("rule_files", 2, 6), helper("rule_files", 2, 7), helper("rule_files", 2, 8), helper("rule_files", 2, 9), helper("", 0, 0), helper("", 0, 0),
+		// `  - /etc/a.yaml\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("rule_files[0]", 3, 4), helper("rule_files[0]", 3, 5), helper("rule_files[0]", 3, 6), helper("rule_files[0]", 3, 7), helper("rule_files[0]", 3, 8), helper("rule_files[0]", 3, 9), helper("rule_files[0]", 3, 10), helper("rule_files[0]", 3, 11), helper("rule_files[0]", 3, 12), helper("rule_files[0]", 3, 13), helper("rule_files[0]", 3, 14), helper("", 0, 0),
+		// `scrape_configs:\n`
+		helper("scrape_configs", 4, 0), helper("scrape_configs", 4, 1), helper("scrape_configs", 4, 2), helper("scrape_configs", 4, 3), helper("scrape_configs", 4, 4), helper("scrape_configs", 4, 5), helper("scrape_configs", 4, 6), helper("scrape_configs", 4, 7), helper("scrape_configs", 4, 8), helper("scrape_configs", 4, 9), helper("scrape_configs", 4, 10), helper("scrape_configs", 4, 11), helper("scrape_configs", 4, 12), helper("scrape_configs", 4, 13), helper("", 0, 0), helper("", 0, 0),
+		// `  - job_name: svc/0\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].job_name", 5, 4), helper("scrape_configs[0].job_name", 5, 5), helper("scrape_configs[0].job_name", 5, 6), helper("scrape_configs[0].job_name", 5, 7), helper("scrape_configs[0].job_name", 5, 8), helper("scrape_configs[0].job_name", 5, 9), helper("scrape_configs[0].job_name", 5, 10), helper("scrape_configs[0].job_name", 5, 11), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].job_name", 5, 14), helper("scrape_configs[0].job_name", 5, 15), helper("scrape_configs[0].job_name", 5, 16), helper("scrape_configs[0].job_name", 5, 17), helper("scrape_configs[0].job_name", 5, 18), helper("", 0, 0),
+		// `    kubernetes_sd_configs:\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].kubernetes_sd_configs", 6, 4), helper("scrape_configs[0].kubernetes_sd_configs", 6, 5), helper("scrape_configs[0].kubernetes_sd_configs", 6, 6), helper("scrape_configs[0].kubernetes_sd_configs", 6, 7), helper("scrape_configs[0].kubernetes_sd_configs", 6, 8), helper("scrape_configs[0].kubernetes_sd_configs", 6, 9), helper("scrape_configs[0].kubernetes_sd_configs", 6, 10), helper("scrape_configs[0].kubernetes_sd_configs", 6, 11), helper("scrape_configs[0].kubernetes_sd_configs", 6, 12), helper("scrape_configs[0].kubernetes_sd_configs", 6, 13), helper("scrape_configs[0].kubernetes_sd_configs", 6, 14), helper("scrape_configs[0].kubernetes_sd_configs", 6, 15), helper("scrape_configs[0].kubernetes_sd_configs", 6, 16), helper("scrape_configs[0].kubernetes_sd_configs", 6, 17), helper("scrape_configs[0].kubernetes_sd_configs", 6, 18), helper("scrape_configs[0].kubernetes_sd_configs", 6, 19), helper("scrape_configs[0].kubernetes_sd_configs", 6, 20), helper("scrape_configs[0].kubernetes_sd_configs", 6, 21), helper("scrape_configs[0].kubernetes_sd_configs", 6, 22), helper("scrape_configs[0].kubernetes_sd_configs", 6, 23), helper("scrape_configs[0].kubernetes_sd_configs", 6, 24), helper("", 0, 0), helper("", 0, 0),
+		// `      - role: endpoints\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 8), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 9), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 10), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 11), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 14), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 15), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 16), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 17), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 18), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 19), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 20), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 21), helper("scrape_configs[0].kubernetes_sd_configs[0].role", 7, 22), helper("", 0, 0),
+		// `        namespaces:\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 8), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 9), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 10), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 11), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 12), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 13), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 14), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 15), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 16), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces", 8, 17), helper("", 0, 0), helper("", 0, 0),
+		// `          names:\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names", 9, 10), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names", 9, 11), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names", 9, 12), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names", 9, 13), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names", 9, 14), helper("", 0, 0), helper("", 0, 0),
+		// `            - kube_system\n`
+		helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("", 0, 0), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 14), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 15), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 16), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 17), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 18), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 19), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 20), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 21), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 22), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 23), helper("scrape_configs[0].kubernetes_sd_configs[0].namespaces.names[0]", 10, 24), helper("", 0, 0),
+	}
+
+	for _, tv := range tvs {
+		expected_events = append(expected_events, TestEvent{
+			e: ct.Event{EventType: ct.MemParamMapUpdate, Size: 1, TaintingVals: tv, Line: 36},
+		})
+	}
 
 	// The usual syntax for passing args from dlv to target doesn't work in test
 	os.Setenv("config", target_config_file)
